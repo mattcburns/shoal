@@ -25,6 +25,9 @@ The API supports two authentication methods:
 ## Core Redfish Endpoints
 
 - `GET /redfish/v1/`: Service root.
+- `GET /redfish/v1/EventService`: Minimal EventService stub (ServiceEnabled=false).
+- `GET /redfish/v1/TaskService`: Minimal TaskService stub.
+- `GET /redfish/v1/TaskService/Tasks`: Empty Tasks collection.
 - `GET /redfish/v1/Managers`: List of aggregated managers from all BMCs.
 - `GET /redfish/v1/Systems`: List of aggregated systems from all BMCs.
 - `GET /redfish/v1/Managers/{bmc-name}`: Proxy to a specific BMC manager.

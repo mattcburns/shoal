@@ -119,6 +119,18 @@ func (h *Handler) handleRedfish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Handle EventService endpoints (stub)
+	if strings.HasPrefix(path, "/v1/EventService") {
+		h.handleEventService(w, r, path, user)
+		return
+	}
+
+	// Handle TaskService endpoints (stub)
+	if strings.HasPrefix(path, "/v1/TaskService") {
+		h.handleTaskService(w, r, path, user)
+		return
+	}
+
 	// Handle aggregator-specific endpoints
 	h.handleAggregatorEndpoints(w, r, path, user)
 }
@@ -257,6 +269,9 @@ func (h *Handler) handleServiceRoot(w http.ResponseWriter, r *http.Request) {
 	serviceRoot.JsonSchemas = &redfish.ODataIDRef{ODataID: "/redfish/v1/SchemaStore"}
 	// Phase 2 link
 	serviceRoot.AccountService = &redfish.ODataIDRef{ODataID: "/redfish/v1/AccountService"}
+	// Phase 3 links (stubs)
+	serviceRoot.EventService = &redfish.ODataIDRef{ODataID: "/redfish/v1/EventService"}
+	serviceRoot.TaskService = &redfish.ODataIDRef{ODataID: "/redfish/v1/TaskService"}
 
 	h.writeJSONResponse(w, http.StatusOK, serviceRoot)
 }
@@ -739,6 +754,74 @@ func (h *Handler) handleGetRole(w http.ResponseWriter, r *http.Request, roleID s
 	default:
 		h.writeErrorResponse(w, http.StatusNotFound, "Base.1.0.ResourceNotFound", "Role not found")
 	}
+}
+
+// handleEventService provides a minimal EventService stub
+func (h *Handler) handleEventService(w http.ResponseWriter, r *http.Request, path string, user *models.User) {
+	subPath := strings.TrimPrefix(path, "/v1/EventService")
+
+	// Root resource
+	if subPath == "" || subPath == "/" {
+		if r.Method != http.MethodGet {
+			h.writeErrorResponse(w, http.StatusMethodNotAllowed, "Base.1.0.MethodNotAllowed", "Method not allowed")
+			return
+		}
+		svc := redfish.EventService{
+			ODataContext:   "/redfish/v1/$metadata#EventService.EventService",
+			ODataID:        "/redfish/v1/EventService",
+			ODataType:      "#EventService.v1_0_0.EventService",
+			ID:             "EventService",
+			Name:           "Event Service",
+			ServiceEnabled: false,
+		}
+		h.writeJSONResponse(w, http.StatusOK, svc)
+		return
+	}
+
+	h.writeErrorResponse(w, http.StatusNotFound, "Base.1.0.ResourceNotFound", "Resource not found")
+}
+
+// handleTaskService provides a minimal TaskService stub
+func (h *Handler) handleTaskService(w http.ResponseWriter, r *http.Request, path string, user *models.User) {
+	subPath := strings.TrimPrefix(path, "/v1/TaskService")
+
+	// Root resource
+	if subPath == "" || subPath == "/" {
+		if r.Method != http.MethodGet {
+			h.writeErrorResponse(w, http.StatusMethodNotAllowed, "Base.1.0.MethodNotAllowed", "Method not allowed")
+			return
+		}
+		svc := redfish.TaskService{
+			ODataContext: "/redfish/v1/$metadata#TaskService.TaskService",
+			ODataID:      "/redfish/v1/TaskService",
+			ODataType:    "#TaskService.v1_0_0.TaskService",
+			ID:           "TaskService",
+			Name:         "Task Service",
+			Tasks:        redfish.ODataIDRef{ODataID: "/redfish/v1/TaskService/Tasks"},
+		}
+		h.writeJSONResponse(w, http.StatusOK, svc)
+		return
+	}
+
+	// Tasks collection
+	if subPath == "/Tasks" || subPath == "/Tasks/" {
+		if r.Method != http.MethodGet {
+			h.writeErrorResponse(w, http.StatusMethodNotAllowed, "Base.1.0.MethodNotAllowed", "Method not allowed")
+			return
+		}
+		coll := redfish.Collection{
+			ODataContext: "/redfish/v1/$metadata#TaskCollection.TaskCollection",
+			ODataID:      "/redfish/v1/TaskService/Tasks",
+			ODataType:    "#TaskCollection.TaskCollection",
+			Name:         "Task Collection",
+			Members:      []redfish.ODataIDRef{},
+			MembersCount: 0,
+		}
+		h.writeJSONResponse(w, http.StatusOK, coll)
+		return
+	}
+
+	h.writeErrorResponse(w, http.StatusNotFound, "Base.1.0.ResourceNotFound", "Resource not found")
 }
 
 // toRedfishAccount converts models.User to Redfish ManagerAccount

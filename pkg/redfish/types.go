@@ -37,6 +37,8 @@ type ServiceRoot struct {
 	Registries         *ODataIDRef      `json:"Registries,omitempty"`
 	JsonSchemas        *ODataIDRef      `json:"JsonSchemas,omitempty"`
 	AccountService     *ODataIDRef      `json:"AccountService,omitempty"`
+	EventService       *ODataIDRef      `json:"EventService,omitempty"`
+	TaskService        *ODataIDRef      `json:"TaskService,omitempty"`
 	Links              ServiceRootLinks `json:"Links"`
 }
 
@@ -157,4 +159,34 @@ type ConnectionMethodVariant struct {
 type ConnectionAuthentication struct {
 	Username string `json:"Username"`
 	Password string `json:"Password"`
+}
+
+// EventService represents Redfish EventService (stub)
+type EventService struct {
+	ODataContext   string `json:"@odata.context"`
+	ODataID        string `json:"@odata.id"`
+	ODataType      string `json:"@odata.type"`
+	ID             string `json:"Id"`
+	Name           string `json:"Name"`
+	ServiceEnabled bool   `json:"ServiceEnabled"`
+}
+
+// TaskService represents Redfish TaskService (stub)
+type TaskService struct {
+	ODataContext string     `json:"@odata.context"`
+	ODataID      string     `json:"@odata.id"`
+	ODataType    string     `json:"@odata.type"`
+	ID           string     `json:"Id"`
+	Name         string     `json:"Name"`
+	Tasks        ODataIDRef `json:"Tasks"`
+}
+
+// Task represents a Redfish Task (stub)
+type Task struct {
+	ODataContext string `json:"@odata.context"`
+	ODataID      string `json:"@odata.id"`
+	ODataType    string `json:"@odata.type"`
+	ID           string `json:"Id"`
+	Name         string `json:"Name"`
+	TaskState    string `json:"TaskState"`
 }
