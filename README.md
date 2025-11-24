@@ -32,6 +32,11 @@ Open http://localhost:8080 and log in with `admin` / `admin` (change immediately
 
 Alternatively, download a prebuilt binary from [Releases](https://github.com/mattcburns/shoal/releases), make it executable, and run it.
 
+## Shoal-Provision
+
+There is a fork of this project that is in the process of implementing an experimental provisioner, you can
+find it at [Shoal-Provision](https://github.com/mattcburns/shoal-provision)
+
 ## License
 
 AGPL-3.0. See `LICENSE`.
