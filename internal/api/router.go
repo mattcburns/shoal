@@ -30,10 +30,21 @@ import (
 // This does not change any routes or behavior; it simply centralizes mux setup
 // so other code can delegate to it.
 func NewRouter(db *database.DB) http.Handler {
+	return NewRouterWithImageProxy(db, nil)
+}
+
+// NewRouterWithImageProxy constructs an API router with image proxy support
+func NewRouterWithImageProxy(db *database.DB, proxyConfig *ImageProxyConfig) http.Handler {
+	imageProxyURL := ""
+	if proxyConfig != nil && proxyConfig.Enabled {
+		imageProxyURL = proxyConfig.BaseURL
+	}
+
 	h := &Handler{
-		db:     db,
-		auth:   auth.New(db),
-		bmcSvc: bmc.New(db),
+		db:            db,
+		auth:          auth.New(db),
+		bmcSvc:        bmc.New(db),
+		imageProxyURL: imageProxyURL,
 	}
 	return newMux(h)
 }

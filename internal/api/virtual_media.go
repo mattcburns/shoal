@@ -22,6 +22,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"shoal/internal/database"
@@ -250,6 +251,15 @@ func (h *Handler) handleInsertMedia(w http.ResponseWriter, r *http.Request, bmcN
 		return
 	}
 
+	// Rewrite URL to use image proxy if enabled
+	if h.imageProxyURL != "" {
+		rewrittenURL := h.rewriteImageURL(req.Image)
+		if rewrittenURL != req.Image {
+			slog.Info("Rewrote image URL for BMC", "original", req.Image, "rewritten", rewrittenURL)
+			req.Image = rewrittenURL
+		}
+	}
+
 	// Forward request to downstream BMC
 	// Build the action path on the downstream BMC
 	actionPath := fmt.Sprintf("%s/Actions/VirtualMedia.InsertMedia", resource.ODataID)
@@ -456,4 +466,22 @@ func (h *Handler) handleEjectMedia(w http.ResponseWriter, r *http.Request, bmcNa
 
 	// Return success (204 No Content per DMTF spec)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// rewriteImageURL rewrites an external image URL to use the image proxy
+func (h *Handler) rewriteImageURL(imageURL string) string {
+	if h.imageProxyURL == "" {
+		return imageURL
+	}
+
+	// Only rewrite HTTP/HTTPS URLs
+	if !strings.HasPrefix(imageURL, "http://") && !strings.HasPrefix(imageURL, "https://") {
+		return imageURL
+	}
+
+	// URL-encode the image URL for the proxy parameter
+	encodedURL := url.QueryEscape(imageURL)
+
+	// Build proxy URL: http://shoal:8082/proxy?url=<encoded-url>
+	return fmt.Sprintf("%s/proxy?url=%s", h.imageProxyURL, encodedURL)
 }
