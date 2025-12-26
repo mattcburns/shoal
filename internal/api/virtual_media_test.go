@@ -69,10 +69,10 @@ func insertVirtualMediaResource(t *testing.T, db *database.DB, connMethodID, man
 
 	ctx := context.Background()
 
-	var imgURL, imgName interface{}
+	var imgURL, imgName *string
 	if imageURL != "" {
-		imgURL = imageURL
-		imgName = imageName
+		imgURL = &imageURL
+		imgName = &imageName
 	}
 
 	err := db.UpsertVirtualMediaResource(ctx, connMethodID, managerID, resourceID, odataID,

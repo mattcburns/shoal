@@ -1187,7 +1187,7 @@ func (db *DB) GetVirtualMediaResource(ctx context.Context, connectionMethodID, m
 }
 
 // UpsertVirtualMediaResource inserts or updates a virtual media resource
-func (db *DB) UpsertVirtualMediaResource(ctx context.Context, connectionMethodID, managerID, resourceID, odataID, mediaTypes, supportedProtocols string, currentImageURL, currentImageName interface{}, isInserted, isWriteProtected bool, connectedVia string) error {
+func (db *DB) UpsertVirtualMediaResource(ctx context.Context, connectionMethodID, managerID, resourceID, odataID, mediaTypes, supportedProtocols string, currentImageURL, currentImageName *string, isInserted, isWriteProtected bool, connectedVia string) error {
 	query := `INSERT INTO virtual_media_resources 
 		(connection_method_id, manager_id, resource_id, odata_id, media_types, supported_protocols, 
 		 current_image_url, current_image_name, is_inserted, is_write_protected, connected_via, last_updated) 
@@ -1203,8 +1203,16 @@ func (db *DB) UpsertVirtualMediaResource(ctx context.Context, connectionMethodID
 			connected_via=excluded.connected_via,
 			last_updated=CURRENT_TIMESTAMP`
 
+	var imgURL, imgName interface{}
+	if currentImageURL != nil {
+		imgURL = *currentImageURL
+	}
+	if currentImageName != nil {
+		imgName = *currentImageName
+	}
+
 	_, err := db.conn.ExecContext(ctx, query, connectionMethodID, managerID, resourceID, odataID,
-		mediaTypes, supportedProtocols, currentImageURL, currentImageName, isInserted, isWriteProtected, connectedVia)
+		mediaTypes, supportedProtocols, imgURL, imgName, isInserted, isWriteProtected, connectedVia)
 	if err != nil {
 		return fmt.Errorf("failed to upsert virtual media resource: %w", err)
 	}

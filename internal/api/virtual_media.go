@@ -26,6 +26,34 @@ import (
 	"shoal/pkg/redfish"
 )
 
+// lookupConnectionMethodAndManager finds the connection method and manager ID for a given BMC name or ID
+func (h *Handler) lookupConnectionMethodAndManager(r *http.Request, bmcNameOrID string) (connectionMethodID, managerID string, err error) {
+	methods, err := h.bmcSvc.GetConnectionMethods(r.Context())
+	if err != nil {
+		return "", "", fmt.Errorf("failed to get connection methods: %w", err)
+	}
+
+	for _, method := range methods {
+		if method.Name == bmcNameOrID || method.ID == bmcNameOrID {
+			connectionMethodID = method.ID
+			if method.AggregatedManagers != "" {
+				var managers []map[string]interface{}
+				if err := json.Unmarshal([]byte(method.AggregatedManagers), &managers); err == nil && len(managers) > 0 {
+					if odataID, ok := managers[0]["@odata.id"].(string); ok {
+						parts := strings.Split(strings.Trim(odataID, "/"), "/")
+						if len(parts) >= 4 && parts[2] == "Managers" {
+							managerID = parts[3]
+						}
+					}
+				}
+			}
+			return connectionMethodID, managerID, nil
+		}
+	}
+
+	return "", "", fmt.Errorf("connection method not found")
+}
+
 // handleVirtualMediaCollection returns the VirtualMedia collection for a specific manager
 // GET /redfish/v1/Managers/{ManagerId}/VirtualMedia
 func (h *Handler) handleVirtualMediaCollection(w http.ResponseWriter, r *http.Request, bmcNameOrID string) {
@@ -38,43 +66,9 @@ func (h *Handler) handleVirtualMediaCollection(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	// Try to find connection method by name first (for legacy BMCs)
-	// For aggregated managers, the ID format is: {connectionMethodID}{downstreamPath}
-	// We need to parse this to get the connection method ID and manager ID
-
-	var connectionMethodID string
-	var managerID string
-
-	// Try to get connection method by name/ID
-	methods, err := h.bmcSvc.GetConnectionMethods(r.Context())
+	connectionMethodID, managerID, err := h.lookupConnectionMethodAndManager(r, bmcNameOrID)
 	if err != nil {
-		slog.Error("Failed to get connection methods", "error", err)
-		h.writeErrorResponse(w, http.StatusInternalServerError, "Base.1.0.InternalError", "Failed to retrieve connection methods")
-		return
-	}
-
-	// Find matching connection method
-	for _, method := range methods {
-		if method.Name == bmcNameOrID || method.ID == bmcNameOrID {
-			connectionMethodID = method.ID
-			// Parse aggregated managers to get the first manager ID
-			if method.AggregatedManagers != "" {
-				var managers []map[string]interface{}
-				if err := json.Unmarshal([]byte(method.AggregatedManagers), &managers); err == nil && len(managers) > 0 {
-					if odataID, ok := managers[0]["@odata.id"].(string); ok {
-						// Extract manager ID from path like "/redfish/v1/Managers/BMC"
-						parts := strings.Split(strings.Trim(odataID, "/"), "/")
-						if len(parts) >= 4 && parts[2] == "Managers" {
-							managerID = parts[3]
-						}
-					}
-				}
-			}
-			break
-		}
-	}
-
-	if connectionMethodID == "" {
+		slog.Error("Failed to lookup connection method", "error", err, "bmc", bmcNameOrID)
 		h.writeErrorResponse(w, http.StatusNotFound, "Base.1.0.ResourceNotFound", "Manager not found")
 		return
 	}
@@ -119,36 +113,9 @@ func (h *Handler) handleVirtualMedia(w http.ResponseWriter, r *http.Request, bmc
 		return
 	}
 
-	// Find connection method and manager ID (same logic as collection handler)
-	var connectionMethodID string
-	var managerID string
-
-	methods, err := h.bmcSvc.GetConnectionMethods(r.Context())
+	connectionMethodID, managerID, err := h.lookupConnectionMethodAndManager(r, bmcNameOrID)
 	if err != nil {
-		slog.Error("Failed to get connection methods", "error", err)
-		h.writeErrorResponse(w, http.StatusInternalServerError, "Base.1.0.InternalError", "Failed to retrieve connection methods")
-		return
-	}
-
-	for _, method := range methods {
-		if method.Name == bmcNameOrID || method.ID == bmcNameOrID {
-			connectionMethodID = method.ID
-			if method.AggregatedManagers != "" {
-				var managers []map[string]interface{}
-				if err := json.Unmarshal([]byte(method.AggregatedManagers), &managers); err == nil && len(managers) > 0 {
-					if odataID, ok := managers[0]["@odata.id"].(string); ok {
-						parts := strings.Split(strings.Trim(odataID, "/"), "/")
-						if len(parts) >= 4 && parts[2] == "Managers" {
-							managerID = parts[3]
-						}
-					}
-				}
-			}
-			break
-		}
-	}
-
-	if connectionMethodID == "" {
+		slog.Error("Failed to lookup connection method", "error", err, "bmc", bmcNameOrID)
 		h.writeErrorResponse(w, http.StatusNotFound, "Base.1.0.ResourceNotFound", "Manager not found")
 		return
 	}
