@@ -385,7 +385,7 @@ func (s *SerialConsoleSession) Connect() error {
     // 4. Update session state to 'active'
 }
 
-func (s *SerialConsoleSession) handleUserToB MC() {
+func (s *SerialConsoleSession) handleUserToBMC() {
     // Read from user WebSocket, send to BMC WebSocket
 }
 
@@ -782,10 +782,6 @@ New CLI flags and environment variables:
 ### Performance Testing
 - Max concurrent sessions per Shoal instance
 - Data throughput (bytes/sec for serial and graphical consoles)
-- Latency measurements (user input to BMC)
-- Resource usage (memory, CPU, goroutines)
-- WebSocket connection handling under load
-- Data throughput (bytes/sec for SOL, VNC)
 - Latency measurements (user input to BMC)
 - Resource usage (memory, CPU, goroutines)
 - WebSocket connection handling under load
