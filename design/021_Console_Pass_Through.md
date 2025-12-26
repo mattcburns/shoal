@@ -733,7 +733,7 @@ New CLI flags and environment variables:
 --console-max-sessions-per-bmc int      Max concurrent console sessions per BMC (default: 4)
 
 # Serial Console
---serial-console-enabled bool           Enable serial console via Redfish (default: true)
+--console-serial-enabled bool           Enable serial console via Redfish (default: true)
 
 # Graphical Console
 --graphical-console-enabled bool        Enable graphical console (default: true)
