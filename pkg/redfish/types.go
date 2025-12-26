@@ -190,3 +190,31 @@ type Task struct {
 	Name         string `json:"Name"`
 	TaskState    string `json:"TaskState"`
 }
+
+// VirtualMedia represents a Redfish VirtualMedia resource
+type VirtualMedia struct {
+	ODataContext         string               `json:"@odata.context"`
+	ODataID              string               `json:"@odata.id"`
+	ODataType            string               `json:"@odata.type"`
+	ID                   string               `json:"Id"`
+	Name                 string               `json:"Name"`
+	MediaTypes           []string             `json:"MediaTypes,omitempty"`
+	Image                string               `json:"Image,omitempty"`
+	ImageName            string               `json:"ImageName,omitempty"`
+	Inserted             bool                 `json:"Inserted"`
+	WriteProtected       bool                 `json:"WriteProtected"`
+	ConnectedVia         string               `json:"ConnectedVia,omitempty"`
+	TransferProtocolType string               `json:"TransferProtocolType,omitempty"`
+	Actions              *VirtualMediaActions `json:"Actions,omitempty"`
+}
+
+// VirtualMediaActions represents available actions for VirtualMedia
+type VirtualMediaActions struct {
+	InsertMedia *VirtualMediaAction `json:"#VirtualMedia.InsertMedia,omitempty"`
+	EjectMedia  *VirtualMediaAction `json:"#VirtualMedia.EjectMedia,omitempty"`
+}
+
+// VirtualMediaAction represents an action on VirtualMedia
+type VirtualMediaAction struct {
+	Target string `json:"target"`
+}

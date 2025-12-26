@@ -199,6 +199,26 @@ func (db *DB) Migrate(ctx context.Context) error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_settings_by_bmc_resource ON settings_descriptors(bmc_id, resource_path)`,
 		`CREATE INDEX IF NOT EXISTS idx_settings_by_bmc ON settings_descriptors(bmc_id)`,
+		// Virtual media resources
+		`CREATE TABLE IF NOT EXISTS virtual_media_resources (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			connection_method_id TEXT NOT NULL,
+			manager_id TEXT NOT NULL,
+			resource_id TEXT NOT NULL,
+			odata_id TEXT NOT NULL,
+			media_types TEXT,
+			supported_protocols TEXT,
+			current_image_url TEXT,
+			current_image_name TEXT,
+			is_inserted BOOLEAN DEFAULT 0,
+			is_write_protected BOOLEAN,
+			connected_via TEXT,
+			last_updated DATETIME DEFAULT CURRENT_TIMESTAMP,
+			FOREIGN KEY(connection_method_id) REFERENCES connection_methods(id) ON DELETE CASCADE,
+			UNIQUE(connection_method_id, manager_id, resource_id)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_vmr_connection ON virtual_media_resources(connection_method_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_vmr_manager ON virtual_media_resources(manager_id)`,
 	}
 
 	tx, err := db.conn.BeginTx(ctx, nil)
@@ -1043,3 +1063,151 @@ func (db *DB) UpdateConnectionMethodLastSeen(ctx context.Context, id string) err
 }
 
 // Profile operations removed in Design 014
+
+// VirtualMedia operations
+
+// VirtualMediaResource represents a cached virtual media resource
+type VirtualMediaResource struct {
+	ID                 int64
+	ConnectionMethodID string
+	ManagerID          string
+	ResourceID         string
+	ODataID            string
+	MediaTypes         string // JSON array
+	SupportedProtocols string // JSON array
+	CurrentImageURL    string
+	CurrentImageName   string
+	IsInserted         bool
+	IsWriteProtected   bool
+	ConnectedVia       string
+	LastUpdated        time.Time
+}
+
+// GetVirtualMediaResources returns all virtual media resources for a specific manager
+func (db *DB) GetVirtualMediaResources(ctx context.Context, connectionMethodID, managerID string) ([]VirtualMediaResource, error) {
+	query := `SELECT id, connection_method_id, manager_id, resource_id, odata_id, 
+		media_types, supported_protocols, current_image_url, current_image_name, 
+		is_inserted, is_write_protected, connected_via, last_updated 
+		FROM virtual_media_resources 
+		WHERE connection_method_id = ? AND manager_id = ?
+		ORDER BY resource_id`
+
+	rows, err := db.conn.QueryContext(ctx, query, connectionMethodID, managerID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query virtual media resources: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var resources []VirtualMediaResource
+	for rows.Next() {
+		var r VirtualMediaResource
+		var mediaTypes, supportedProtocols sql.NullString
+		var currentImageURL, currentImageName sql.NullString
+		var isWriteProtected sql.NullBool
+		var connectedVia sql.NullString
+
+		err := rows.Scan(&r.ID, &r.ConnectionMethodID, &r.ManagerID, &r.ResourceID, &r.ODataID,
+			&mediaTypes, &supportedProtocols, &currentImageURL, &currentImageName,
+			&r.IsInserted, &isWriteProtected, &connectedVia, &r.LastUpdated)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan virtual media resource: %w", err)
+		}
+
+		if mediaTypes.Valid {
+			r.MediaTypes = mediaTypes.String
+		}
+		if supportedProtocols.Valid {
+			r.SupportedProtocols = supportedProtocols.String
+		}
+		if currentImageURL.Valid {
+			r.CurrentImageURL = currentImageURL.String
+		}
+		if currentImageName.Valid {
+			r.CurrentImageName = currentImageName.String
+		}
+		if isWriteProtected.Valid {
+			r.IsWriteProtected = isWriteProtected.Bool
+		}
+		if connectedVia.Valid {
+			r.ConnectedVia = connectedVia.String
+		}
+
+		resources = append(resources, r)
+	}
+
+	return resources, rows.Err()
+}
+
+// GetVirtualMediaResource returns a specific virtual media resource
+func (db *DB) GetVirtualMediaResource(ctx context.Context, connectionMethodID, managerID, resourceID string) (*VirtualMediaResource, error) {
+	query := `SELECT id, connection_method_id, manager_id, resource_id, odata_id, 
+		media_types, supported_protocols, current_image_url, current_image_name, 
+		is_inserted, is_write_protected, connected_via, last_updated 
+		FROM virtual_media_resources 
+		WHERE connection_method_id = ? AND manager_id = ? AND resource_id = ?`
+
+	var r VirtualMediaResource
+	var mediaTypes, supportedProtocols sql.NullString
+	var currentImageURL, currentImageName sql.NullString
+	var isWriteProtected sql.NullBool
+	var connectedVia sql.NullString
+
+	err := db.conn.QueryRowContext(ctx, query, connectionMethodID, managerID, resourceID).Scan(
+		&r.ID, &r.ConnectionMethodID, &r.ManagerID, &r.ResourceID, &r.ODataID,
+		&mediaTypes, &supportedProtocols, &currentImageURL, &currentImageName,
+		&r.IsInserted, &isWriteProtected, &connectedVia, &r.LastUpdated)
+
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to get virtual media resource: %w", err)
+	}
+
+	if mediaTypes.Valid {
+		r.MediaTypes = mediaTypes.String
+	}
+	if supportedProtocols.Valid {
+		r.SupportedProtocols = supportedProtocols.String
+	}
+	if currentImageURL.Valid {
+		r.CurrentImageURL = currentImageURL.String
+	}
+	if currentImageName.Valid {
+		r.CurrentImageName = currentImageName.String
+	}
+	if isWriteProtected.Valid {
+		r.IsWriteProtected = isWriteProtected.Bool
+	}
+	if connectedVia.Valid {
+		r.ConnectedVia = connectedVia.String
+	}
+
+	return &r, nil
+}
+
+// UpsertVirtualMediaResource inserts or updates a virtual media resource
+func (db *DB) UpsertVirtualMediaResource(ctx context.Context, connectionMethodID, managerID, resourceID, odataID, mediaTypes, supportedProtocols string, currentImageURL, currentImageName interface{}, isInserted, isWriteProtected bool, connectedVia string) error {
+	query := `INSERT INTO virtual_media_resources 
+		(connection_method_id, manager_id, resource_id, odata_id, media_types, supported_protocols, 
+		 current_image_url, current_image_name, is_inserted, is_write_protected, connected_via, last_updated) 
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+		ON CONFLICT(connection_method_id, manager_id, resource_id) DO UPDATE SET
+			odata_id=excluded.odata_id,
+			media_types=excluded.media_types,
+			supported_protocols=excluded.supported_protocols,
+			current_image_url=excluded.current_image_url,
+			current_image_name=excluded.current_image_name,
+			is_inserted=excluded.is_inserted,
+			is_write_protected=excluded.is_write_protected,
+			connected_via=excluded.connected_via,
+			last_updated=CURRENT_TIMESTAMP`
+
+	_, err := db.conn.ExecContext(ctx, query, connectionMethodID, managerID, resourceID, odataID,
+		mediaTypes, supportedProtocols, currentImageURL, currentImageName, isInserted, isWriteProtected, connectedVia)
+	if err != nil {
+		return fmt.Errorf("failed to upsert virtual media resource: %w", err)
+	}
+
+	return nil
+}
