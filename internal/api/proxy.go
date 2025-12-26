@@ -46,6 +46,22 @@ func (h *Handler) handleBMCProxy(w http.ResponseWriter, r *http.Request, path st
 	// Handle different proxy patterns
 	if parts[1] == "Managers" && len(parts) >= 3 {
 		bmcName = parts[2]
+
+		// Check if this is a VirtualMedia request
+		if len(parts) >= 4 && parts[3] == "VirtualMedia" {
+			// VirtualMedia collection: /v1/Managers/{id}/VirtualMedia
+			if len(parts) == 4 {
+				h.handleVirtualMediaCollection(w, r, bmcName)
+				return
+			}
+			// VirtualMedia resource: /v1/Managers/{id}/VirtualMedia/{mediaId}
+			if len(parts) == 5 {
+				h.handleVirtualMedia(w, r, bmcName, parts[4])
+				return
+			}
+			// VirtualMedia actions not yet implemented, fall through to proxy
+		}
+
 		// Get the actual manager ID from the BMC
 		managerID, err := h.bmcSvc.GetFirstManagerID(r.Context(), bmcName)
 		if err != nil {
