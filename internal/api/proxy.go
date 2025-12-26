@@ -59,7 +59,18 @@ func (h *Handler) handleBMCProxy(w http.ResponseWriter, r *http.Request, path st
 				h.handleVirtualMedia(w, r, bmcName, parts[4])
 				return
 			}
-			// VirtualMedia actions not yet implemented, fall through to proxy
+			// VirtualMedia actions: /v1/Managers/{id}/VirtualMedia/{mediaId}/Actions/VirtualMedia.{Action}
+			if len(parts) == 7 && parts[5] == "Actions" {
+				mediaID := parts[4]
+				if parts[6] == "VirtualMedia.InsertMedia" {
+					h.handleInsertMedia(w, r, bmcName, mediaID)
+					return
+				}
+				if parts[6] == "VirtualMedia.EjectMedia" {
+					h.handleEjectMedia(w, r, bmcName, mediaID)
+					return
+				}
+			}
 		}
 
 		// Get the actual manager ID from the BMC

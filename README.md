@@ -8,6 +8,7 @@ Shoal is a Go-based Redfish aggregator that discovers and manages multiple Baseb
 - Aggregates many BMCs into one interface and API
 - Web UI for management, status, power control, and users
 - Settings discovery for BIOS, NICs, and storage (009)
+- Virtual Media management for remote ISO/disk image mounting (020)
 
 
 ## Documentation
