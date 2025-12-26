@@ -194,3 +194,69 @@ curl -X POST http://localhost:8080/redfish/v1/AggregationService/ConnectionMetho
     }
   }'
 ```
+
+## Virtual Media Management
+
+Shoal provides DMTF Redfish-compliant VirtualMedia endpoints for attaching and ejecting virtual media (ISO images, disk images) to/from managed BMCs.
+
+### Endpoints
+
+- `GET /redfish/v1/Managers/{bmc-name}/VirtualMedia`: List virtual media resources for a specific manager.
+- `GET /redfish/v1/Managers/{bmc-name}/VirtualMedia/{mediaId}`: Get details of a specific virtual media resource.
+- `POST /redfish/v1/Managers/{bmc-name}/VirtualMedia/{mediaId}/Actions/VirtualMedia.InsertMedia`: Attach virtual media from an external image URL.
+- `POST /redfish/v1/Managers/{bmc-name}/VirtualMedia/{mediaId}/Actions/VirtualMedia.EjectMedia`: Detach currently attached virtual media.
+
+### Insert Media
+
+Attach an ISO or disk image to a virtual media slot. The BMC will download the image from the provided URL.
+
+**Request:**
+```bash
+curl -X POST \
+  http://localhost:8080/redfish/v1/Managers/bmc1/VirtualMedia/CD1/Actions/VirtualMedia.InsertMedia \
+  -H "X-Auth-Token: <token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "Image": "http://fileserver.example.com/ubuntu-22.04.iso",
+    "Inserted": true,
+    "WriteProtected": true
+  }'
+```
+
+**Parameters:**
+- `Image` (required): URL of the image file (HTTP, HTTPS, NFS, or CIFS).
+- `Inserted` (optional): Whether to insert the media (default: true).
+- `WriteProtected` (optional): Whether the media is write-protected (default: false).
+- `TransferProtocolType` (optional): Protocol type (e.g., "HTTP", "HTTPS", "NFS").
+- `UserName` (optional): Username for authenticated image servers.
+- `Password` (optional): Password for authenticated image servers.
+
+**Response:** `204 No Content` on success.
+
+**Operation Tracking:** Each InsertMedia operation is recorded in Shoal's database with status tracking (pending → success/failed), username, timestamp, and any error messages.
+
+### Eject Media
+
+Detach currently attached virtual media from a slot.
+
+**Request:**
+```bash
+curl -X POST \
+  http://localhost:8080/redfish/v1/Managers/bmc1/VirtualMedia/CD1/Actions/VirtualMedia.EjectMedia \
+  -H "X-Auth-Token: <token>" \
+  -H "Content-Type: application/json" \
+  -d '{}'
+```
+
+**Response:** `204 No Content` on success.
+
+**State Updates:** After successful eject, the resource state is updated to clear the image URL and set `Inserted` to false.
+
+### Error Handling
+
+- `400 Bad Request`: Missing required fields or invalid request format.
+- `404 Not Found`: Manager or VirtualMedia resource not found.
+- `502 Bad Gateway`: BMC communication failure.
+- Errors from the downstream BMC are forwarded with original status codes and response bodies.
+
+All VirtualMedia operations require authentication (session token or basic auth).
