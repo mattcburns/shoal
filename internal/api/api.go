@@ -56,10 +56,10 @@ const (
 
 // Handler implements the Redfish API endpoints
 type Handler struct {
-	db              *database.DB
-	auth            *auth.Authenticator
-	bmcSvc          *bmc.Service
-	imageProxyURL   string // Base URL for image proxy (empty if disabled)
+	db            *database.DB
+	auth          *auth.Authenticator
+	bmcSvc        *bmc.Service
+	imageProxyURL string // Base URL for image proxy (empty if disabled)
 }
 
 // ImageProxyConfig holds configuration for URL rewriting

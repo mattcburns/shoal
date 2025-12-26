@@ -39,7 +39,7 @@ func NewRouterWithImageProxy(db *database.DB, proxyConfig *ImageProxyConfig) htt
 	if proxyConfig != nil && proxyConfig.Enabled {
 		imageProxyURL = proxyConfig.BaseURL
 	}
-	
+
 	h := &Handler{
 		db:            db,
 		auth:          auth.New(db),

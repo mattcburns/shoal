@@ -133,7 +133,7 @@ func TestServer_ServeHTTP_RangeRequest(t *testing.T) {
 	// Create a test HTTP server that supports Range requests
 	imageServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		data := []byte("0123456789")
-		
+
 		rangeHeader := r.Header.Get("Range")
 		if rangeHeader != "" {
 			// Simple range parsing (just for testing)
@@ -148,7 +148,7 @@ func TestServer_ServeHTTP_RangeRequest(t *testing.T) {
 				}
 			}
 		}
-		
+
 		w.Header().Set("Content-Type", "application/octet-stream")
 		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(data)))
 		_, _ = w.Write(data)
@@ -388,11 +388,11 @@ func TestServer_HeadRequest(t *testing.T) {
 
 func TestGetClientIP(t *testing.T) {
 	tests := []struct {
-		name           string
-		remoteAddr     string
-		xForwardedFor  string
-		xRealIP        string
-		expectedIP     string
+		name          string
+		remoteAddr    string
+		xForwardedFor string
+		xRealIP       string
+		expectedIP    string
 	}{
 		{
 			name:       "from RemoteAddr",

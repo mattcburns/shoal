@@ -25,16 +25,16 @@ import (
 type Config struct {
 	// Port is the port to listen on
 	Port string
-	
+
 	// AllowedDomains is a list of allowed domain patterns (use "*" for all)
 	AllowedDomains []string
-	
+
 	// AllowedSubnets is a list of allowed IP subnets in CIDR notation
 	AllowedSubnets []*net.IPNet
-	
+
 	// RateLimit is the maximum concurrent downloads per IP
 	RateLimit int
-	
+
 	// DisableSSRFProtection disables SSRF protection (for testing only)
 	DisableSSRFProtection bool
 }
@@ -45,7 +45,7 @@ func NewConfig(port, allowedDomains, allowedSubnets string, rateLimit int) (*Con
 		Port:      port,
 		RateLimit: rateLimit,
 	}
-	
+
 	// Parse allowed domains
 	if allowedDomains == "" || allowedDomains == "*" {
 		cfg.AllowedDomains = []string{"*"}
@@ -55,7 +55,7 @@ func NewConfig(port, allowedDomains, allowedSubnets string, rateLimit int) (*Con
 			cfg.AllowedDomains[i] = strings.TrimSpace(cfg.AllowedDomains[i])
 		}
 	}
-	
+
 	// Parse allowed subnets
 	if allowedSubnets != "" {
 		subnets := strings.Split(allowedSubnets, ",")
@@ -72,6 +72,6 @@ func NewConfig(port, allowedDomains, allowedSubnets string, rateLimit int) (*Con
 			cfg.AllowedSubnets = append(cfg.AllowedSubnets, ipNet)
 		}
 	}
-	
+
 	return cfg, nil
 }

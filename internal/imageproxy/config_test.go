@@ -83,7 +83,7 @@ func TestNewConfig(t *testing.T) {
 			if tt.wantErr {
 				return
 			}
-			
+
 			if cfg.Port != tt.port {
 				t.Errorf("Port = %v, want %v", cfg.Port, tt.port)
 			}

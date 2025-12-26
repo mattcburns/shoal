@@ -473,16 +473,15 @@ func (h *Handler) rewriteImageURL(imageURL string) string {
 	if h.imageProxyURL == "" {
 		return imageURL
 	}
-	
+
 	// Only rewrite HTTP/HTTPS URLs
 	if !strings.HasPrefix(imageURL, "http://") && !strings.HasPrefix(imageURL, "https://") {
 		return imageURL
 	}
-	
+
 	// URL-encode the image URL for the proxy parameter
 	encodedURL := url.QueryEscape(imageURL)
-	
+
 	// Build proxy URL: http://shoal:8082/proxy?url=<encoded-url>
 	return fmt.Sprintf("%s/proxy?url=%s", h.imageProxyURL, encodedURL)
 }
-

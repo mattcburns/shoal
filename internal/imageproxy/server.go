@@ -228,18 +228,18 @@ func (s *Server) isDomainAllowed(host string) bool {
 		if domain == "*" {
 			return true
 		}
-		
+
 		// Extract hostname without port
 		hostname := host
 		if idx := strings.LastIndex(host, ":"); idx != -1 {
 			hostname = host[:idx]
 		}
-		
+
 		// Exact match
 		if domain == hostname {
 			return true
 		}
-		
+
 		// Wildcard subdomain match (e.g., *.example.com)
 		if strings.HasPrefix(domain, "*.") {
 			suffix := domain[1:] // Remove the *
@@ -256,7 +256,7 @@ func (s *Server) isDomainAllowed(host string) bool {
 func (s *Server) validateTargetURL(u *url.URL) error {
 	// Extract hostname
 	hostname := u.Hostname()
-	
+
 	// Resolve hostname to IP addresses
 	ips, err := net.LookupIP(hostname)
 	if err != nil {
@@ -287,9 +287,9 @@ func isPrivateIP(ip net.IP) bool {
 
 	// Private IPv6 ranges
 	privateIPv6Ranges := []string{
-		"::1/128",       // Loopback
-		"fe80::/10",     // Link-local
-		"fc00::/7",      // Unique local addresses
+		"::1/128",   // Loopback
+		"fe80::/10", // Link-local
+		"fc00::/7",  // Unique local addresses
 	}
 
 	// Check IPv4
@@ -344,10 +344,10 @@ func (rl *rateLimiter) acquire(ip string) bool {
 	// For simplicity, we just track concurrent requests
 	// A more sophisticated implementation would use a sliding window
 	count := rl.counters[ip]
-	
+
 	// This is a placeholder - the actual rate limit is enforced at acquisition time
 	// In a real implementation, you'd want a proper rate limiter with time windows
-	
+
 	rl.counters[ip] = count + 1
 	return true
 }
