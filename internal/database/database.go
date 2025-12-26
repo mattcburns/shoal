@@ -219,6 +219,21 @@ func (db *DB) Migrate(ctx context.Context) error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_vmr_connection ON virtual_media_resources(connection_method_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_vmr_manager ON virtual_media_resources(manager_id)`,
+		// Virtual media operations tracking
+		`CREATE TABLE IF NOT EXISTS virtual_media_operations (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			virtual_media_resource_id INTEGER NOT NULL,
+			operation TEXT NOT NULL,
+			image_url TEXT,
+			requested_by TEXT,
+			requested_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			status TEXT DEFAULT 'pending',
+			error_message TEXT,
+			completed_at DATETIME,
+			FOREIGN KEY(virtual_media_resource_id) REFERENCES virtual_media_resources(id) ON DELETE CASCADE
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_vmo_resource ON virtual_media_operations(virtual_media_resource_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_vmo_status ON virtual_media_operations(status)`,
 	}
 
 	tx, err := db.conn.BeginTx(ctx, nil)
@@ -1215,6 +1230,138 @@ func (db *DB) UpsertVirtualMediaResource(ctx context.Context, connectionMethodID
 		mediaTypes, supportedProtocols, imgURL, imgName, isInserted, isWriteProtected, connectedVia)
 	if err != nil {
 		return fmt.Errorf("failed to upsert virtual media resource: %w", err)
+	}
+
+	return nil
+}
+
+// VirtualMediaOperation represents an insert/eject operation on virtual media
+type VirtualMediaOperation struct {
+	ID                     int64
+	VirtualMediaResourceID int64
+	Operation              string // 'insert' or 'eject'
+	ImageURL               string
+	RequestedBy            string
+	RequestedAt            time.Time
+	Status                 string // 'pending', 'success', 'failed'
+	ErrorMessage           string
+	CompletedAt            *time.Time
+}
+
+// CreateVirtualMediaOperation records a new virtual media operation
+func (db *DB) CreateVirtualMediaOperation(ctx context.Context, op *VirtualMediaOperation) error {
+	query := `INSERT INTO virtual_media_operations 
+		(virtual_media_resource_id, operation, image_url, requested_by, status, error_message) 
+		VALUES (?, ?, ?, ?, ?, ?)`
+
+	result, err := db.conn.ExecContext(ctx, query, op.VirtualMediaResourceID, op.Operation,
+		op.ImageURL, op.RequestedBy, op.Status, op.ErrorMessage)
+	if err != nil {
+		return fmt.Errorf("failed to create virtual media operation: %w", err)
+	}
+
+	id, err := result.LastInsertId()
+	if err != nil {
+		return fmt.Errorf("failed to get last insert ID: %w", err)
+	}
+
+	op.ID = id
+	op.RequestedAt = time.Now()
+
+	return nil
+}
+
+// GetVirtualMediaOperation returns a specific operation by ID
+func (db *DB) GetVirtualMediaOperation(ctx context.Context, id int64) (*VirtualMediaOperation, error) {
+	query := `SELECT id, virtual_media_resource_id, operation, image_url, requested_by, 
+		requested_at, status, error_message, completed_at 
+		FROM virtual_media_operations WHERE id = ?`
+
+	var op VirtualMediaOperation
+	var imageURL, requestedBy, errorMessage sql.NullString
+	var completedAt sql.NullTime
+
+	err := db.conn.QueryRowContext(ctx, query, id).Scan(
+		&op.ID, &op.VirtualMediaResourceID, &op.Operation, &imageURL, &requestedBy,
+		&op.RequestedAt, &op.Status, &errorMessage, &completedAt)
+
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to get virtual media operation: %w", err)
+	}
+
+	if imageURL.Valid {
+		op.ImageURL = imageURL.String
+	}
+	if requestedBy.Valid {
+		op.RequestedBy = requestedBy.String
+	}
+	if errorMessage.Valid {
+		op.ErrorMessage = errorMessage.String
+	}
+	if completedAt.Valid {
+		op.CompletedAt = &completedAt.Time
+	}
+
+	return &op, nil
+}
+
+// GetVirtualMediaOperations returns all operations for a specific virtual media resource
+func (db *DB) GetVirtualMediaOperations(ctx context.Context, resourceID int64) ([]VirtualMediaOperation, error) {
+	query := `SELECT id, virtual_media_resource_id, operation, image_url, requested_by, 
+		requested_at, status, error_message, completed_at 
+		FROM virtual_media_operations 
+		WHERE virtual_media_resource_id = ?
+		ORDER BY requested_at DESC`
+
+	rows, err := db.conn.QueryContext(ctx, query, resourceID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query virtual media operations: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var operations []VirtualMediaOperation
+	for rows.Next() {
+		var op VirtualMediaOperation
+		var imageURL, requestedBy, errorMessage sql.NullString
+		var completedAt sql.NullTime
+
+		err := rows.Scan(&op.ID, &op.VirtualMediaResourceID, &op.Operation, &imageURL, &requestedBy,
+			&op.RequestedAt, &op.Status, &errorMessage, &completedAt)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan virtual media operation: %w", err)
+		}
+
+		if imageURL.Valid {
+			op.ImageURL = imageURL.String
+		}
+		if requestedBy.Valid {
+			op.RequestedBy = requestedBy.String
+		}
+		if errorMessage.Valid {
+			op.ErrorMessage = errorMessage.String
+		}
+		if completedAt.Valid {
+			op.CompletedAt = &completedAt.Time
+		}
+
+		operations = append(operations, op)
+	}
+
+	return operations, rows.Err()
+}
+
+// UpdateVirtualMediaOperationStatus updates the status of an operation
+func (db *DB) UpdateVirtualMediaOperationStatus(ctx context.Context, id int64, status, errorMessage string) error {
+	query := `UPDATE virtual_media_operations 
+		SET status = ?, error_message = ?, completed_at = CURRENT_TIMESTAMP 
+		WHERE id = ?`
+
+	_, err := db.conn.ExecContext(ctx, query, status, errorMessage, id)
+	if err != nil {
+		return fmt.Errorf("failed to update virtual media operation status: %w", err)
 	}
 
 	return nil
