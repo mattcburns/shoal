@@ -31,6 +31,7 @@ import (
 
 	"shoal/internal/api"
 	"shoal/internal/database"
+	"shoal/internal/imageproxy"
 	"shoal/internal/logging"
 	"shoal/internal/web"
 	"shoal/pkg/auth"
@@ -43,6 +44,13 @@ func main() {
 		dbPath        = flag.String("db", "shoal.db", "SQLite database path")
 		logLevel      = flag.String("log-level", "info", "Log level (debug, info, warn, error)")
 		encryptionKey = flag.String("encryption-key", "", "Encryption key for BMC passwords (uses SHOAL_ENCRYPTION_KEY env var if not set)")
+		
+		// Image proxy configuration
+		enableImageProxy      = flag.Bool("enable-image-proxy", false, "Enable HTTP image proxy for BMCs")
+		imageProxyPort        = flag.String("image-proxy-port", "8082", "Port for image proxy server")
+		imageProxyAllowedDomains = flag.String("image-proxy-allowed-domains", "*", "Comma-separated list of allowed domains (* for all)")
+		imageProxyAllowedSubnets = flag.String("image-proxy-allowed-subnets", "", "Comma-separated list of allowed IP subnets (CIDR notation)")
+		imageProxyRateLimit   = flag.Int("image-proxy-rate-limit", 10, "Max concurrent downloads per IP")
 	)
 	flag.Parse()
 
@@ -85,13 +93,58 @@ func main() {
 	// Initialize HTTP server
 	mux := http.NewServeMux()
 
-	// Register API routes
-	apiHandler := api.New(db)
+	// Determine image proxy base URL for API handler
+	var imageProxyBaseURL string
+	if *enableImageProxy {
+		// Use localhost for internal communication
+		imageProxyBaseURL = fmt.Sprintf("http://localhost:%s", *imageProxyPort)
+	}
+
+	// Register API routes with image proxy configuration
+	var apiHandler http.Handler
+	if *enableImageProxy {
+		apiHandler = api.NewWithImageProxy(db, &api.ImageProxyConfig{
+			Enabled: true,
+			BaseURL: imageProxyBaseURL,
+		})
+	} else {
+		apiHandler = api.New(db)
+	}
 	mux.Handle("/redfish/", apiHandler)
 
 	// Register web interface routes
 	webHandler := web.New(db)
 	mux.Handle("/", webHandler)
+
+	// Start image proxy server if enabled
+	var proxyServer *http.Server
+	if *enableImageProxy {
+		proxyConfig, err := imageproxy.NewConfig(*imageProxyPort, *imageProxyAllowedDomains, *imageProxyAllowedSubnets, *imageProxyRateLimit)
+		if err != nil {
+			slog.Error("Failed to create image proxy config", "error", err)
+			os.Exit(1)
+		}
+		
+		proxyHandler := imageproxy.NewServer(proxyConfig)
+		proxyMux := http.NewServeMux()
+		proxyMux.Handle("/proxy", proxyHandler)
+		
+		proxyServer = &http.Server{
+			Addr:         ":" + *imageProxyPort,
+			Handler:      proxyMux,
+			ReadTimeout:  5 * time.Minute,  // Longer timeout for large images
+			WriteTimeout: 5 * time.Minute,
+			IdleTimeout:  120 * time.Second,
+		}
+		
+		go func() {
+			slog.Info("Starting image proxy server", "port", *imageProxyPort)
+			if err := proxyServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				slog.Error("Image proxy server failed to start", "error", err)
+				os.Exit(1)
+			}
+		}()
+	}
 
 	server := &http.Server{
 		Addr:         ":" + *port,
@@ -118,11 +171,19 @@ func main() {
 	slog.Info("Shutting down server...")
 
 	// Create context with timeout for graceful shutdown
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	if err := server.Shutdown(ctx); err != nil {
+	// Shutdown main server
+	if err := server.Shutdown(shutdownCtx); err != nil {
 		slog.Error("Server forced to shutdown", "error", err)
+	}
+	
+	// Shutdown proxy server if it was started
+	if proxyServer != nil {
+		if err := proxyServer.Shutdown(shutdownCtx); err != nil {
+			slog.Error("Image proxy server forced to shutdown", "error", err)
+		}
 	}
 
 	slog.Info("Server exited")

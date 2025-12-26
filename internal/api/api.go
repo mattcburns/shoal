@@ -56,14 +56,26 @@ const (
 
 // Handler implements the Redfish API endpoints
 type Handler struct {
-	db     *database.DB
-	auth   *auth.Authenticator
-	bmcSvc *bmc.Service
+	db              *database.DB
+	auth            *auth.Authenticator
+	bmcSvc          *bmc.Service
+	imageProxyURL   string // Base URL for image proxy (empty if disabled)
+}
+
+// ImageProxyConfig holds configuration for URL rewriting
+type ImageProxyConfig struct {
+	Enabled bool
+	BaseURL string // e.g., "http://localhost:8082"
 }
 
 // New creates a new API handler
 func New(db *database.DB) http.Handler {
 	return NewRouter(db)
+}
+
+// NewWithImageProxy creates a new API handler with image proxy configuration
+func NewWithImageProxy(db *database.DB, proxyConfig *ImageProxyConfig) http.Handler {
+	return NewRouterWithImageProxy(db, proxyConfig)
 }
 
 // handleRedfish routes Redfish API requests
