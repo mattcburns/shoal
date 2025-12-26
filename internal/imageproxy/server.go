@@ -285,30 +285,50 @@ func (s *Server) validateTargetURL(u *url.URL) error {
 // initPrivateIPs initializes the private IP range lists
 func initPrivateIPs() {
 	initPrivateIPsOnce.Do(func() {
-		// Private IPv4 ranges
+		// Private and restricted IPv4 ranges (SSRF protection)
 		privateIPv4Ranges := []string{
-			"10.0.0.0/8",     // RFC1918
-			"172.16.0.0/12",  // RFC1918
-			"192.168.0.0/16", // RFC1918
-			"127.0.0.0/8",    // Loopback
-			"169.254.0.0/16", // Link-local
-			"0.0.0.0/8",      // "This network"
+			"0.0.0.0/8",          // "This network" (RFC 1122)
+			"10.0.0.0/8",         // Private network (RFC 1918)
+			"127.0.0.0/8",        // Loopback (RFC 1122)
+			"169.254.0.0/16",     // Link-local (RFC 3927)
+			"172.16.0.0/12",      // Private network (RFC 1918)
+			"192.0.2.0/24",       // Documentation (RFC 5737)
+			"192.168.0.0/16",     // Private network (RFC 1918)
+			"198.51.100.0/24",    // Documentation (RFC 5737)
+			"203.0.113.0/24",     // Documentation (RFC 5737)
+			"224.0.0.0/4",        // Multicast (RFC 5771)
+			"240.0.0.0/4",        // Reserved (RFC 1112)
+			"255.255.255.255/32", // Broadcast
 		}
 
-		// Private IPv6 ranges
+		// Private and restricted IPv6 ranges
 		privateIPv6Ranges := []string{
-			"::1/128",   // Loopback
-			"fe80::/10", // Link-local
-			"fc00::/7",  // Unique local addresses
+			"::1/128",       // Loopback
+			"fe80::/10",     // Link-local
+			"fc00::/7",      // Unique local addresses
+			"ff00::/8",      // Multicast
+			"2001:db8::/32", // Documentation
 		}
 
 		for _, cidr := range privateIPv4Ranges {
-			_, network, _ := net.ParseCIDR(cidr)
+			// These are hardcoded CIDR strings that are guaranteed to be valid
+			_, network, err := net.ParseCIDR(cidr)
+			if err != nil {
+				// This should never happen with hardcoded values, but log if it does
+				slog.Error("Failed to parse hardcoded CIDR", "cidr", cidr, "error", err)
+				continue
+			}
 			privateIPv4Networks = append(privateIPv4Networks, network)
 		}
 
 		for _, cidr := range privateIPv6Ranges {
-			_, network, _ := net.ParseCIDR(cidr)
+			// These are hardcoded CIDR strings that are guaranteed to be valid
+			_, network, err := net.ParseCIDR(cidr)
+			if err != nil {
+				// This should never happen with hardcoded values, but log if it does
+				slog.Error("Failed to parse hardcoded CIDR", "cidr", cidr, "error", err)
+				continue
+			}
 			privateIPv6Networks = append(privateIPv6Networks, network)
 		}
 	})
