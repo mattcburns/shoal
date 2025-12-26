@@ -56,9 +56,15 @@ For each enabled `ConnectionMethod`:
 
 ### Implementation Location
 
-```
-internal/bmc/sync.go  (new file)
-```
+**Implemented in:** `internal/bmc/vmedia_sync.go`
+
+The VirtualMediaSyncer is fully implemented with the following features:
+- Periodic sync loop with configurable interval
+- Graceful start/stop with context cancellation support
+- Per-connection-method syncing
+- Per-manager virtual media collection querying
+- State change detection and logging
+- Error handling with partial failure tolerance
 
 ### Key Functions
 
@@ -170,12 +176,12 @@ SHOAL_VMEDIA_SYNC_INTERVAL=60
 ### Phase 1: Basic Implementation (Current)
 - Database schema and CRUD operations ✅
 - Documentation of sync design ✅
+- Background job implementation ✅
 
-### Phase 2: Background Job Implementation (Next)
-- Implement `VirtualMediaSyncer` in `internal/bmc/sync.go`
-- Add CLI flags and configuration
-- Integrate with main application
-- Add unit tests
+### Phase 2: API Handlers (Next)
+- Implement VirtualMedia collection/resource endpoints
+- Implement InsertMedia/EjectMedia action handlers
+- Add API integration tests
 
 ### Phase 3: Enhanced Observability (Future)
 - Add structured logging
