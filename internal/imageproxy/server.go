@@ -28,6 +28,13 @@ import (
 	"time"
 )
 
+// Pre-parsed private IP ranges for SSRF protection
+var (
+	privateIPv4Networks []*net.IPNet
+	privateIPv6Networks []*net.IPNet
+	initPrivateIPsOnce  sync.Once
+)
+
 // Server is an HTTP image proxy server
 type Server struct {
 	config      *Config
@@ -39,6 +46,7 @@ type Server struct {
 type rateLimiter struct {
 	mu       sync.Mutex
 	counters map[string]int
+	maxPerIP int
 }
 
 // NewServer creates a new image proxy server
@@ -57,6 +65,7 @@ func NewServer(config *Config) *Server {
 		},
 		rateLimiter: &rateLimiter{
 			counters: make(map[string]int),
+			maxPerIP: config.RateLimit,
 		},
 	}
 }
@@ -273,29 +282,46 @@ func (s *Server) validateTargetURL(u *url.URL) error {
 	return nil
 }
 
+// initPrivateIPs initializes the private IP range lists
+func initPrivateIPs() {
+	initPrivateIPsOnce.Do(func() {
+		// Private IPv4 ranges
+		privateIPv4Ranges := []string{
+			"10.0.0.0/8",     // RFC1918
+			"172.16.0.0/12",  // RFC1918
+			"192.168.0.0/16", // RFC1918
+			"127.0.0.0/8",    // Loopback
+			"169.254.0.0/16", // Link-local
+			"0.0.0.0/8",      // "This network"
+		}
+
+		// Private IPv6 ranges
+		privateIPv6Ranges := []string{
+			"::1/128",   // Loopback
+			"fe80::/10", // Link-local
+			"fc00::/7",  // Unique local addresses
+		}
+
+		for _, cidr := range privateIPv4Ranges {
+			_, network, _ := net.ParseCIDR(cidr)
+			privateIPv4Networks = append(privateIPv4Networks, network)
+		}
+
+		for _, cidr := range privateIPv6Ranges {
+			_, network, _ := net.ParseCIDR(cidr)
+			privateIPv6Networks = append(privateIPv6Networks, network)
+		}
+	})
+}
+
 // isPrivateIP checks if an IP is in a private range
 func isPrivateIP(ip net.IP) bool {
-	// Private IPv4 ranges
-	privateIPv4Ranges := []string{
-		"10.0.0.0/8",     // RFC1918
-		"172.16.0.0/12",  // RFC1918
-		"192.168.0.0/16", // RFC1918
-		"127.0.0.0/8",    // Loopback
-		"169.254.0.0/16", // Link-local
-		"0.0.0.0/8",      // "This network"
-	}
-
-	// Private IPv6 ranges
-	privateIPv6Ranges := []string{
-		"::1/128",   // Loopback
-		"fe80::/10", // Link-local
-		"fc00::/7",  // Unique local addresses
-	}
+	// Ensure private IPs are initialized
+	initPrivateIPs()
 
 	// Check IPv4
 	if ip.To4() != nil {
-		for _, cidr := range privateIPv4Ranges {
-			_, network, _ := net.ParseCIDR(cidr)
+		for _, network := range privateIPv4Networks {
 			if network.Contains(ip) {
 				return true
 			}
@@ -304,8 +330,7 @@ func isPrivateIP(ip net.IP) bool {
 	}
 
 	// Check IPv6
-	for _, cidr := range privateIPv6Ranges {
-		_, network, _ := net.ParseCIDR(cidr)
+	for _, network := range privateIPv6Networks {
 		if network.Contains(ip) {
 			return true
 		}
@@ -341,12 +366,12 @@ func (rl *rateLimiter) acquire(ip string) bool {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
 
-	// For simplicity, we just track concurrent requests
-	// A more sophisticated implementation would use a sliding window
 	count := rl.counters[ip]
 
-	// This is a placeholder - the actual rate limit is enforced at acquisition time
-	// In a real implementation, you'd want a proper rate limiter with time windows
+	// Check if rate limit would be exceeded
+	if count >= rl.maxPerIP {
+		return false
+	}
 
 	rl.counters[ip] = count + 1
 	return true
