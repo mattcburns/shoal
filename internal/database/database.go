@@ -1237,15 +1237,15 @@ func (db *DB) UpsertVirtualMediaResource(ctx context.Context, connectionMethodID
 
 // VirtualMediaOperation represents an insert/eject operation on virtual media
 type VirtualMediaOperation struct {
-	ID                      int64
-	VirtualMediaResourceID  int64
-	Operation               string // 'insert' or 'eject'
-	ImageURL                string
-	RequestedBy             string
-	RequestedAt             time.Time
-	Status                  string // 'pending', 'success', 'failed'
-	ErrorMessage            string
-	CompletedAt             *time.Time
+	ID                     int64
+	VirtualMediaResourceID int64
+	Operation              string // 'insert' or 'eject'
+	ImageURL               string
+	RequestedBy            string
+	RequestedAt            time.Time
+	Status                 string // 'pending', 'success', 'failed'
+	ErrorMessage           string
+	CompletedAt            *time.Time
 }
 
 // CreateVirtualMediaOperation records a new virtual media operation
@@ -1254,7 +1254,7 @@ func (db *DB) CreateVirtualMediaOperation(ctx context.Context, op *VirtualMediaO
 		(virtual_media_resource_id, operation, image_url, requested_by, status, error_message) 
 		VALUES (?, ?, ?, ?, ?, ?)`
 
-	result, err := db.conn.ExecContext(ctx, query, op.VirtualMediaResourceID, op.Operation, 
+	result, err := db.conn.ExecContext(ctx, query, op.VirtualMediaResourceID, op.Operation,
 		op.ImageURL, op.RequestedBy, op.Status, op.ErrorMessage)
 	if err != nil {
 		return fmt.Errorf("failed to create virtual media operation: %w", err)

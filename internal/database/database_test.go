@@ -66,6 +66,168 @@ func TestMigrate(t *testing.T) {
 	}
 }
 
+func TestMigrate_VirtualMediaTables(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test.db")
+
+	db, err := New(dbPath)
+	if err != nil {
+		t.Fatalf("Failed to create database: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	ctx := context.Background()
+	err = db.Migrate(ctx)
+	if err != nil {
+		t.Fatalf("Migration failed: %v", err)
+	}
+
+	// Test 1: Verify virtual_media_resources table exists and has correct schema
+	t.Run("virtual_media_resources table", func(t *testing.T) {
+		rows, err := db.conn.QueryContext(ctx, "PRAGMA table_info(virtual_media_resources)")
+		if err != nil {
+			t.Fatalf("Failed to query table info: %v", err)
+		}
+		defer rows.Close()
+
+		expectedColumns := map[string]bool{
+			"id":                   false,
+			"connection_method_id": false,
+			"manager_id":           false,
+			"resource_id":          false,
+			"odata_id":             false,
+			"media_types":          false,
+			"supported_protocols":  false,
+			"current_image_url":    false,
+			"current_image_name":   false,
+			"is_inserted":          false,
+			"is_write_protected":   false,
+			"connected_via":        false,
+			"last_updated":         false,
+		}
+
+		for rows.Next() {
+			var cid int
+			var name, ctype string
+			var notnull, dfltValue, pk interface{}
+			if err := rows.Scan(&cid, &name, &ctype, &notnull, &dfltValue, &pk); err != nil {
+				t.Fatalf("Failed to scan column info: %v", err)
+			}
+			if _, exists := expectedColumns[name]; exists {
+				expectedColumns[name] = true
+			}
+		}
+
+		// Verify all expected columns were found
+		for col, found := range expectedColumns {
+			if !found {
+				t.Errorf("Expected column %s not found in virtual_media_resources table", col)
+			}
+		}
+	})
+
+	// Test 2: Verify virtual_media_operations table exists and has correct schema
+	t.Run("virtual_media_operations table", func(t *testing.T) {
+		rows, err := db.conn.QueryContext(ctx, "PRAGMA table_info(virtual_media_operations)")
+		if err != nil {
+			t.Fatalf("Failed to query table info: %v", err)
+		}
+		defer rows.Close()
+
+		expectedColumns := map[string]bool{
+			"id":                        false,
+			"virtual_media_resource_id": false,
+			"operation":                 false,
+			"image_url":                 false,
+			"requested_by":              false,
+			"requested_at":              false,
+			"status":                    false,
+			"error_message":             false,
+			"completed_at":              false,
+		}
+
+		for rows.Next() {
+			var cid int
+			var name, ctype string
+			var notnull, dfltValue, pk interface{}
+			if err := rows.Scan(&cid, &name, &ctype, &notnull, &dfltValue, &pk); err != nil {
+				t.Fatalf("Failed to scan column info: %v", err)
+			}
+			if _, exists := expectedColumns[name]; exists {
+				expectedColumns[name] = true
+			}
+		}
+
+		// Verify all expected columns were found
+		for col, found := range expectedColumns {
+			if !found {
+				t.Errorf("Expected column %s not found in virtual_media_operations table", col)
+			}
+		}
+	})
+
+	// Test 3: Verify indexes exist
+	t.Run("indexes", func(t *testing.T) {
+		rows, err := db.conn.QueryContext(ctx, "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name IN ('virtual_media_resources', 'virtual_media_operations')")
+		if err != nil {
+			t.Fatalf("Failed to query indexes: %v", err)
+		}
+		defer rows.Close()
+
+		expectedIndexes := map[string]bool{
+			"idx_vmr_connection": false,
+			"idx_vmr_manager":    false,
+			"idx_vmo_resource":   false,
+			"idx_vmo_status":     false,
+		}
+
+		for rows.Next() {
+			var name string
+			if err := rows.Scan(&name); err != nil {
+				t.Fatalf("Failed to scan index name: %v", err)
+			}
+			if _, exists := expectedIndexes[name]; exists {
+				expectedIndexes[name] = true
+			}
+		}
+
+		// Verify all expected indexes were found
+		for idx, found := range expectedIndexes {
+			if !found {
+				t.Errorf("Expected index %s not found", idx)
+			}
+		}
+	})
+
+	// Test 4: Verify foreign key constraint (virtual_media_operations -> virtual_media_resources)
+	t.Run("foreign_key_constraints", func(t *testing.T) {
+		rows, err := db.conn.QueryContext(ctx, "PRAGMA foreign_key_list(virtual_media_operations)")
+		if err != nil {
+			t.Fatalf("Failed to query foreign keys: %v", err)
+		}
+		defer rows.Close()
+
+		foundFK := false
+		for rows.Next() {
+			var id, seq int
+			var table, from, to, onUpdate, onDelete, match string
+			if err := rows.Scan(&id, &seq, &table, &from, &to, &onUpdate, &onDelete, &match); err != nil {
+				t.Fatalf("Failed to scan foreign key info: %v", err)
+			}
+			if table == "virtual_media_resources" && from == "virtual_media_resource_id" {
+				foundFK = true
+				if onDelete != "CASCADE" {
+					t.Errorf("Expected ON DELETE CASCADE for foreign key, got %s", onDelete)
+				}
+			}
+		}
+
+		if !foundFK {
+			t.Error("Foreign key constraint from virtual_media_operations to virtual_media_resources not found")
+		}
+	})
+}
+
 func TestSettingsPersistence(t *testing.T) {
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "test.db")
