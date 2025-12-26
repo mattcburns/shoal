@@ -1124,6 +1124,14 @@ func (h *Handler) handleBMCDetails(w http.ResponseWriter, r *http.Request) {
 </style>
 
 <script>
+// Helper function to escape HTML (used across multiple tabs)
+function escapeHtml(str) {
+    if (!str) return '';
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
+}
+
 function formatBytes(bytes) {
     if (bytes === 0) return '0 Bytes';
     const k = 1024;
@@ -1547,13 +1555,6 @@ function initSettingsTab(bmcName) {
 		return messageDiv;
 	}
 
-	// Helper function to escape HTML
-	function escapeHtml(str) {
-		const div = document.createElement('div');
-		div.textContent = str;
-		return div.innerHTML;
-	}
-
 	// Boot Order widget
 	function loadBootOrderWidget() {
 		const status = document.getElementById('boot-order-status');
@@ -1974,14 +1975,6 @@ function initVirtualMediaTab(bmcName) {
 			alert('Error ejecting media: ' + error.message);
 		}
 	};
-
-	// Helper function to escape HTML
-	function escapeHtml(str) {
-		if (!str) return '';
-		const div = document.createElement('div');
-		div.textContent = str;
-		return div.innerHTML;
-	}
 
 	// Initial load when tab is first accessed
 	const tabVirtualMediaBtn = document.getElementById('tab-virtualmedia');
