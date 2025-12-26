@@ -6,7 +6,7 @@
 
 ## Abstract
 
-This document outlines the design for implementing Virtual Media Pass-Through in Shoal. As a Redfish aggregator acting as a bastion service, Shoal needs the ability to host and serve ISO images and other virtual media to managed BMCs for operations like OS installation, firmware updates, and system recovery. This design addresses the current limitation where external systems cannot directly reach BMCs, requiring Shoal to act as both an aggregator and a media hosting service.
+This document outlines the design for implementing DMTF Redfish-compliant Virtual Media Pass-Through in Shoal. As a Redfish aggregator acting as a bastion service, Shoal provides unified access to virtual media resources across managed BMCs. Images are stored externally (HTTP servers, OCI registries, NFS, etc.), and Shoal proxies virtual media attachment/detachment operations to downstream BMCs while tracking attachment state. This design enables operations like OS installation, firmware updates, and system recovery on isolated BMCs without requiring Shoal to host image files locally.
 
 ## Background
 
@@ -14,34 +14,40 @@ This document outlines the design for implementing Virtual Media Pass-Through in
 
 Shoal currently provides excellent aggregation and pass-through capabilities for HTTP-based Redfish API calls. It discovers and manages BMCs through the `AggregationService`, providing unified access to system information, settings, and power management.
 
-However, virtual media attachment presents a unique challenge:
-- BMCs typically attach virtual media (ISOs, disk images) from HTTP/HTTPS URLs
+However, virtual media resources are not yet exposed through Shoal's aggregation layer:
+- BMCs typically provide virtual media capabilities through `/redfish/v1/Managers/{id}/VirtualMedia`
+- Users need unified access to attach ISOs or disk images from external sources
 - In Shoal's deployment model, BMCs are isolated and cannot reach external networks
-- External systems cannot directly reach BMCs due to network isolation
 - Shoal acts as a bastion, providing the only connectivity path to/from BMCs
 
 ### Problem Statement
 
 When a user wants to boot a system from an ISO (e.g., for OS installation), they need:
-1. A way to upload or reference an ISO image
-2. Shoal to host/serve that image over HTTP(S)
-3. Shoal to instruct the BMC to attach the virtual media from Shoal's URL
+1. Access to virtual media resources through Shoal's unified Redfish API
+2. Ability to specify external image URLs (HTTP, HTTPS, NFS, CIFS)
+3. Shoal to proxy virtual media attach/detach operations to the correct downstream BMC
 4. Tracking of which media is attached to which systems
-5. The ability to detach media when operations are complete
+5. Ability to detach media when operations are complete
+
+**Key Constraint**: Images are stored externally. Shoal does not host or store image files locally. Shoal's role is to:
+- Aggregate virtual media resources from managed BMCs
+- Proxy attach/detach actions to downstream BMCs
+- Track attachment state across the aggregated environment
+- Optionally rewrite external URLs to be BMC-accessible (if Shoal can proxy image downloads)
 
 ### Use Cases
 
-1. **OS Installation**: Boot multiple systems from an installation ISO
+1. **OS Installation**: Boot systems from installation ISOs hosted on external HTTP servers
 2. **System Recovery**: Attach recovery/diagnostic ISOs to troubleshoot systems
-3. **Firmware Updates**: Serve bootable firmware update images
-4. **Automated Provisioning**: Integrate with cloud-init or kickstart for automated deployments
-5. **Multi-tenancy**: Different users/teams managing different sets of systems with different images
+3. **Firmware Updates**: Reference bootable firmware update images from vendor URLs
+4. **Automated Provisioning**: Attach cloud-init ISOs or kickstart media from provisioning systems
+5. **Multi-source Media**: Support images from various external sources (HTTP, NFS, OCI registries)
 
 ## Redfish Background
 
-Virtual media in Redfish is accessed through the `VirtualMedia` collection under `Manager` resources. Key endpoints and operations:
+Virtual media in Redfish is accessed through the `VirtualMedia` collection under `Manager` resources, as defined by the DMTF Redfish specification.
 
-### Resource Structure
+### Resource Structure (DMTF Standard)
 
 ```
 /redfish/v1/Managers/{ManagerId}/VirtualMedia
@@ -50,549 +56,601 @@ Virtual media in Redfish is accessed through the `VirtualMedia` collection under
 
 ### Key Properties
 
-- **`Image`**: The URI of the image to mount (HTTP/HTTPS URL)
-- **`ImageName`**: Human-readable name of the mounted image
+Per the DMTF `VirtualMedia` v1.6+ schema:
+
+- **`Image`**: The URI of the image to mount (HTTP/HTTPS/NFS/CIFS URL)
+- **`ImageName`**: Human-readable name of the mounted image  
 - **`Inserted`**: Boolean indicating if media is currently inserted
 - **`WriteProtected`**: Boolean for write protection status
-- **`ConnectedVia`**: How the media is connected (e.g., `URI`, `Applet`)
-- **`MediaTypes`**: Supported media types (e.g., `CD`, `DVD`, `USBStick`)
+- **`ConnectedVia`**: How the media is connected (e.g., `URI`, `Applet`, `NotConnected`)
+- **`MediaTypes`**: Supported media types (e.g., `CD`, `DVD`, `USBStick`, `Floppy`)
+- **`UserName`**: Username for accessing the image (if authentication required)
+- **`Password`**: Password for accessing the image (write-only)
+- **`TransferProtocolType`**: Protocol for image transfer (e.g., `HTTP`, `HTTPS`, `NFS`, `CIFS`, `OEM`)
 
-### Actions
+### Actions (DMTF Standard)
 
 - **`#VirtualMedia.InsertMedia`**: Action to attach virtual media
   ```json
+  POST /redfish/v1/Managers/{ManagerId}/VirtualMedia/{MediaId}/Actions/VirtualMedia.InsertMedia
   {
-    "Image": "http://shoal.example.com/api/media/images/ubuntu-22.04.iso",
+    "Image": "http://fileserver.example.com/images/ubuntu-22.04.iso",
     "Inserted": true,
-    "WriteProtected": true
+    "WriteProtected": true,
+    "TransferProtocolType": "HTTP"
   }
   ```
+  
 - **`#VirtualMedia.EjectMedia`**: Action to detach virtual media
+  ```json
+  POST /redfish/v1/Managers/{ManagerId}/VirtualMedia/{MediaId}/Actions/VirtualMedia.EjectMedia
+  {}
+  ```
+
+### Shoal's Aggregation Model
+
+Shoal will aggregate `VirtualMedia` resources from all managed BMCs, similar to how it currently aggregates `Managers` and `ComputerSystems`. Each aggregated `VirtualMedia` resource will maintain a link back to its source `ConnectionMethod`.
 
 ## Architecture Overview
 
-The solution will be implemented in multiple phases, starting with basic functionality and expanding to advanced features.
+Shoal will expose virtual media resources through DMTF Redfish-compliant endpoints and proxy operations to downstream BMCs.
 
 ### High-Level Components
 
-1. **Media Storage Layer**: Stores and manages ISO/image files
-2. **Media HTTP Server**: Serves images to BMCs over HTTP/HTTPS
-3. **Media Management API**: RESTful API for upload, listing, deletion
-4. **Virtual Media Proxy**: Translates attach/detach operations to downstream BMCs
-5. **Attachment Tracking**: Database records of what's attached where
-6. **UI Integration**: Web interface for media management
+1. **VirtualMedia Aggregation**: Discover and cache VirtualMedia resources from managed BMCs
+2. **VirtualMedia Proxy**: Proxy InsertMedia/EjectMedia actions to downstream BMCs
+3. **State Tracking**: Database records of virtual media state and attachments
+4. **URL Rewriting** (Optional): Rewrite external image URLs to be BMC-accessible
+5. **Image Proxy** (Optional): HTTP proxy to stream external images to BMCs
+
+### DMTF-Compliant API Endpoints
+
+All endpoints follow DMTF Redfish specification:
+
+**1. Manager VirtualMedia Collection**
+```
+GET /redfish/v1/Managers/{ManagerId}/VirtualMedia
+```
+Returns aggregated collection of VirtualMedia resources for a specific manager.
+
+**2. VirtualMedia Resource**
+```
+GET /redfish/v1/Managers/{ManagerId}/VirtualMedia/{MediaId}
+```
+Returns details of a specific virtual media resource (aggregated from downstream BMC).
+
+**3. InsertMedia Action**
+```
+POST /redfish/v1/Managers/{ManagerId}/VirtualMedia/{MediaId}/Actions/VirtualMedia.InsertMedia
+{
+  "Image": "http://fileserver.example.com/isos/ubuntu-22.04.iso",
+  "Inserted": true,
+  "WriteProtected": true,
+  "TransferProtocolType": "HTTP"
+}
+```
+Proxies to downstream BMC. Shoal may optionally rewrite the `Image` URL if needed.
+
+**4. EjectMedia Action**
+```
+POST /redfish/v1/Managers/{ManagerId}/VirtualMedia/{MediaId}/Actions/VirtualMedia.EjectMedia
+{}
+```
+Proxies eject operation to downstream BMC.
 
 ### Data Flow
 
 ```
-User → Upload ISO → Media Storage → Track in DB
-                                   ↓
-User → Request Attachment → Media Management API
-                                   ↓
-                          Call BMC VirtualMedia.InsertMedia
-                          with Shoal-hosted image URL
-                                   ↓
-                          BMC downloads from Shoal → Media HTTP Server
-                                   ↓
-                          Update attachment status in DB
+User → GET /redfish/v1/Managers/{id}/VirtualMedia
+                    ↓
+       Shoal returns aggregated VirtualMedia resources
+       (cached from downstream BMCs)
+                    
+User → POST InsertMedia with external image URL
+                    ↓
+       Shoal validates request
+                    ↓
+       Shoal optionally rewrites URL (if URL proxying enabled)
+                    ↓
+       Shoal proxies action to downstream BMC
+                    ↓
+       BMC downloads image from external source
+       (or from Shoal's image proxy if configured)
+                    ↓
+       Shoal updates cached state in database
+                    ↓
+       Return success/failure to user
 ```
 
-## Phase 1: Basic Virtual Media Hosting and Attachment
+## Phase 1: Core Virtual Media Aggregation and Proxying
 
-### 1.1 Media Storage
+### 1.1 VirtualMedia Resource Discovery
 
-**Storage Location**: `/var/lib/shoal/media` (configurable via CLI flag)
+When a `ConnectionMethod` is created (BMC is added), Shoal will discover VirtualMedia resources:
 
-**Directory Structure**:
-```
-/var/lib/shoal/media/
-├── images/           # Stored ISO/image files
-│   ├── ubuntu-22.04.iso
-│   ├── debian-12.iso
-│   └── diagnostics.iso
-└── metadata/         # Optional metadata files (future)
-    └── ubuntu-22.04.json
-```
+**Discovery Process**:
+1. Query `/redfish/v1/Managers` on the downstream BMC
+2. For each Manager, query the `VirtualMedia` collection
+3. Fetch each `VirtualMedia` resource and cache properties
+4. Store VirtualMedia metadata in Shoal's database
 
-**File Management**:
-- Files stored with sanitized names (alphanumeric, hyphens, underscores, dots only)
-- MD5/SHA256 checksums computed on upload
-- Size limits enforced (configurable, default 10GB per file)
-- Total storage quota (configurable, default 100GB)
+**Cached Properties**:
+- Resource `@odata.id` and `Id`
+- `MediaTypes` (supported media types for this slot)
+- `ConnectedVia` (supported connection methods)
+- Current `Image`, `ImageName`, `Inserted` state
+- Available actions (`InsertMedia`, `EjectMedia`)
 
 ### 1.2 Database Schema
 
-New table: `virtual_media_images`
+New table: `virtual_media_resources`
 ```sql
-CREATE TABLE virtual_media_images (
+CREATE TABLE virtual_media_resources (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL UNIQUE,           -- User-friendly name
-    filename TEXT NOT NULL,               -- Sanitized filename on disk
-    size_bytes INTEGER NOT NULL,
-    checksum_sha256 TEXT NOT NULL,
-    media_type TEXT DEFAULT 'CD',        -- CD, DVD, USBStick, Floppy
-    uploaded_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    uploaded_by TEXT,                     -- Username who uploaded
-    description TEXT
-);
-
-CREATE INDEX idx_vmi_name ON virtual_media_images(name);
-```
-
-New table: `virtual_media_attachments`
-```sql
-CREATE TABLE virtual_media_attachments (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    image_id INTEGER NOT NULL,
     connection_method_id INTEGER NOT NULL,
-    system_id TEXT NOT NULL,              -- e.g., "System.Embedded.1"
-    virtual_media_id TEXT NOT NULL,       -- e.g., "CD1", "RemovableDisk"
-    attached_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    attached_by TEXT,
-    write_protected BOOLEAN DEFAULT 1,
-    status TEXT DEFAULT 'attached',       -- attached, detaching, error
-    FOREIGN KEY(image_id) REFERENCES virtual_media_images(id) ON DELETE CASCADE,
+    manager_id TEXT NOT NULL,              -- e.g., "BMC" from downstream
+    resource_id TEXT NOT NULL,             -- e.g., "CD1", "RemovableDisk"
+    odata_id TEXT NOT NULL,                -- Full @odata.id from downstream BMC
+    media_types TEXT,                      -- JSON array: ["CD", "DVD"]
+    supported_protocols TEXT,              -- JSON array: ["HTTP", "HTTPS", "NFS"]
+    current_image_url TEXT,                -- Currently attached image URL
+    current_image_name TEXT,
+    is_inserted BOOLEAN DEFAULT 0,
+    is_write_protected BOOLEAN,
+    connected_via TEXT,
+    last_updated DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY(connection_method_id) REFERENCES connection_methods(id) ON DELETE CASCADE,
-    UNIQUE(connection_method_id, virtual_media_id)
+    UNIQUE(connection_method_id, manager_id, resource_id)
 );
 
-CREATE INDEX idx_vma_image ON virtual_media_attachments(image_id);
-CREATE INDEX idx_vma_connection ON virtual_media_attachments(connection_method_id);
+CREATE INDEX idx_vmr_connection ON virtual_media_resources(connection_method_id);
+CREATE INDEX idx_vmr_manager ON virtual_media_resources(manager_id);
 ```
 
-### 1.3 Media Management API
+New table: `virtual_media_operations`
+```sql
+CREATE TABLE virtual_media_operations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    virtual_media_resource_id INTEGER NOT NULL,
+    operation TEXT NOT NULL,               -- 'insert', 'eject'
+    image_url TEXT,                        -- For insert operations
+    requested_by TEXT,
+    requested_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    status TEXT DEFAULT 'pending',         -- pending, success, failed
+    error_message TEXT,
+    completed_at DATETIME,
+    FOREIGN KEY(virtual_media_resource_id) REFERENCES virtual_media_resources(id) ON DELETE CASCADE
+);
 
-**Base Path**: `/api/media`
-
-#### Endpoints
-
-**1. List Images**
-```
-GET /api/media/images
-Response: 200 OK
-[
-  {
-    "id": 1,
-    "name": "Ubuntu 22.04 Server",
-    "filename": "ubuntu-22.04.iso",
-    "size_bytes": 1450000000,
-    "checksum_sha256": "abc123...",
-    "media_type": "CD",
-    "uploaded_at": "2025-12-26T10:00:00Z",
-    "uploaded_by": "admin",
-    "url": "http://shoal.example.com/api/media/images/ubuntu-22.04.iso"
-  }
-]
+CREATE INDEX idx_vmo_resource ON virtual_media_operations(virtual_media_resource_id);
+CREATE INDEX idx_vmo_status ON virtual_media_operations(status);
 ```
 
-**2. Upload Image**
+### 1.3 Redfish API Implementation
+
+**Handler Structure** (in `internal/api`):
+
+**1. VirtualMedia Collection Handler**
+```go
+// GET /redfish/v1/Managers/{ManagerId}/VirtualMedia
+func (h *Handler) handleVirtualMediaCollection(w http.ResponseWriter, r *http.Request)
 ```
-POST /api/media/images
-Content-Type: multipart/form-data
 
-Fields:
-  - file: (binary data)
-  - name: "Ubuntu 22.04 Server"
-  - media_type: "CD" (optional, default CD)
-  - description: "Ubuntu installation media" (optional)
-
-Response: 201 Created
+Returns DMTF-compliant collection:
+```json
 {
-  "id": 1,
-  "name": "Ubuntu 22.04 Server",
-  "url": "http://shoal.example.com/api/media/images/ubuntu-22.04.iso"
-}
-```
-
-**3. Get Image Details**
-```
-GET /api/media/images/{id}
-Response: 200 OK
-{
-  "id": 1,
-  "name": "Ubuntu 22.04 Server",
-  "filename": "ubuntu-22.04.iso",
-  "size_bytes": 1450000000,
-  "checksum_sha256": "abc123...",
-  "media_type": "CD",
-  "uploaded_at": "2025-12-26T10:00:00Z",
-  "attachments": [
-    {
-      "connection_method_id": 5,
-      "bmc_name": "server-01",
-      "system_id": "System.Embedded.1",
-      "attached_at": "2025-12-26T11:00:00Z"
-    }
+  "@odata.context": "/redfish/v1/$metadata#VirtualMediaCollection.VirtualMediaCollection",
+  "@odata.id": "/redfish/v1/Managers/BMC-server01/VirtualMedia",
+  "@odata.type": "#VirtualMediaCollection.VirtualMediaCollection",
+  "Name": "Virtual Media Services",
+  "Members@odata.count": 2,
+  "Members": [
+    {"@odata.id": "/redfish/v1/Managers/BMC-server01/VirtualMedia/CD1"},
+    {"@odata.id": "/redfish/v1/Managers/BMC-server01/VirtualMedia/RemovableDisk"}
   ]
 }
 ```
 
-**4. Delete Image**
+**2. VirtualMedia Resource Handler**
+```go
+// GET /redfish/v1/Managers/{ManagerId}/VirtualMedia/{MediaId}
+func (h *Handler) handleVirtualMedia(w http.ResponseWriter, r *http.Request)
 ```
-DELETE /api/media/images/{id}
-Response: 204 No Content
-Error: 409 Conflict (if currently attached)
+
+Returns DMTF-compliant resource from cache:
+```json
 {
-  "error": "Cannot delete image that is currently attached to 2 systems"
-}
-```
-
-**5. Download/Serve Image** (for BMC consumption)
-```
-GET /api/media/images/{filename}
-Response: 200 OK
-Content-Type: application/octet-stream
-Content-Length: 1450000000
-(Binary ISO data...)
-```
-
-**6. List Attachments**
-```
-GET /api/media/attachments
-Response: 200 OK
-[
-  {
-    "id": 1,
-    "image_name": "Ubuntu 22.04 Server",
-    "bmc_name": "server-01",
-    "system_id": "System.Embedded.1",
-    "virtual_media_id": "CD1",
-    "attached_at": "2025-12-26T11:00:00Z",
-    "status": "attached"
+  "@odata.context": "/redfish/v1/$metadata#VirtualMedia.VirtualMedia",
+  "@odata.id": "/redfish/v1/Managers/BMC-server01/VirtualMedia/CD1",
+  "@odata.type": "#VirtualMedia.v1_6_0.VirtualMedia",
+  "Id": "CD1",
+  "Name": "Virtual CD",
+  "MediaTypes": ["CD", "DVD"],
+  "Image": "http://fileserver.example.com/isos/ubuntu-22.04.iso",
+  "ImageName": "ubuntu-22.04.iso",
+  "Inserted": true,
+  "WriteProtected": true,
+  "ConnectedVia": "URI",
+  "TransferProtocolType": "HTTP",
+  "Actions": {
+    "#VirtualMedia.InsertMedia": {
+      "target": "/redfish/v1/Managers/BMC-server01/VirtualMedia/CD1/Actions/VirtualMedia.InsertMedia",
+      "@Redfish.ActionInfo": "/redfish/v1/Managers/BMC-server01/VirtualMedia/CD1/InsertMediaActionInfo"
+    },
+    "#VirtualMedia.EjectMedia": {
+      "target": "/redfish/v1/Managers/BMC-server01/VirtualMedia/CD1/Actions/VirtualMedia.EjectMedia"
+    }
   }
-]
-```
-
-**7. Attach Virtual Media**
-```
-POST /api/media/attach
-{
-  "image_id": 1,
-  "connection_method_id": 5,
-  "system_id": "System.Embedded.1",      // optional, use first system if omitted
-  "virtual_media_id": "CD1",              // optional, auto-detect available slot
-  "write_protected": true
-}
-
-Response: 201 Created
-{
-  "id": 1,
-  "status": "attached",
-  "image_url": "http://shoal.example.com/api/media/images/ubuntu-22.04.iso"
 }
 ```
 
-**8. Detach Virtual Media**
+**3. InsertMedia Action Handler**
+```go
+// POST /redfish/v1/Managers/{ManagerId}/VirtualMedia/{MediaId}/Actions/VirtualMedia.InsertMedia
+func (h *Handler) handleInsertMedia(w http.ResponseWriter, r *http.Request)
 ```
-POST /api/media/detach/{attachment_id}
-Response: 200 OK
+
+**Request Body** (DMTF standard):
+```json
 {
-  "status": "detached"
+  "Image": "http://fileserver.example.com/isos/ubuntu-22.04.iso",
+  "Inserted": true,
+  "WriteProtected": true,
+  "TransferProtocolType": "HTTP",
+  "UserName": "optional-username",
+  "Password": "optional-password"
 }
 ```
 
-### 1.4 Media HTTP Server
+**Implementation Steps**:
+1. Validate request body against DMTF schema
+2. Look up VirtualMedia resource in database (by Manager ID + Media ID)
+3. Retrieve connection method credentials for downstream BMC
+4. Optionally rewrite `Image` URL (see URL Rewriting section)
+5. Forward action to downstream BMC's VirtualMedia endpoint
+6. Record operation in `virtual_media_operations` table
+7. Update cached state in `virtual_media_resources`
+8. Return HTTP 204 No Content on success, or error message
+
+**4. EjectMedia Action Handler**
+```go
+// POST /redfish/v1/Managers/{ManagerId}/VirtualMedia/{MediaId}/Actions/VirtualMedia.EjectMedia
+func (h *Handler) handleEjectMedia(w http.ResponseWriter, r *http.Request)
+```
+
+Similar to InsertMedia, but proxies eject action to downstream BMC.
+
+### 1.4 URL Rewriting (Optional Feature)
+
+**Problem**: BMCs may not be able to reach external image URLs directly.
+
+**Solution**: Shoal can optionally rewrite image URLs to point to Shoal's image proxy.
+
+**Configuration**:
+```bash
+--enable-image-proxy bool           # Enable image proxying (default: false)
+--image-proxy-port int              # Port for image proxy (default: 8082)
+--external-image-base-url string    # Base URL pattern to rewrite
+```
+
+**URL Rewriting Logic**:
+```
+Original:  http://fileserver.example.com/isos/ubuntu-22.04.iso
+Rewritten: http://shoal.example.com:8082/proxy?url=http://fileserver.example.com/isos/ubuntu-22.04.iso
+```
+
+The BMC then downloads from Shoal's proxy, which streams the image from the original source.
+
+### 1.5 Image Proxy Server (Optional Feature)
+
+**Purpose**: Stream external images to BMCs when direct access is unavailable.
 
 **Implementation**:
-- Use Go's `http.FileServer` with custom handlers
-- Support HTTP Range requests for partial downloads
-- Rate limiting per BMC to prevent DoS
-- Access logging for compliance/debugging
-- Optional HTTPS with self-signed or provided certificates
+```go
+// GET /proxy?url=<encoded-url>
+func (h *Handler) handleImageProxy(w http.ResponseWriter, r *http.Request)
+```
+
+**Features**:
+- Validates `url` parameter (whitelist domains or authentication)
+- Streams image from external source to BMC
+- Supports HTTP Range requests (for resumable downloads)
+- Rate limiting per BMC
+- Access logging
 
 **Security**:
-- Serve files only from designated media directory (prevent path traversal)
-- Validate all filenames against whitelist pattern
-- Optional authentication (BMC credentials or token-based)
-- Monitor for unusual access patterns
+- URL whitelist to prevent SSRF attacks
+- Authentication token in query string (optional)
+- IP-based access control (only BMC subnets)
 
-### 1.5 Virtual Media Proxy Logic
+### 1.6 State Synchronization
 
-**Discovery Enhancement**:
-Extend the existing BMC discovery process to:
-1. Query `/redfish/v1/Managers/{id}/VirtualMedia` for each manager
-2. Store available virtual media slots and their capabilities
-3. Cache supported `MediaTypes` for each slot
+**Periodic Refresh**:
+- Background job polls downstream BMCs for VirtualMedia state changes
+- Updates `virtual_media_resources` table with current `Image`, `Inserted` status
+- Detects external changes (manual BMC operations outside Shoal)
 
-**Attachment Process**:
-1. Validate image exists and is accessible
-2. Determine available virtual media slot on target BMC
-3. Construct Shoal-hosted image URL
-4. Call `#VirtualMedia.InsertMedia` action on BMC with Shoal URL
-5. Record attachment in database
-6. Return success/failure to user
+**Refresh Interval**: Configurable (default: 60 seconds)
 
-**Detachment Process**:
-1. Validate attachment exists
-2. Call `#VirtualMedia.EjectMedia` action on BMC
-3. Update/remove attachment record in database
-4. Return success/failure to user
+### 1.7 UI Integration
 
-**Error Handling**:
-- BMC rejects attachment (URL unreachable, unsupported type)
-- Network failure during BMC download
-- Concurrent attachment attempts to same slot
-- Image deleted while attached (prevent or warn)
+**Manager Detail Page** (`/managers/{id}`):
+- Add "Virtual Media" tab
+- Display available virtual media slots
+- Show currently attached images
+- Buttons: "Attach Media", "Eject Media"
 
-### 1.6 UI Integration
+**Attach Media Dialog**:
+- Input field for image URL
+- Dropdown for media type (if multiple slots available)
+- Checkbox for write protection
+- Optional: username/password for authenticated image servers
 
-**New UI Pages**:
-
-1. **Media Library** (`/media`)
-   - Table listing all uploaded images
-   - Upload button (file picker with drag-and-drop)
-   - Delete button (with confirmation and attachment check)
-   - Download link (for verification)
-   - Show size, upload date, current attachments
-
-2. **Attach Media Dialog** (from BMC detail page)
-   - Dropdown to select from available images
-   - Dropdown to select target system (if multiple)
-   - Dropdown to select virtual media slot (if multiple)
-   - Checkbox for write protection
-   - Attach button
-
-3. **Active Attachments** (section on Media Library page)
-   - Table showing currently attached media
-   - BMC name, system, image name, attached time
-   - Detach button for each
-
-**BMC Detail Page Enhancement**:
-- Add "Virtual Media" tab or section
-- Show available virtual media slots
-- Show currently attached media
-- Quick attach/detach actions
+**Active Media Table**:
+- List of all attached virtual media across all BMCs
+- Columns: BMC name, slot, image URL, attached time
+- Quick eject button
 
 ## Phase 2: Advanced Features
 
-### 2.1 OCI Image Support
+### 2.1 Enhanced Image Proxy Capabilities
 
-**Objective**: Support pulling images from OCI-compliant registries (Docker Hub, GHCR, etc.)
+**Objective**: Advanced image proxy features for complex scenarios
 
-**Design**:
-- Add `source_type` field to `virtual_media_images` (local, http, oci)
-- For OCI images:
-  - Store registry URL, image name, tag
-  - Pull image layers on-demand or cache locally
-  - Convert OCI image to bootable ISO if needed (use existing tools)
-  - Schedule periodic pulls for `latest` tags
+**Features**:
+- **Caching**: Optionally cache frequently-used images for faster subsequent attachments
+- **Compression**: On-the-fly compression/decompression
+- **Format Conversion**: Convert between image formats (e.g., QCOW2 to ISO)
+- **Bandwidth Throttling**: QoS to prevent network saturation
 
-**API Extension**:
-```
-POST /api/media/images/oci
-{
-  "name": "Fedora CoreOS",
-  "oci_url": "ghcr.io/fedora/coreos:stable",
-  "auto_update": true
-}
-```
+### 2.2 Cloud-Init ISO Generation
 
-### 2.2 HTTP Image Proxying
-
-**Objective**: Reference external HTTP(S) images without full download
+**Objective**: Generate cloud-init ISOs on-demand for automated provisioning
 
 **Design**:
-- Add option to proxy external URLs through Shoal
-- Shoal acts as HTTP proxy, streaming image to BMC
-- Useful for large images or when storage is limited
-- Cache control headers to prevent redundant downloads
-
-**API Extension**:
-```
-POST /api/media/images/proxy
-{
-  "name": "Vendor Diagnostics",
-  "external_url": "https://vendor.example.com/tools/diag-v2.iso",
-  "cache_locally": false
-}
-```
-
-### 2.3 Cloud-Init / Metadata Injection
-
-**Objective**: Generate and serve cloud-init ISOs for automated provisioning
-
-**Design**:
-- User provides cloud-init user-data and meta-data
-- Shoal generates ISO with proper structure (`user-data`, `meta-data` files)
+- Shoal exposes endpoint to generate cloud-init ISOs
+- User provides user-data and meta-data via Redfish OEM extension
+- Shoal generates temporary ISO and serves via image proxy
 - ISO attached as virtual media during boot
-- Cloud-init in OS reads configuration from ISO
 
-**Use Case**:
-- Automated OS installation with pre-configured network, users, SSH keys
-- Integration with provisioning workflows
-
-**API Extension**:
-```
-POST /api/media/images/cloudinit
+**Redfish OEM Extension Example**:
+```json
+POST /redfish/v1/Managers/BMC-server01/VirtualMedia/CD1/Actions/VirtualMedia.InsertMedia
 {
-  "name": "CloudInit for server-01",
-  "user_data": "#cloud-config\n...",
-  "meta_data": "instance-id: server-01\n..."
+  "Image": "http://shoal.example.com:8082/cloudinit-iso",
+  "Oem": {
+    "Shoal": {
+      "GenerateCloudInit": true,
+      "UserData": "#cloud-config\nusers:\n  - name: admin\n...",
+      "MetaData": "instance-id: server-01\n..."
+    }
+  }
 }
 ```
 
-### 2.4 Kickstart / Preseed File Hosting
+### 2.3 OCI Image Support
 
-**Objective**: Serve kickstart (Red Hat/Fedora) or preseed (Debian/Ubuntu) files
+**Objective**: Support attaching OCI images (container images) as bootable media
 
 **Design**:
-- Dedicated endpoint for serving text-based config files
-- Template system for generating configs with variables
-- Boot parameters on systems reference Shoal URLs
+- OCI images converted to bootable ISOs using tools like `buildah` or `mkosi`
+- Shoal caches converted ISOs
+- Users reference OCI images by registry URL
+- Periodic refresh for `latest` tags
 
-**Endpoints**:
+**Example**:
+```json
+POST /redfish/v1/Managers/BMC-server01/VirtualMedia/CD1/Actions/VirtualMedia.InsertMedia
+{
+  "Image": "oci://ghcr.io/fedora/coreos:stable",
+  "TransferProtocolType": "OEM",
+  "Oem": {
+    "Shoal": {
+      "OCIConversion": true
+    }
+  }
+}
 ```
-GET /api/media/kickstart/{name}
-GET /api/media/preseed/{name}
+
+### 2.4 Kickstart / Preseed Integration
+
+**Objective**: Serve kickstart or preseed files referenced during installation
+
+**Design**:
+- Shoal serves text-based provisioning configs via HTTP
+- Configs generated from templates with per-system variables
+- Boot parameters reference Shoal URLs
+
+**Non-Redfish Endpoint** (provisioning-specific):
+```
+GET /provision/kickstart/{system-id}
+GET /provision/preseed/{system-id}
 ```
 
-### 2.5 Image Templates and Versioning
+### 2.5 Event Notifications
 
-**Objective**: Manage multiple versions of same image, track lineage
-
-**Design**:
-- Tag images with versions (v1.0, v2.1, latest)
-- Allow rollback to previous versions
-- Track which version was used for which deployment
-
-### 2.6 Multi-tenancy and Access Control
-
-**Objective**: Restrict which users/groups can access which images
+**Objective**: Notify when virtual media operations complete or fail
 
 **Design**:
-- Extend RBAC to include media permissions
-- Images can be owned by users or shared with groups
-- Attachment permissions enforced (can only attach to BMCs you manage)
+- Integrate with Shoal's existing EventService (if implemented)
+- Generate Redfish events for InsertMedia/EjectMedia success/failure
+- Clients can subscribe to virtual media events
+
+**Event Types**:
+- `VirtualMedia.InsertMedia.Success`
+- `VirtualMedia.InsertMedia.Failed`
+- `VirtualMedia.EjectMedia.Success`
+
+### 2.6 Multi-Protocol Support
+
+**Objective**: Support additional transfer protocols beyond HTTP/HTTPS
+
+**Protocols**:
+- **NFS**: Native NFS URL support (if BMC supports)
+- **CIFS/SMB**: Windows file shares
+- **TFTP**: Legacy network boot protocol
+- **iSCSI**: Block-level virtual media
 
 ## Implementation Milestones
 
-### Milestone 1: Storage and API Foundation
-- [ ] Create database schema and migrations
-- [ ] Implement media storage directory management
-- [ ] Build media upload API endpoint
-- [ ] Build media listing and deletion endpoints
-- [ ] Add checksum validation
-- [ ] Write unit tests for storage layer
+### Milestone 1: Core VirtualMedia Aggregation
+- [ ] Enhance BMC discovery to query VirtualMedia resources
+- [ ] Create database schema for `virtual_media_resources` and `virtual_media_operations`
+- [ ] Implement database migrations
+- [ ] Add caching logic for VirtualMedia resources
+- [ ] Write unit tests for discovery and caching
 
-### Milestone 2: HTTP Serving
-- [ ] Implement media HTTP server
-- [ ] Support Range requests
-- [ ] Add access logging
-- [ ] Implement rate limiting
+### Milestone 2: Redfish API Handlers
+- [ ] Implement VirtualMedia collection handler (`GET /redfish/v1/Managers/{id}/VirtualMedia`)
+- [ ] Implement VirtualMedia resource handler (`GET /redfish/v1/Managers/{id}/VirtualMedia/{mediaId}`)
+- [ ] Implement InsertMedia action handler
+- [ ] Implement EjectMedia action handler
+- [ ] Add Redfish schema validation
+- [ ] Write unit tests with mock downstream BMCs
+
+### Milestone 3: Proxy and State Management
+- [ ] Implement proxy logic to forward actions to downstream BMCs
+- [ ] Add error handling and retry logic
+- [ ] Implement state synchronization (periodic polling)
+- [ ] Track operations in database
 - [ ] Write integration tests
 
-### Milestone 3: Virtual Media Proxy
-- [ ] Enhance BMC discovery to detect virtual media capabilities
-- [ ] Implement attach API endpoint and BMC proxy logic
-- [ ] Implement detach API endpoint and BMC proxy logic
-- [ ] Add attachment tracking to database
-- [ ] Handle error cases (BMC unreachable, slot in use, etc.)
-- [ ] Write unit tests with mock BMC responses
+### Milestone 4: URL Rewriting and Image Proxy (Optional)
+- [ ] Implement URL rewriting logic
+- [ ] Build image proxy HTTP server
+- [ ] Add Range request support
+- [ ] Implement rate limiting
+- [ ] Add access control and security measures
+- [ ] Write integration tests
 
-### Milestone 4: UI Integration
-- [ ] Create Media Library page (list, upload, delete)
-- [ ] Add attach/detach controls to BMC detail page
-- [ ] Display active attachments
-- [ ] Add frontend validation (file size, type)
-- [ ] Update navigation menu
+### Milestone 5: UI Integration
+- [ ] Add "Virtual Media" tab to Manager detail page
+- [ ] Implement attach/detach dialogs
+- [ ] Display active virtual media attachments
+- [ ] Add frontend validation
+- [ ] Update navigation
 
-### Milestone 5: Advanced Features (Phase 2)
+### Milestone 6: Advanced Features (Phase 2)
+- [ ] Enhanced image proxy with caching
+- [ ] Cloud-init ISO generation (OEM extension)
 - [ ] OCI image support
-- [ ] HTTP image proxying
-- [ ] Cloud-init ISO generation
 - [ ] Kickstart/preseed hosting
-- [ ] Image versioning
-- [ ] Multi-tenancy RBAC
+- [ ] Event notifications
+- [ ] Multi-protocol support
 
 ## Security Considerations
 
-### 1. Input Validation
-- **Filename Sanitization**: Prevent path traversal attacks (../../../etc/passwd)
-- **File Type Validation**: Verify uploaded files are actually ISO/image formats
-- **Size Limits**: Prevent DoS via massive uploads
-- **Rate Limiting**: Limit upload frequency per user
+### 1. URL Validation
+- **Whitelist Domains**: Optionally restrict which external domains can be used for image URLs
+- **SSRF Prevention**: Prevent Server-Side Request Forgery attacks via image proxy
+- **URL Sanitization**: Validate and sanitize all external URLs before proxying
 
 ### 2. Access Control
-- **Authentication**: All media management APIs require authenticated user
-- **Authorization**: RBAC enforced (admin can manage all, users their own)
-- **BMC Credentials**: Secure storage of credentials for BMC API calls
-- **Image Access**: Only authenticated BMCs can download (optional, may complicate setup)
+- **Authentication**: All VirtualMedia operations require authenticated user
+- **Authorization**: RBAC enforced at Redfish API level (follows existing Shoal RBAC model)
+- **BMC Credentials**: Secure storage and transmission of credentials to downstream BMCs
+- **Proxy Access**: Image proxy restricted to BMC IP ranges (if enabled)
 
-### 3. Storage Security
-- **Disk Quotas**: Prevent filling disk with uploads
-- **Encryption at Rest**: Optional encryption of stored images (future)
-- **Secure Deletion**: Overwrite files on deletion (optional, for sensitive images)
-- **Backup and Recovery**: Guidance for backing up media library
+### 3. State Integrity
+- **Concurrent Access**: Handle concurrent InsertMedia requests to same slot
+- **State Synchronization**: Detect and handle out-of-band changes to VirtualMedia
+- **Transaction Safety**: Database transactions for state updates
 
 ### 4. Network Security
-- **HTTPS for API**: Encrypt upload/download traffic
-- **HTTPS for BMC Serving**: Optional, may require cert trust on BMC side
-- **Firewall Rules**: Ensure only BMCs can reach media server ports
-- **Audit Logging**: Track all attachment/detachment operations
+- **HTTPS for API**: All Redfish API calls over HTTPS
+- **Image Proxy TLS**: Optional HTTPS for image proxy (requires BMC cert trust)
+- **Rate Limiting**: Prevent DoS via excessive InsertMedia requests
+- **Audit Logging**: Track all VirtualMedia operations (who, what, when, BMC)
+
+### 5. Data Protection
+- **Credential Encryption**: Encrypt image server credentials (username/password) in database
+- **Secrets in Transit**: Use HTTPS when proxying to external image servers
+- **Log Sanitization**: Redact sensitive URLs and credentials from logs
 
 ## Configuration
 
 New CLI flags and environment variables:
 
 ```bash
---media-dir string           Directory for storing media files (default: /var/lib/shoal/media)
---media-quota-total int      Total storage quota in GB (default: 100)
---media-quota-per-file int   Per-file size limit in GB (default: 10)
---media-server-port int      Port for media HTTP server (default: 8081)
+# Optional Image Proxy
+--enable-image-proxy bool           Enable HTTP image proxy (default: false)
+--image-proxy-port int              Port for image proxy server (default: 8082)
+--image-proxy-cache-dir string      Cache directory for proxied images (default: /var/lib/shoal/image-cache)
+--image-proxy-cache-size-gb int     Max cache size in GB (default: 50)
+--image-proxy-allowed-domains string  Comma-separated list of allowed domains (default: *)
+
+# State Synchronization
+--vmedia-sync-interval int          VirtualMedia state sync interval in seconds (default: 60)
+--vmedia-sync-enabled bool          Enable periodic state synchronization (default: true)
+
+# Security
+--vmedia-url-whitelist string       Comma-separated URL patterns allowed for InsertMedia
 --media-server-tls bool      Enable HTTPS for media server (default: false)
 --media-server-cert string   TLS certificate file
---media-server-key string    TLS key file
+--vmedia-url-whitelist string       Comma-separated URL patterns allowed for InsertMedia
 ```
 
 ## Testing Strategy
 
 ### Unit Tests
-- Storage layer (file operations, checksum, quota enforcement)
-- API handlers (upload, list, delete, attach, detach)
-- Database operations (CRUD for images and attachments)
-- Filename sanitization and validation
+- VirtualMedia resource discovery and caching
+- Database operations (CRUD for virtual_media_resources and virtual_media_operations)
+- Redfish API handlers (collection, resource, actions)
+- URL rewriting logic
+- Proxy request forwarding
 
 ### Integration Tests
-- Full attach/detach workflow with mock BMC server
-- Concurrent attachment attempts
-- Image deletion while attached (should fail)
-- Quota enforcement on upload
+- Full InsertMedia/EjectMedia workflow with mock downstream BMC
+- Concurrent InsertMedia requests to same VirtualMedia slot
+- State synchronization with downstream BMCs
+- Image proxy streaming (if enabled)
+- Error handling (BMC unreachable, invalid URLs, etc.)
 
 ### Manual Testing
-- Upload real ISO and attach to real BMC
-- Verify BMC can download and boot from image
-- Test detachment and re-attachment
-- Verify audit logs are created
+- Attach external ISO URL to real BMC via Shoal
+- Verify BMC can download and boot from external image
+- Test image proxy with isolated BMC (cannot reach internet)
+- Verify audit logs capture all operations
+- Test UI controls for attach/detach
 
 ## Future Considerations
 
-1. **Image Deduplication**: Hash-based storage to avoid storing identical images multiple times
-2. **Distributed Storage**: Support for S3, NFS, or other backend storage
-3. **Image Streaming**: Stream directly from source without full local copy
-4. **Bandwidth Management**: QoS for image serving to prevent network saturation
-5. **Image Signing**: Cryptographic verification of image integrity
-6. **Pre-warming**: Pre-download images to BMC cache before attachment
-7. **Scheduled Attachments**: Attach media at specific times (e.g., maintenance windows)
-8. **Notification Webhooks**: Alert when attachment succeeds/fails
-9. **Image Catalog**: Public repository of common OS images with auto-download
+1. **Image Catalog**: Central catalog of common OS images with metadata
+2. **Bandwidth Management**: QoS for image proxy to prevent network saturation
+3. **Pre-warming**: Pre-download images to BMC cache before boot
+4. **Scheduled Operations**: Schedule InsertMedia at specific times (maintenance windows)
+5. **Notification Webhooks**: External webhooks when operations complete
+6. **Multi-site Support**: Coordinate VirtualMedia across geographically distributed Shoal instances
+7. **Image Versioning**: Track image versions and allow rollback
+8. **Advanced Caching**: Intelligent caching based on usage patterns
+9. **Image Signing**: Cryptographic verification of image integrity
 
 ## Open Questions
 
-1. **BMC Authentication for Image Download**: Should BMCs authenticate to download images, or rely on network isolation?
-2. **Image Retention Policy**: How long to keep unused images? Auto-cleanup after N days?
-3. **Concurrent Attachments**: Can same image be attached to multiple BMCs simultaneously? (Yes, likely)
-4. **Attachment State Sync**: How to detect if BMC detached media outside of Shoal control?
-5. **Large File Uploads**: Support resumable uploads for multi-GB ISOs?
+1. **State Synchronization Frequency**: How often to poll downstream BMCs? Balance freshness vs. API load.
+2. **Image Proxy Performance**: Should proxy cache images locally, or always stream from source?
+3. **Concurrent Attachments**: Can same external image URL be attached to multiple BMCs simultaneously? (Yes, likely)
+4. **Out-of-Band Changes**: How to handle manual VirtualMedia operations on BMC (outside Shoal)?
+5. **URL Authentication**: How to securely pass image server credentials to BMCs?
+6. **Certificate Trust**: How to handle HTTPS image URLs with self-signed certs?
 
 ## References
 
-- [DMTF Redfish VirtualMedia Schema](https://redfish.dmtf.org/schemas/v1/VirtualMedia.json)
-- [Redfish Specification](https://www.dmtf.org/standards/redfish)
+- [DMTF Redfish VirtualMedia Schema v1.6](https://redfish.dmtf.org/schemas/v1/VirtualMedia.v1_6_2.json)
+- [DMTF Redfish Specification](https://www.dmtf.org/standards/redfish)
+- [Redfish White Paper: Virtual Media](https://www.dmtf.org/sites/default/files/standards/documents/DSP2046_2019.1.pdf)
 - [Cloud-Init Documentation](https://cloudinit.readthedocs.io/)
 - [OCI Image Specification](https://github.com/opencontainers/image-spec)
 
 ## Conclusion
 
-This design provides a comprehensive roadmap for implementing virtual media pass-through in Shoal. Phase 1 delivers essential functionality for hosting and attaching ISO images, enabling critical use cases like OS installation and system recovery. Phase 2 expands capabilities with advanced features like OCI support and cloud-init integration, positioning Shoal as a complete provisioning solution.
+This design provides a DMTF Redfish-compliant roadmap for implementing virtual media pass-through in Shoal. By aggregating VirtualMedia resources from downstream BMCs and proxying InsertMedia/EjectMedia actions, Shoal enables unified virtual media management across isolated BMC environments.
 
-The architecture is designed to be extensible, secure, and consistent with Shoal's existing patterns. By leveraging Shoal's bastion role, organizations can safely boot and provision isolated BMC-managed systems without exposing them to external networks.
+**Key Design Principles**:
+- **DMTF Compliance**: All endpoints follow Redfish specification
+- **External Storage**: Images stored on external servers (HTTP, NFS, OCI registries)
+- **Proxy Model**: Shoal proxies actions and optionally proxies image downloads
+- **State Tracking**: Database tracks VirtualMedia resources and operations
+- **Extensible**: Phase 2 features (cloud-init, OCI, etc.) build on solid Phase 1 foundation
+
+The architecture leverages Shoal's bastion role to provide secure access to virtual media capabilities for isolated BMCs, enabling critical use cases like OS installation, system recovery, and automated provisioning without requiring direct external network access from BMCs.
