@@ -218,3 +218,18 @@ type VirtualMediaActions struct {
 type VirtualMediaAction struct {
 	Target string `json:"target"`
 }
+
+// InsertMediaRequest represents the request body for InsertMedia action
+type InsertMediaRequest struct {
+	Image                string  `json:"Image"`
+	Inserted             *bool   `json:"Inserted,omitempty"`
+	WriteProtected       *bool   `json:"WriteProtected,omitempty"`
+	TransferProtocolType *string `json:"TransferProtocolType,omitempty"`
+	UserName             *string `json:"UserName,omitempty"`
+	Password             *string `json:"Password,omitempty"`
+}
+
+// EjectMediaRequest represents the request body for EjectMedia action
+type EjectMediaRequest struct {
+	// Empty body per DMTF spec
+}

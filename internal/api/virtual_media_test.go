@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"shoal/internal/database"
@@ -472,5 +473,393 @@ func TestVirtualMedia_NFSProtocol(t *testing.T) {
 
 	if vm.TransferProtocolType != "NFS" {
 		t.Errorf("expected TransferProtocolType 'NFS', got %s", vm.TransferProtocolType)
+	}
+}
+
+// TestInsertMedia_HappyPath tests successful InsertMedia operation
+func TestInsertMedia_HappyPath(t *testing.T) {
+	handler, db, token := setupVirtualMediaTest(t)
+	defer func() { _ = db.Close() }()
+
+	// Create mock BMC server
+	mockBMC := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/redfish/v1/Managers/BMC/VirtualMedia/CD1/Actions/VirtualMedia.InsertMedia" {
+			if r.Method != http.MethodPost {
+				t.Errorf("expected POST, got %s", r.Method)
+			}
+			// Verify request body
+			var req redfish.InsertMediaRequest
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				t.Errorf("failed to decode request: %v", err)
+			}
+			if req.Image != "http://fileserver.example.com/test.iso" {
+				t.Errorf("expected Image URL, got %s", req.Image)
+			}
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		t.Errorf("unexpected path: %s", r.URL.Path)
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer mockBMC.Close()
+
+	// Update connection method to point to mock BMC
+	ctx := context.Background()
+	
+	// Delete existing connection method
+	if err := db.DeleteConnectionMethod(ctx, "test-cm-1"); err != nil {
+		t.Fatalf("failed to delete connection method: %v", err)
+	}
+	
+	// Create new connection method pointing to mock BMC
+	method := &models.ConnectionMethod{
+		ID:                   "test-cm-1",
+		Name:                 "TestBMC",
+		ConnectionMethodType: "Redfish",
+		Address:              mockBMC.URL,
+		Username:             "admin",
+		Password:             "password",
+		Enabled:              true,
+		AggregatedManagers:   `[{"@odata.id":"/redfish/v1/Managers/BMC"}]`,
+		AggregatedSystems:    `[{"@odata.id":"/redfish/v1/Systems/System1"}]`,
+	}
+	if err := db.CreateConnectionMethod(ctx, method); err != nil {
+		t.Fatalf("failed to create connection method: %v", err)
+	}
+	
+	// Recreate virtual media resources
+	insertVirtualMediaResource(t, db, "test-cm-1", "BMC", "CD1", "/redfish/v1/Managers/BMC/VirtualMedia/CD1",
+		`["CD","DVD"]`, `["HTTP","HTTPS"]`, "", "", false, false, "NotConnected")
+
+	// Make InsertMedia request
+	reqBody := `{"Image": "http://fileserver.example.com/test.iso", "Inserted": true, "WriteProtected": true}`
+	req := httptest.NewRequest(http.MethodPost, "/redfish/v1/Managers/TestBMC/VirtualMedia/CD1/Actions/VirtualMedia.InsertMedia", strings.NewReader(reqBody))
+	req.Header.Set("X-Auth-Token", token)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// Verify operation was recorded in database
+	resource, err := db.GetVirtualMediaResource(ctx, "test-cm-1", "BMC", "CD1")
+	if err != nil {
+		t.Fatalf("failed to get resource: %v", err)
+	}
+
+	ops, err := db.GetVirtualMediaOperations(ctx, resource.ID)
+	if err != nil {
+		t.Fatalf("failed to get operations: %v", err)
+	}
+
+	if len(ops) != 1 {
+		t.Fatalf("expected 1 operation, got %d", len(ops))
+	}
+
+	op := ops[0]
+	if op.Operation != "insert" {
+		t.Errorf("expected operation 'insert', got %s", op.Operation)
+	}
+	if op.Status != "success" {
+		t.Errorf("expected status 'success', got %s", op.Status)
+	}
+	if op.ImageURL != "http://fileserver.example.com/test.iso" {
+		t.Errorf("expected image URL, got %s", op.ImageURL)
+	}
+
+	// Verify resource state was updated
+	resource, err = db.GetVirtualMediaResource(ctx, "test-cm-1", "BMC", "CD1")
+	if err != nil {
+		t.Fatalf("failed to get resource: %v", err)
+	}
+	if resource.CurrentImageURL != "http://fileserver.example.com/test.iso" {
+		t.Errorf("expected image URL, got %s", resource.CurrentImageURL)
+	}
+	if !resource.IsInserted {
+		t.Error("expected resource to be inserted")
+	}
+}
+
+// TestInsertMedia_MissingImage tests InsertMedia with missing Image field
+func TestInsertMedia_MissingImage(t *testing.T) {
+	handler, db, token := setupVirtualMediaTest(t)
+	defer func() { _ = db.Close() }()
+
+	reqBody := `{}`
+	req := httptest.NewRequest(http.MethodPost, "/redfish/v1/Managers/TestBMC/VirtualMedia/CD1/Actions/VirtualMedia.InsertMedia", strings.NewReader(reqBody))
+	req.Header.Set("X-Auth-Token", token)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var errResp map[string]interface{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &errResp); err != nil {
+		t.Fatalf("failed to parse error response: %v", err)
+	}
+
+	if errResp["error"] == nil {
+		t.Error("expected error object in response")
+	}
+}
+
+// TestInsertMedia_BMCError tests InsertMedia when BMC returns an error
+func TestInsertMedia_BMCError(t *testing.T) {
+	handler, db, token := setupVirtualMediaTest(t)
+	defer func() { _ = db.Close() }()
+
+	// Create mock BMC server that returns an error
+	mockBMC := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/redfish/v1/Managers/BMC/VirtualMedia/CD1/Actions/VirtualMedia.InsertMedia" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"error": map[string]interface{}{
+					"message": "Invalid image URL",
+					"code":    "Base.1.0.GeneralError",
+				},
+			})
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer mockBMC.Close()
+
+	// Update connection method
+	ctx := context.Background()
+	
+	// Delete existing connection method
+	if err := db.DeleteConnectionMethod(ctx, "test-cm-1"); err != nil {
+		t.Fatalf("failed to delete connection method: %v", err)
+	}
+	
+	// Create new connection method pointing to mock BMC
+	method := &models.ConnectionMethod{
+		ID:                   "test-cm-1",
+		Name:                 "TestBMC",
+		ConnectionMethodType: "Redfish",
+		Address:              mockBMC.URL,
+		Username:             "admin",
+		Password:             "password",
+		Enabled:              true,
+		AggregatedManagers:   `[{"@odata.id":"/redfish/v1/Managers/BMC"}]`,
+	}
+	if err := db.CreateConnectionMethod(ctx, method); err != nil {
+		t.Fatalf("failed to create connection method: %v", err)
+	}
+	
+	// Recreate virtual media resources
+	insertVirtualMediaResource(t, db, "test-cm-1", "BMC", "CD1", "/redfish/v1/Managers/BMC/VirtualMedia/CD1",
+		`["CD","DVD"]`, `["HTTP","HTTPS"]`, "", "", false, false, "NotConnected")
+
+	reqBody := `{"Image": "http://invalid-url"}`
+	req := httptest.NewRequest(http.MethodPost, "/redfish/v1/Managers/TestBMC/VirtualMedia/CD1/Actions/VirtualMedia.InsertMedia", strings.NewReader(reqBody))
+	req.Header.Set("X-Auth-Token", token)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// Verify operation was marked as failed
+	resource, err := db.GetVirtualMediaResource(ctx, "test-cm-1", "BMC", "CD1")
+	if err != nil {
+		t.Fatalf("failed to get resource: %v", err)
+	}
+
+	ops, err := db.GetVirtualMediaOperations(ctx, resource.ID)
+	if err != nil {
+		t.Fatalf("failed to get operations: %v", err)
+	}
+
+	if len(ops) != 1 {
+		t.Fatalf("expected 1 operation, got %d", len(ops))
+	}
+
+	if ops[0].Status != "failed" {
+		t.Errorf("expected status 'failed', got %s", ops[0].Status)
+	}
+}
+
+// TestEjectMedia_HappyPath tests successful EjectMedia operation
+func TestEjectMedia_HappyPath(t *testing.T) {
+	handler, db, token := setupVirtualMediaTest(t)
+	defer func() { _ = db.Close() }()
+
+	// Create mock BMC server
+	mockBMC := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/redfish/v1/Managers/BMC/VirtualMedia/USBStick1/Actions/VirtualMedia.EjectMedia" {
+			if r.Method != http.MethodPost {
+				t.Errorf("expected POST, got %s", r.Method)
+			}
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		t.Errorf("unexpected path: %s", r.URL.Path)
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer mockBMC.Close()
+
+	// Update connection method
+	ctx := context.Background()
+	
+	// Delete existing connection method
+	if err := db.DeleteConnectionMethod(ctx, "test-cm-1"); err != nil {
+		t.Fatalf("failed to delete connection method: %v", err)
+	}
+	
+	// Create new connection method pointing to mock BMC
+	method := &models.ConnectionMethod{
+		ID:                   "test-cm-1",
+		Name:                 "TestBMC",
+		ConnectionMethodType: "Redfish",
+		Address:              mockBMC.URL,
+		Username:             "admin",
+		Password:             "password",
+		Enabled:              true,
+		AggregatedManagers:   `[{"@odata.id":"/redfish/v1/Managers/BMC"}]`,
+	}
+	if err := db.CreateConnectionMethod(ctx, method); err != nil {
+		t.Fatalf("failed to create connection method: %v", err)
+	}
+	
+	// Recreate virtual media resources
+	insertVirtualMediaResource(t, db, "test-cm-1", "BMC", "USBStick1", "/redfish/v1/Managers/BMC/VirtualMedia/USBStick1",
+		`["USBStick"]`, `["HTTP","HTTPS","NFS"]`, "http://fileserver.example.com/isos/ubuntu-22.04.iso", "ubuntu-22.04.iso", true, true, "URI")
+
+	// Make EjectMedia request
+	reqBody := `{}`
+	req := httptest.NewRequest(http.MethodPost, "/redfish/v1/Managers/TestBMC/VirtualMedia/USBStick1/Actions/VirtualMedia.EjectMedia", strings.NewReader(reqBody))
+	req.Header.Set("X-Auth-Token", token)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// Verify operation was recorded in database
+	resource, err := db.GetVirtualMediaResource(ctx, "test-cm-1", "BMC", "USBStick1")
+	if err != nil {
+		t.Fatalf("failed to get resource: %v", err)
+	}
+
+	ops, err := db.GetVirtualMediaOperations(ctx, resource.ID)
+	if err != nil {
+		t.Fatalf("failed to get operations: %v", err)
+	}
+
+	if len(ops) != 1 {
+		t.Fatalf("expected 1 operation, got %d", len(ops))
+	}
+
+	op := ops[0]
+	if op.Operation != "eject" {
+		t.Errorf("expected operation 'eject', got %s", op.Operation)
+	}
+	if op.Status != "success" {
+		t.Errorf("expected status 'success', got %s", op.Status)
+	}
+
+	// Verify resource state was updated
+	resource, err = db.GetVirtualMediaResource(ctx, "test-cm-1", "BMC", "USBStick1")
+	if err != nil {
+		t.Fatalf("failed to get resource: %v", err)
+	}
+	if resource.CurrentImageURL != "" {
+		t.Errorf("expected empty image URL, got %s", resource.CurrentImageURL)
+	}
+	if resource.IsInserted {
+		t.Error("expected resource to not be inserted")
+	}
+	if resource.ConnectedVia != "NotConnected" {
+		t.Errorf("expected ConnectedVia 'NotConnected', got %s", resource.ConnectedVia)
+	}
+}
+
+// TestInsertMedia_Unauthenticated tests InsertMedia without authentication
+func TestInsertMedia_Unauthenticated(t *testing.T) {
+	handler, db := setupTestAPI(t)
+	defer func() { _ = db.Close() }()
+
+	reqBody := `{"Image": "http://example.com/test.iso"}`
+	req := httptest.NewRequest(http.MethodPost, "/redfish/v1/Managers/TestBMC/VirtualMedia/CD1/Actions/VirtualMedia.InsertMedia", strings.NewReader(reqBody))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", rec.Code)
+	}
+}
+
+// TestEjectMedia_Unauthenticated tests EjectMedia without authentication
+func TestEjectMedia_Unauthenticated(t *testing.T) {
+	handler, db := setupTestAPI(t)
+	defer func() { _ = db.Close() }()
+
+	req := httptest.NewRequest(http.MethodPost, "/redfish/v1/Managers/TestBMC/VirtualMedia/CD1/Actions/VirtualMedia.EjectMedia", strings.NewReader("{}"))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", rec.Code)
+	}
+}
+
+// TestInsertMedia_OptionsMethod tests OPTIONS method for InsertMedia
+func TestInsertMedia_OptionsMethod(t *testing.T) {
+	handler, db, token := setupVirtualMediaTest(t)
+	defer func() { _ = db.Close() }()
+
+	req := httptest.NewRequest(http.MethodOptions, "/redfish/v1/Managers/TestBMC/VirtualMedia/CD1/Actions/VirtualMedia.InsertMedia", nil)
+	req.Header.Set("X-Auth-Token", token)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d", rec.Code)
+	}
+
+	allow := rec.Header().Get("Allow")
+	if allow != "POST" {
+		t.Errorf("expected Allow: POST, got %s", allow)
+	}
+}
+
+// TestEjectMedia_OptionsMethod tests OPTIONS method for EjectMedia
+func TestEjectMedia_OptionsMethod(t *testing.T) {
+	handler, db, token := setupVirtualMediaTest(t)
+	defer func() { _ = db.Close() }()
+
+	req := httptest.NewRequest(http.MethodOptions, "/redfish/v1/Managers/TestBMC/VirtualMedia/CD1/Actions/VirtualMedia.EjectMedia", nil)
+	req.Header.Set("X-Auth-Token", token)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d", rec.Code)
+	}
+
+	allow := rec.Header().Get("Allow")
+	if allow != "POST" {
+		t.Errorf("expected Allow: POST, got %s", allow)
 	}
 }
