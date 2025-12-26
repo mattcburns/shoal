@@ -505,12 +505,12 @@ func TestInsertMedia_HappyPath(t *testing.T) {
 
 	// Update connection method to point to mock BMC
 	ctx := context.Background()
-	
+
 	// Delete existing connection method
 	if err := db.DeleteConnectionMethod(ctx, "test-cm-1"); err != nil {
 		t.Fatalf("failed to delete connection method: %v", err)
 	}
-	
+
 	// Create new connection method pointing to mock BMC
 	method := &models.ConnectionMethod{
 		ID:                   "test-cm-1",
@@ -526,7 +526,7 @@ func TestInsertMedia_HappyPath(t *testing.T) {
 	if err := db.CreateConnectionMethod(ctx, method); err != nil {
 		t.Fatalf("failed to create connection method: %v", err)
 	}
-	
+
 	// Recreate virtual media resources
 	insertVirtualMediaResource(t, db, "test-cm-1", "BMC", "CD1", "/redfish/v1/Managers/BMC/VirtualMedia/CD1",
 		`["CD","DVD"]`, `["HTTP","HTTPS"]`, "", "", false, false, "NotConnected")
@@ -634,12 +634,12 @@ func TestInsertMedia_BMCError(t *testing.T) {
 
 	// Update connection method
 	ctx := context.Background()
-	
+
 	// Delete existing connection method
 	if err := db.DeleteConnectionMethod(ctx, "test-cm-1"); err != nil {
 		t.Fatalf("failed to delete connection method: %v", err)
 	}
-	
+
 	// Create new connection method pointing to mock BMC
 	method := &models.ConnectionMethod{
 		ID:                   "test-cm-1",
@@ -654,7 +654,7 @@ func TestInsertMedia_BMCError(t *testing.T) {
 	if err := db.CreateConnectionMethod(ctx, method); err != nil {
 		t.Fatalf("failed to create connection method: %v", err)
 	}
-	
+
 	// Recreate virtual media resources
 	insertVirtualMediaResource(t, db, "test-cm-1", "BMC", "CD1", "/redfish/v1/Managers/BMC/VirtualMedia/CD1",
 		`["CD","DVD"]`, `["HTTP","HTTPS"]`, "", "", false, false, "NotConnected")
@@ -712,12 +712,12 @@ func TestEjectMedia_HappyPath(t *testing.T) {
 
 	// Update connection method
 	ctx := context.Background()
-	
+
 	// Delete existing connection method
 	if err := db.DeleteConnectionMethod(ctx, "test-cm-1"); err != nil {
 		t.Fatalf("failed to delete connection method: %v", err)
 	}
-	
+
 	// Create new connection method pointing to mock BMC
 	method := &models.ConnectionMethod{
 		ID:                   "test-cm-1",
@@ -732,7 +732,7 @@ func TestEjectMedia_HappyPath(t *testing.T) {
 	if err := db.CreateConnectionMethod(ctx, method); err != nil {
 		t.Fatalf("failed to create connection method: %v", err)
 	}
-	
+
 	// Recreate virtual media resources
 	insertVirtualMediaResource(t, db, "test-cm-1", "BMC", "USBStick1", "/redfish/v1/Managers/BMC/VirtualMedia/USBStick1",
 		`["USBStick"]`, `["HTTP","HTTPS","NFS"]`, "http://fileserver.example.com/isos/ubuntu-22.04.iso", "ubuntu-22.04.iso", true, true, "URI")

@@ -287,7 +287,7 @@ func (h *Handler) handleInsertMedia(w http.ResponseWriter, r *http.Request, bmcN
 		bodyBytes, _ := io.ReadAll(resp.Body)
 		slog.Error("BMC returned error for InsertMedia", "status", resp.StatusCode, "body", string(bodyBytes))
 		_ = h.db.UpdateVirtualMediaOperationStatus(r.Context(), op.ID, "failed", fmt.Sprintf("BMC returned status %d", resp.StatusCode))
-		
+
 		// Forward the error response from BMC
 		for key, values := range resp.Header {
 			for _, value := range values {
@@ -427,7 +427,7 @@ func (h *Handler) handleEjectMedia(w http.ResponseWriter, r *http.Request, bmcNa
 		bodyBytes, _ := io.ReadAll(resp.Body)
 		slog.Error("BMC returned error for EjectMedia", "status", resp.StatusCode, "body", string(bodyBytes))
 		_ = h.db.UpdateVirtualMediaOperationStatus(r.Context(), op.ID, "failed", fmt.Sprintf("BMC returned status %d", resp.StatusCode))
-		
+
 		// Forward the error response from BMC
 		for key, values := range resp.Header {
 			for _, value := range values {

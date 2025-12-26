@@ -165,7 +165,7 @@ func (s *VirtualMediaSyncer) SyncConnectionMethod(ctx context.Context, connMetho
 func (s *VirtualMediaSyncer) syncManagerVirtualMedia(ctx context.Context, cm *models.ConnectionMethod, managerID string) error {
 	// Query VirtualMedia collection
 	vmCollectionPath := fmt.Sprintf("/redfish/v1/Managers/%s/VirtualMedia", managerID)
-	
+
 	req, err := http.NewRequestWithContext(ctx, "GET", vmCollectionPath, nil)
 	if err != nil {
 		return fmt.Errorf("failed to create request: %w", err)
