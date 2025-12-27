@@ -234,6 +234,17 @@ func (db *DB) Migrate(ctx context.Context) error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_vmo_resource ON virtual_media_operations(virtual_media_resource_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_vmo_status ON virtual_media_operations(status)`,
+		// Provisioning templates for kickstart/preseed configurations
+		`CREATE TABLE IF NOT EXISTS provisioning_templates (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			system_id TEXT NOT NULL UNIQUE,
+			template_type TEXT NOT NULL,
+			content TEXT NOT NULL,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_provisioning_system ON provisioning_templates(system_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_provisioning_type ON provisioning_templates(template_type)`,
 	}
 
 	tx, err := db.conn.BeginTx(ctx, nil)
@@ -1364,5 +1375,68 @@ func (db *DB) UpdateVirtualMediaOperationStatus(ctx context.Context, id int64, s
 		return fmt.Errorf("failed to update virtual media operation status: %w", err)
 	}
 
+	return nil
+}
+
+// ProvisioningTemplate represents a stored provisioning configuration
+type ProvisioningTemplate struct {
+	ID           int64     `db:"id"`
+	SystemID     string    `db:"system_id"`
+	TemplateType string    `db:"template_type"` // "kickstart" or "preseed"
+	Content      string    `db:"content"`
+	CreatedAt    time.Time `db:"created_at"`
+	UpdatedAt    time.Time `db:"updated_at"`
+}
+
+// GetProvisioningTemplate retrieves a provisioning template by system ID and type
+func (db *DB) GetProvisioningTemplate(ctx context.Context, systemID, templateType string) (*ProvisioningTemplate, error) {
+	query := `SELECT id, system_id, template_type, content, created_at, updated_at 
+		FROM provisioning_templates 
+		WHERE system_id = ? AND template_type = ?`
+
+	var template ProvisioningTemplate
+	err := db.conn.QueryRowContext(ctx, query, systemID, templateType).Scan(
+		&template.ID,
+		&template.SystemID,
+		&template.TemplateType,
+		&template.Content,
+		&template.CreatedAt,
+		&template.UpdatedAt,
+	)
+
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to get provisioning template: %w", err)
+	}
+
+	return &template, nil
+}
+
+// UpsertProvisioningTemplate creates or updates a provisioning template
+func (db *DB) UpsertProvisioningTemplate(ctx context.Context, systemID, templateType, content string) error {
+	query := `INSERT INTO provisioning_templates (system_id, template_type, content, updated_at)
+		VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+		ON CONFLICT(system_id) DO UPDATE SET 
+			template_type = excluded.template_type,
+			content = excluded.content,
+			updated_at = CURRENT_TIMESTAMP`
+
+	_, err := db.conn.ExecContext(ctx, query, systemID, templateType, content)
+	if err != nil {
+		return fmt.Errorf("failed to upsert provisioning template: %w", err)
+	}
+
+	return nil
+}
+
+// DeleteProvisioningTemplate deletes a provisioning template by system ID
+func (db *DB) DeleteProvisioningTemplate(ctx context.Context, systemID string) error {
+	query := `DELETE FROM provisioning_templates WHERE system_id = ?`
+	_, err := db.conn.ExecContext(ctx, query, systemID)
+	if err != nil {
+		return fmt.Errorf("failed to delete provisioning template: %w", err)
+	}
 	return nil
 }

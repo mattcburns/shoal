@@ -70,5 +70,9 @@ func newMux(h *Handler) *http.ServeMux {
 	// Aggregator-specific BMC management endpoints
 	mux.HandleFunc("/redfish/v1/AggregationService/ManagedNodes/", h.auth.RequireAuth(http.HandlerFunc(h.handleManagedNodes)).ServeHTTP)
 
+	// Provisioning endpoints (non-Redfish, for kickstart/preseed configs)
+	mux.HandleFunc("/provision/kickstart/", h.handleProvisioning)
+	mux.HandleFunc("/provision/preseed/", h.handleProvisioning)
+
 	return mux
 }
