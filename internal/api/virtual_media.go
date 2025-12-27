@@ -237,6 +237,28 @@ func (h *Handler) handleInsertMedia(w http.ResponseWriter, r *http.Request, bmcN
 		return
 	}
 
+	// Handle OEM extension for OCI image conversion
+	if req.Oem != nil && req.Oem.Shoal != nil && req.Oem.Shoal.OCIConversion && strings.HasPrefix(req.Image, "oci://") {
+		if h.ociConverterFunc == nil {
+			slog.Error("OCI image conversion requested but not enabled")
+			h.writeErrorResponse(w, http.StatusServiceUnavailable, "Base.1.0.ServiceUnavailable", "OCI image conversion not enabled")
+			return
+		}
+
+		// Convert OCI image to bootable ISO
+		imageID, token, err := h.ociConverterFunc(r.Context(), req.Image)
+		if err != nil {
+			slog.Error("Failed to convert OCI image", "error", err, "image_ref", req.Image)
+			h.writeErrorResponse(w, http.StatusInternalServerError, "Base.1.0.InternalError", fmt.Sprintf("Failed to convert OCI image: %v", err))
+			return
+		}
+
+		// Build OCI ISO URL for the BMC
+		// Format: http://shoal:8082/oci-iso/{imageID}?token={token}
+		req.Image = fmt.Sprintf("%s/oci-iso/%s?token=%s", h.imageProxyURL, imageID, token)
+		slog.Info("Converted OCI image to ISO", "image_id", imageID, "url", req.Image)
+	}
+
 	// Handle OEM extension for cloud-init ISO generation
 	if req.Oem != nil && req.Oem.Shoal != nil && req.Oem.Shoal.GenerateCloudInit {
 		if h.cloudInitGeneratorFunc == nil {
@@ -266,8 +288,8 @@ func (h *Handler) handleInsertMedia(w http.ResponseWriter, r *http.Request, bmcN
 		slog.Info("Generated cloud-init ISO", "iso_id", isoID, "url", req.Image)
 	}
 
-	// Rewrite URL to use image proxy if enabled (for non-cloud-init URLs)
-	if h.imageProxyURL != "" && !isCloudInitRequest(req.Oem) {
+	// Rewrite URL to use image proxy if enabled (for non-cloud-init, non-OCI URLs)
+	if h.imageProxyURL != "" && !isCloudInitRequest(req.Oem) && !isOCIRequest(req.Oem, req.Image) {
 		rewrittenURL := h.rewriteImageURL(req.Image)
 		if rewrittenURL != req.Image {
 			slog.Info("Rewrote image URL for BMC", "original", req.Image, "rewritten", rewrittenURL)
@@ -518,4 +540,9 @@ func (h *Handler) rewriteImageURL(imageURL string) string {
 // isCloudInitRequest checks if the request is for cloud-init ISO generation
 func isCloudInitRequest(oem *redfish.InsertMediaRequestOem) bool {
 	return oem != nil && oem.Shoal != nil && oem.Shoal.GenerateCloudInit
+}
+
+// isOCIRequest checks if the request is for OCI image conversion
+func isOCIRequest(oem *redfish.InsertMediaRequestOem, imageURL string) bool {
+	return oem != nil && oem.Shoal != nil && oem.Shoal.OCIConversion && strings.HasPrefix(imageURL, "oci://")
 }

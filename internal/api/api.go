@@ -61,6 +61,7 @@ type Handler struct {
 	bmcSvc                 *bmc.Service
 	imageProxyURL          string // Base URL for image proxy (empty if disabled)
 	cloudInitGeneratorFunc func(userData, metaData string) (isoID, token string, err error)
+	ociConverterFunc       func(ctx context.Context, imageRef string) (imageID, token string, err error)
 }
 
 // ImageProxyConfig holds configuration for URL rewriting
@@ -68,6 +69,7 @@ type ImageProxyConfig struct {
 	Enabled                bool
 	BaseURL                string // e.g., "http://localhost:8082"
 	CloudInitGeneratorFunc func(userData, metaData string) (isoID, token string, err error)
+	OCIConverterFunc       func(ctx context.Context, imageRef string) (imageID, token string, err error)
 }
 
 // New creates a new API handler

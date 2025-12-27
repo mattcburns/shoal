@@ -52,9 +52,9 @@ func main() {
 		imageProxyAllowedSubnets = flag.String("image-proxy-allowed-subnets", "", "Comma-separated list of allowed IP subnets (CIDR notation)")
 		imageProxyRateLimit      = flag.Int("image-proxy-rate-limit", 10, "Max concurrent downloads per IP")
 		cloudInitStorageDir      = flag.String("cloud-init-storage-dir", "/var/lib/shoal/cloud-init", "Directory for storing generated cloud-init ISOs")
+		ociStorageDir            = flag.String("oci-storage-dir", "/var/lib/shoal/oci", "Directory for storing OCI-converted ISOs")
 	)
 	flag.Parse()
-
 	// Initialize logging
 	logger := logging.New(*logLevel)
 	slog.SetDefault(logger)
