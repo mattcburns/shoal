@@ -45,12 +45,15 @@ func TestSyncConsoleCapabilities(t *testing.T) {
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/redfish/v1/Managers/BMC":
-			// Return manager with console capabilities
+			// Return manager with console capabilities and Dell vendor info
 			manager := map[string]interface{}{
-				"@odata.id":   "/redfish/v1/Managers/BMC",
-				"@odata.type": "#Manager.v1_10_0.Manager",
-				"Id":          "BMC",
-				"Name":        "Manager",
+				"@odata.id":       "/redfish/v1/Managers/BMC",
+				"@odata.type":     "#Manager.v1_10_0.Manager",
+				"Id":              "BMC",
+				"Name":            "Manager",
+				"Manufacturer":    "Dell Inc.",
+				"Model":           "iDRAC9",
+				"FirmwareVersion": "4.40.00.00",
 				"SerialConsole": map[string]interface{}{
 					"ServiceEnabled":        true,
 					"MaxConcurrentSessions": 1,
@@ -69,6 +72,12 @@ func TestSyncConsoleCapabilities(t *testing.T) {
 						"Dell": map[string]interface{}{
 							"vKVMEndpoint": "/redfish/v1/Dell/Managers/BMC/DellvKVM",
 						},
+					},
+				},
+				"Oem": map[string]interface{}{
+					"Dell": map[string]interface{}{
+						"WebSocketEndpoint": "/redfish/v1/Dell/Managers/BMC/SerialInterfaces/1/WebSocket",
+						"vKVMEndpoint":      "/redfish/v1/Dell/Managers/BMC/DellvKVM",
 					},
 				},
 			}
@@ -123,6 +132,21 @@ func TestSyncConsoleCapabilities(t *testing.T) {
 			t.Errorf("Expected MaxConcurrentSession=1, got %d", serialCap.MaxConcurrentSession)
 		}
 
+		// Verify vendor data is stored
+		var vendorData map[string]interface{}
+		if err := json.Unmarshal([]byte(serialCap.VendorData), &vendorData); err != nil {
+			t.Errorf("Failed to parse vendor data: %v", err)
+		}
+		if vendor, ok := vendorData["vendor"].(string); !ok || vendor != "Dell" {
+			t.Errorf("Expected vendor Dell, got %v", vendorData["vendor"])
+		}
+		if model, ok := vendorData["model"].(string); !ok || model != "iDRAC9" {
+			t.Errorf("Expected model iDRAC9, got %v", vendorData["model"])
+		}
+		if wsSupport, ok := vendorData["supports_websocket"].(bool); !ok || !wsSupport {
+			t.Error("Expected supports_websocket to be true")
+		}
+
 		// Verify graphical console capability was stored
 		graphicalCap, err := db.GetConsoleCapability(ctx, "test-cm", "BMC", models.ConsoleTypeGraphical)
 		if err != nil {
@@ -137,6 +161,15 @@ func TestSyncConsoleCapabilities(t *testing.T) {
 		if graphicalCap.MaxConcurrentSession != 4 {
 			t.Errorf("Expected MaxConcurrentSession=4, got %d", graphicalCap.MaxConcurrentSession)
 		}
+
+		// Verify vendor data for graphical console
+		var gfxVendorData map[string]interface{}
+		if err := json.Unmarshal([]byte(graphicalCap.VendorData), &gfxVendorData); err != nil {
+			t.Errorf("Failed to parse vendor data: %v", err)
+		}
+		if html5Support, ok := gfxVendorData["supports_html5_console"].(bool); !ok || !html5Support {
+			t.Error("Expected supports_html5_console to be true")
+		}
 	})
 
 	t.Run("SyncConsoleCapabilities_Update", func(t *testing.T) {
@@ -144,8 +177,11 @@ func TestSyncConsoleCapabilities(t *testing.T) {
 		server2 := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.URL.Path == "/redfish/v1/Managers/BMC" {
 				manager := map[string]interface{}{
-					"@odata.id": "/redfish/v1/Managers/BMC",
-					"Id":        "BMC",
+					"@odata.id":       "/redfish/v1/Managers/BMC",
+					"Id":              "BMC",
+					"Manufacturer":    "Dell Inc.",
+					"Model":           "iDRAC9",
+					"FirmwareVersion": "4.50.00.00", // Updated firmware
 					"SerialConsole": map[string]interface{}{
 						"ServiceEnabled":        false, // Changed
 						"MaxConcurrentSessions": 2,     // Changed
@@ -155,6 +191,9 @@ func TestSyncConsoleCapabilities(t *testing.T) {
 						"ServiceEnabled":        true,
 						"MaxConcurrentSessions": 8, // Changed
 						"ConnectTypesSupported": []string{"KVMIP"},
+					},
+					"Oem": map[string]interface{}{
+						"Dell": map[string]interface{}{},
 					},
 				}
 				json.NewEncoder(w).Encode(manager)
@@ -187,6 +226,15 @@ func TestSyncConsoleCapabilities(t *testing.T) {
 		}
 		if serialCap.MaxConcurrentSession != 2 {
 			t.Errorf("Expected MaxConcurrentSession=2 after update, got %d", serialCap.MaxConcurrentSession)
+		}
+
+		// Verify firmware version was updated in vendor data
+		var vendorData map[string]interface{}
+		if err := json.Unmarshal([]byte(serialCap.VendorData), &vendorData); err != nil {
+			t.Errorf("Failed to parse vendor data: %v", err)
+		}
+		if fwVersion, ok := vendorData["firmware_version"].(string); !ok || fwVersion != "4.50.00.00" {
+			t.Errorf("Expected firmware_version 4.50.00.00, got %v", vendorData["firmware_version"])
 		}
 
 		// Verify graphical console was updated
@@ -408,7 +456,14 @@ func TestProcessConsoleCapability_ConnectTypes(t *testing.T) {
 				"ConnectTypesSupported": tc.connectTypes,
 			}
 
-			err := service.processConsoleCapability(ctx, "test-cm-types", fmt.Sprintf("MGR-%s", tc.name), models.ConsoleTypeSerial, consoleData)
+			// Create a mock vendor capability
+			vendorCap := &VendorCapability{
+				Vendor:               VendorUnknown,
+				SupportsWebSocket:    false,
+				SupportsHTML5Console: false,
+			}
+
+			err := service.processConsoleCapability(ctx, "test-cm-types", fmt.Sprintf("MGR-%s", tc.name), models.ConsoleTypeSerial, consoleData, vendorCap)
 			if err != nil {
 				t.Errorf("processConsoleCapability failed: %v", err)
 			}
@@ -421,5 +476,202 @@ func TestProcessConsoleCapability_ConnectTypes(t *testing.T) {
 				t.Errorf("Expected ConnectTypes=%s, got %s", tc.expected, cap.ConnectTypes)
 			}
 		})
+	}
+}
+
+func TestSyncConsoleCapabilities_Supermicro(t *testing.T) {
+	// Test Supermicro vendor detection and capability extraction
+	db, err := database.New(":memory:")
+	if err != nil {
+		t.Fatalf("Failed to create database: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	if err := db.Migrate(ctx); err != nil {
+		t.Fatalf("Failed to migrate database: %v", err)
+	}
+
+	// Create mock Supermicro BMC server
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/redfish/v1/Managers/BMC" {
+			manager := map[string]interface{}{
+				"@odata.id":       "/redfish/v1/Managers/BMC",
+				"Id":              "BMC",
+				"Manufacturer":    "Supermicro",
+				"Model":           "X11DPH-T",
+				"FirmwareVersion": "1.73.14",
+				"GraphicalConsole": map[string]interface{}{
+					"ServiceEnabled":        true,
+					"MaxConcurrentSessions": 2,
+					"ConnectTypesSupported": []string{"KVMIP"},
+				},
+				"Oem": map[string]interface{}{
+					"Supermicro": map[string]interface{}{
+						"iKVMEndpoint":     "/redfish/v1/Oem/Supermicro/iKVM",
+						"WebSocketSupport": true,
+					},
+				},
+			}
+			json.NewEncoder(w).Encode(manager)
+		}
+	}))
+	defer server.Close()
+
+	managers := []map[string]interface{}{{"Id": "BMC"}}
+	managersJSON, _ := json.Marshal(managers)
+
+	cm := &models.ConnectionMethod{
+		ID:                   "test-smc",
+		Name:                 "Test Supermicro",
+		ConnectionMethodType: "Redfish",
+		Address:              server.URL,
+		Username:             "admin",
+		Password:             "password",
+		Enabled:              true,
+		AggregatedManagers:   string(managersJSON),
+	}
+	if err := db.CreateConnectionMethod(ctx, cm); err != nil {
+		t.Fatalf("Failed to create connection method: %v", err)
+	}
+
+	service := New(db)
+	err = service.SyncConsoleCapabilities(ctx, "test-smc")
+	if err != nil {
+		t.Errorf("SyncConsoleCapabilities failed: %v", err)
+	}
+
+	// Verify graphical console capability with Supermicro vendor data
+	cap, err := db.GetConsoleCapability(ctx, "test-smc", "BMC", models.ConsoleTypeGraphical)
+	if err != nil {
+		t.Fatalf("Failed to get capability: %v", err)
+	}
+	if cap == nil {
+		t.Fatal("Expected capability to be stored")
+	}
+
+	var vendorData map[string]interface{}
+	if err := json.Unmarshal([]byte(cap.VendorData), &vendorData); err != nil {
+		t.Fatalf("Failed to parse vendor data: %v", err)
+	}
+
+	if vendor, ok := vendorData["vendor"].(string); !ok || vendor != "Supermicro" {
+		t.Errorf("Expected vendor Supermicro, got %v", vendorData["vendor"])
+	}
+	if model, ok := vendorData["model"].(string); !ok || model != "X11DPH-T" {
+		t.Errorf("Expected model X11DPH-T, got %v", vendorData["model"])
+	}
+	if wsSupport, ok := vendorData["supports_websocket"].(bool); !ok || !wsSupport {
+		t.Error("Expected supports_websocket to be true for Supermicro")
+	}
+}
+
+func TestSyncConsoleCapabilities_HPE(t *testing.T) {
+	// Test HPE vendor detection and capability extraction
+	db, err := database.New(":memory:")
+	if err != nil {
+		t.Fatalf("Failed to create database: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	if err := db.Migrate(ctx); err != nil {
+		t.Fatalf("Failed to migrate database: %v", err)
+	}
+
+	// Create mock HPE iLO server
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/redfish/v1/Managers/1" {
+			manager := map[string]interface{}{
+				"@odata.id":       "/redfish/v1/Managers/1",
+				"Id":              "1",
+				"Manufacturer":    "HPE",
+				"Model":           "iLO 5",
+				"FirmwareVersion": "2.44",
+				"SerialConsole": map[string]interface{}{
+					"ServiceEnabled":        true,
+					"MaxConcurrentSessions": 1,
+					"ConnectTypesSupported": []string{"Oem"},
+				},
+				"GraphicalConsole": map[string]interface{}{
+					"ServiceEnabled":        true,
+					"MaxConcurrentSessions": 6,
+					"ConnectTypesSupported": []string{"KVMIP", "Oem"},
+				},
+				"Oem": map[string]interface{}{
+					"Hpe": map[string]interface{}{
+						"IRCEndpoint":            "/redfish/v1/Managers/1/RemoteConsole",
+						"SerialConsoleWebSocket": "/redfish/v1/Managers/1/SerialConsole/WebSocket",
+					},
+				},
+			}
+			json.NewEncoder(w).Encode(manager)
+		}
+	}))
+	defer server.Close()
+
+	managers := []map[string]interface{}{{"Id": "1"}}
+	managersJSON, _ := json.Marshal(managers)
+
+	cm := &models.ConnectionMethod{
+		ID:                   "test-hpe",
+		Name:                 "Test HPE",
+		ConnectionMethodType: "Redfish",
+		Address:              server.URL,
+		Username:             "admin",
+		Password:             "password",
+		Enabled:              true,
+		AggregatedManagers:   string(managersJSON),
+	}
+	if err := db.CreateConnectionMethod(ctx, cm); err != nil {
+		t.Fatalf("Failed to create connection method: %v", err)
+	}
+
+	service := New(db)
+	err = service.SyncConsoleCapabilities(ctx, "test-hpe")
+	if err != nil {
+		t.Errorf("SyncConsoleCapabilities failed: %v", err)
+	}
+
+	// Verify serial console capability with HPE vendor data
+	serialCap, err := db.GetConsoleCapability(ctx, "test-hpe", "1", models.ConsoleTypeSerial)
+	if err != nil {
+		t.Fatalf("Failed to get serial capability: %v", err)
+	}
+	if serialCap == nil {
+		t.Fatal("Expected serial capability to be stored")
+	}
+
+	var serialVendorData map[string]interface{}
+	if err := json.Unmarshal([]byte(serialCap.VendorData), &serialVendorData); err != nil {
+		t.Fatalf("Failed to parse vendor data: %v", err)
+	}
+
+	if vendor, ok := serialVendorData["vendor"].(string); !ok || vendor != "HPE" {
+		t.Errorf("Expected vendor HPE, got %v", serialVendorData["vendor"])
+	}
+	if model, ok := serialVendorData["model"].(string); !ok || model != "iLO 5" {
+		t.Errorf("Expected model iLO 5, got %v", serialVendorData["model"])
+	}
+	if wsSupport, ok := serialVendorData["supports_websocket"].(bool); !ok || !wsSupport {
+		t.Error("Expected supports_websocket to be true for HPE")
+	}
+
+	// Verify graphical console capability
+	graphicalCap, err := db.GetConsoleCapability(ctx, "test-hpe", "1", models.ConsoleTypeGraphical)
+	if err != nil {
+		t.Fatalf("Failed to get graphical capability: %v", err)
+	}
+	if graphicalCap == nil {
+		t.Fatal("Expected graphical capability to be stored")
+	}
+
+	var gfxVendorData map[string]interface{}
+	if err := json.Unmarshal([]byte(graphicalCap.VendorData), &gfxVendorData); err != nil {
+		t.Fatalf("Failed to parse graphical vendor data: %v", err)
+	}
+
+	if html5Support, ok := gfxVendorData["supports_html5_console"].(bool); !ok || !html5Support {
+		t.Error("Expected supports_html5_console to be true for HPE")
 	}
 }

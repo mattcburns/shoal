@@ -90,16 +90,26 @@ func (s *Service) syncManagerConsoleCapabilities(ctx context.Context, cm *models
 		return fmt.Errorf("failed to decode manager response: %w", err)
 	}
 
+	// Detect vendor from Manager resource
+	vendor := DetectVendor(manager)
+	slog.Debug("Detected BMC vendor",
+		"connection_method", cm.Name,
+		"manager", managerID,
+		"vendor", vendor)
+
+	// Extract vendor-specific capabilities
+	vendorCapability := ExtractVendorCapability(vendor, manager)
+
 	// Extract SerialConsole capability
 	if serialConsole, ok := manager["SerialConsole"].(map[string]interface{}); ok {
-		if err := s.processConsoleCapability(ctx, cm.ID, managerID, models.ConsoleTypeSerial, serialConsole); err != nil {
+		if err := s.processConsoleCapability(ctx, cm.ID, managerID, models.ConsoleTypeSerial, serialConsole, vendorCapability); err != nil {
 			slog.Warn("Failed to process serial console capability", "error", err)
 		}
 	}
 
 	// Extract GraphicalConsole capability
 	if graphicalConsole, ok := manager["GraphicalConsole"].(map[string]interface{}); ok {
-		if err := s.processConsoleCapability(ctx, cm.ID, managerID, models.ConsoleTypeGraphical, graphicalConsole); err != nil {
+		if err := s.processConsoleCapability(ctx, cm.ID, managerID, models.ConsoleTypeGraphical, graphicalConsole, vendorCapability); err != nil {
 			slog.Warn("Failed to process graphical console capability", "error", err)
 		}
 	}
@@ -107,8 +117,8 @@ func (s *Service) syncManagerConsoleCapabilities(ctx context.Context, cm *models
 	return nil
 }
 
-// processConsoleCapability processes and stores a console capability
-func (s *Service) processConsoleCapability(ctx context.Context, connMethodID, managerID string, consoleType models.ConsoleType, consoleData map[string]interface{}) error {
+// processConsoleCapability processes and stores a console capability with vendor-specific enhancements
+func (s *Service) processConsoleCapability(ctx context.Context, connMethodID, managerID string, consoleType models.ConsoleType, consoleData map[string]interface{}, vendorCapability *VendorCapability) error {
 	capability := &models.ConsoleCapability{
 		ConnectionMethodID: connMethodID,
 		ManagerID:          managerID,
@@ -133,11 +143,41 @@ func (s *Service) processConsoleCapability(ctx context.Context, connMethodID, ma
 		}
 	}
 
-	// Extract vendor-specific OEM data if present
+	// Build enhanced vendor data with both console OEM and vendor capability info
+	vendorData := make(map[string]interface{})
+
+	// Include console-specific OEM data
 	if oem, ok := consoleData["Oem"].(map[string]interface{}); ok {
-		oemJSON, err := json.Marshal(oem)
+		vendorData["console_oem"] = oem
+	}
+
+	// Include vendor capability information
+	if vendorCapability != nil {
+		vendorData["vendor"] = vendorCapability.Vendor
+		vendorData["model"] = vendorCapability.Model
+		vendorData["firmware_version"] = vendorCapability.FirmwareVersion
+		vendorData["supports_websocket"] = vendorCapability.SupportsWebSocket
+		vendorData["supports_html5_console"] = vendorCapability.SupportsHTML5Console
+
+		// Add console-type-specific OEM endpoints
+		if consoleType == models.ConsoleTypeSerial && vendorCapability.SerialConsoleOEM != nil {
+			vendorData["serial_console_oem"] = vendorCapability.SerialConsoleOEM
+		}
+		if consoleType == models.ConsoleTypeGraphical && vendorCapability.GraphicalConsoleOEM != nil {
+			vendorData["graphical_console_oem"] = vendorCapability.GraphicalConsoleOEM
+		}
+
+		// Include additional vendor-specific capabilities
+		if len(vendorCapability.AdditionalCapabilities) > 0 {
+			vendorData["additional_capabilities"] = vendorCapability.AdditionalCapabilities
+		}
+	}
+
+	// Marshal vendor data to JSON
+	if len(vendorData) > 0 {
+		vendorDataJSON, err := json.Marshal(vendorData)
 		if err == nil {
-			capability.VendorData = string(oemJSON)
+			capability.VendorData = string(vendorDataJSON)
 		}
 	}
 
@@ -150,7 +190,8 @@ func (s *Service) processConsoleCapability(ctx context.Context, connMethodID, ma
 		"connection_method", connMethodID,
 		"manager", managerID,
 		"console_type", consoleType,
-		"enabled", capability.ServiceEnabled)
+		"enabled", capability.ServiceEnabled,
+		"vendor", vendorCapability.Vendor)
 
 	return nil
 }
