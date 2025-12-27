@@ -246,6 +246,44 @@ func (db *DB) Migrate(ctx context.Context) error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_provisioning_system ON provisioning_templates(system_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_provisioning_type ON provisioning_templates(template_type)`,
+		// Console capabilities discovered from BMCs
+		`CREATE TABLE IF NOT EXISTS console_capabilities (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			connection_method_id TEXT NOT NULL,
+			manager_id TEXT NOT NULL,
+			console_type TEXT NOT NULL,
+			service_enabled BOOLEAN DEFAULT 0,
+			max_concurrent_sessions INTEGER,
+			connect_types TEXT,
+			vendor_data TEXT,
+			last_updated DATETIME DEFAULT CURRENT_TIMESTAMP,
+			FOREIGN KEY(connection_method_id) REFERENCES connection_methods(id) ON DELETE CASCADE,
+			UNIQUE(connection_method_id, manager_id, console_type)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_cc_connection ON console_capabilities(connection_method_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_cc_type ON console_capabilities(console_type)`,
+		// Console sessions for tracking active and past console connections
+		`CREATE TABLE IF NOT EXISTS console_sessions (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			session_id TEXT UNIQUE NOT NULL,
+			connection_method_id TEXT NOT NULL,
+			manager_id TEXT NOT NULL,
+			console_type TEXT NOT NULL,
+			connect_type TEXT NOT NULL,
+			state TEXT DEFAULT 'connecting',
+			created_by TEXT NOT NULL,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			last_activity DATETIME DEFAULT CURRENT_TIMESTAMP,
+			disconnected_at DATETIME,
+			websocket_uri TEXT,
+			bmc_websocket_uri TEXT,
+			error_message TEXT,
+			metadata TEXT,
+			FOREIGN KEY(connection_method_id) REFERENCES connection_methods(id) ON DELETE CASCADE
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_cs_session ON console_sessions(session_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_cs_state ON console_sessions(state)`,
+		`CREATE INDEX IF NOT EXISTS idx_cs_connection ON console_sessions(connection_method_id)`,
 	}
 
 	tx, err := db.conn.BeginTx(ctx, nil)
@@ -1437,6 +1475,274 @@ func (db *DB) DeleteProvisioningTemplate(ctx context.Context, systemID, template
 	_, err := db.conn.ExecContext(ctx, query, systemID, templateType)
 	if err != nil {
 		return fmt.Errorf("failed to delete provisioning template: %w", err)
+	}
+	return nil
+}
+
+// Console Capability operations
+
+// UpsertConsoleCapability creates or updates a console capability record
+func (db *DB) UpsertConsoleCapability(ctx context.Context, cap *models.ConsoleCapability) error {
+	query := `
+		INSERT INTO console_capabilities (
+			connection_method_id, manager_id, console_type, service_enabled,
+			max_concurrent_sessions, connect_types, vendor_data, last_updated
+		) VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+		ON CONFLICT(connection_method_id, manager_id, console_type) DO UPDATE SET
+			service_enabled = excluded.service_enabled,
+			max_concurrent_sessions = excluded.max_concurrent_sessions,
+			connect_types = excluded.connect_types,
+			vendor_data = excluded.vendor_data,
+			last_updated = CURRENT_TIMESTAMP
+	`
+	_, err := db.conn.ExecContext(ctx, query,
+		cap.ConnectionMethodID, cap.ManagerID, cap.ConsoleType,
+		cap.ServiceEnabled, cap.MaxConcurrentSession, cap.ConnectTypes, cap.VendorData)
+	if err != nil {
+		return fmt.Errorf("failed to upsert console capability: %w", err)
+	}
+	return nil
+}
+
+// GetConsoleCapabilities retrieves console capabilities for a connection method and manager
+func (db *DB) GetConsoleCapabilities(ctx context.Context, connectionMethodID, managerID string) ([]models.ConsoleCapability, error) {
+	query := `
+		SELECT id, connection_method_id, manager_id, console_type, service_enabled,
+			   max_concurrent_sessions, connect_types, vendor_data, last_updated
+		FROM console_capabilities
+		WHERE connection_method_id = ? AND manager_id = ?
+		ORDER BY console_type
+	`
+	rows, err := db.conn.QueryContext(ctx, query, connectionMethodID, managerID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query console capabilities: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var capabilities []models.ConsoleCapability
+	for rows.Next() {
+		var cap models.ConsoleCapability
+		err := rows.Scan(
+			&cap.ID, &cap.ConnectionMethodID, &cap.ManagerID, &cap.ConsoleType,
+			&cap.ServiceEnabled, &cap.MaxConcurrentSession, &cap.ConnectTypes,
+			&cap.VendorData, &cap.LastUpdated,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan console capability: %w", err)
+		}
+		capabilities = append(capabilities, cap)
+	}
+
+	return capabilities, rows.Err()
+}
+
+// GetConsoleCapability retrieves a specific console capability by type
+func (db *DB) GetConsoleCapability(ctx context.Context, connectionMethodID, managerID string, consoleType models.ConsoleType) (*models.ConsoleCapability, error) {
+	query := `
+		SELECT id, connection_method_id, manager_id, console_type, service_enabled,
+			   max_concurrent_sessions, connect_types, vendor_data, last_updated
+		FROM console_capabilities
+		WHERE connection_method_id = ? AND manager_id = ? AND console_type = ?
+	`
+	var cap models.ConsoleCapability
+	err := db.conn.QueryRowContext(ctx, query, connectionMethodID, managerID, consoleType).Scan(
+		&cap.ID, &cap.ConnectionMethodID, &cap.ManagerID, &cap.ConsoleType,
+		&cap.ServiceEnabled, &cap.MaxConcurrentSession, &cap.ConnectTypes,
+		&cap.VendorData, &cap.LastUpdated,
+	)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to get console capability: %w", err)
+	}
+	return &cap, nil
+}
+
+// Console Session operations
+
+// CreateConsoleSession creates a new console session record
+func (db *DB) CreateConsoleSession(ctx context.Context, session *models.ConsoleSession) error {
+	query := `
+		INSERT INTO console_sessions (
+			session_id, connection_method_id, manager_id, console_type, connect_type,
+			state, created_by, websocket_uri, bmc_websocket_uri, metadata
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`
+	result, err := db.conn.ExecContext(ctx, query,
+		session.SessionID, session.ConnectionMethodID, session.ManagerID,
+		session.ConsoleType, session.ConnectType, session.State, session.CreatedBy,
+		session.WebSocketURI, session.BMCWebSocketURI, session.Metadata)
+	if err != nil {
+		return fmt.Errorf("failed to create console session: %w", err)
+	}
+
+	id, err := result.LastInsertId()
+	if err != nil {
+		return fmt.Errorf("failed to get last insert id: %w", err)
+	}
+	session.ID = id
+
+	return nil
+}
+
+// GetConsoleSession retrieves a console session by session ID
+func (db *DB) GetConsoleSession(ctx context.Context, sessionID string) (*models.ConsoleSession, error) {
+	query := `
+		SELECT id, session_id, connection_method_id, manager_id, console_type, connect_type,
+			   state, created_by, created_at, last_activity, disconnected_at,
+			   websocket_uri, bmc_websocket_uri, error_message, metadata
+		FROM console_sessions
+		WHERE session_id = ?
+	`
+	var session models.ConsoleSession
+	var disconnectedAt sql.NullTime
+	var errorMessage, metadata, websocketURI, bmcWebSocketURI sql.NullString
+
+	err := db.conn.QueryRowContext(ctx, query, sessionID).Scan(
+		&session.ID, &session.SessionID, &session.ConnectionMethodID, &session.ManagerID,
+		&session.ConsoleType, &session.ConnectType, &session.State, &session.CreatedBy,
+		&session.CreatedAt, &session.LastActivity, &disconnectedAt,
+		&websocketURI, &bmcWebSocketURI, &errorMessage, &metadata,
+	)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to get console session: %w", err)
+	}
+
+	if disconnectedAt.Valid {
+		session.DisconnectedAt = &disconnectedAt.Time
+	}
+	if errorMessage.Valid {
+		session.ErrorMessage = errorMessage.String
+	}
+	if metadata.Valid {
+		session.Metadata = metadata.String
+	}
+	if websocketURI.Valid {
+		session.WebSocketURI = websocketURI.String
+	}
+	if bmcWebSocketURI.Valid {
+		session.BMCWebSocketURI = bmcWebSocketURI.String
+	}
+
+	return &session, nil
+}
+
+// GetConsoleSessions retrieves all console sessions for a connection method
+func (db *DB) GetConsoleSessions(ctx context.Context, connectionMethodID string, state models.ConsoleSessionState) ([]models.ConsoleSession, error) {
+	var query string
+	var args []interface{}
+
+	if state != "" {
+		query = `
+			SELECT id, session_id, connection_method_id, manager_id, console_type, connect_type,
+				   state, created_by, created_at, last_activity, disconnected_at,
+				   websocket_uri, bmc_websocket_uri, error_message, metadata
+			FROM console_sessions
+			WHERE connection_method_id = ? AND state = ?
+			ORDER BY created_at DESC
+		`
+		args = []interface{}{connectionMethodID, state}
+	} else {
+		query = `
+			SELECT id, session_id, connection_method_id, manager_id, console_type, connect_type,
+				   state, created_by, created_at, last_activity, disconnected_at,
+				   websocket_uri, bmc_websocket_uri, error_message, metadata
+			FROM console_sessions
+			WHERE connection_method_id = ?
+			ORDER BY created_at DESC
+		`
+		args = []interface{}{connectionMethodID}
+	}
+
+	rows, err := db.conn.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query console sessions: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var sessions []models.ConsoleSession
+	for rows.Next() {
+		var session models.ConsoleSession
+		var disconnectedAt sql.NullTime
+		var errorMessage, metadata, websocketURI, bmcWebSocketURI sql.NullString
+
+		err := rows.Scan(
+			&session.ID, &session.SessionID, &session.ConnectionMethodID, &session.ManagerID,
+			&session.ConsoleType, &session.ConnectType, &session.State, &session.CreatedBy,
+			&session.CreatedAt, &session.LastActivity, &disconnectedAt,
+			&websocketURI, &bmcWebSocketURI, &errorMessage, &metadata,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan console session: %w", err)
+		}
+
+		if disconnectedAt.Valid {
+			session.DisconnectedAt = &disconnectedAt.Time
+		}
+		if errorMessage.Valid {
+			session.ErrorMessage = errorMessage.String
+		}
+		if metadata.Valid {
+			session.Metadata = metadata.String
+		}
+		if websocketURI.Valid {
+			session.WebSocketURI = websocketURI.String
+		}
+		if bmcWebSocketURI.Valid {
+			session.BMCWebSocketURI = bmcWebSocketURI.String
+		}
+
+		sessions = append(sessions, session)
+	}
+
+	return sessions, rows.Err()
+}
+
+// UpdateConsoleSessionState updates the state of a console session
+func (db *DB) UpdateConsoleSessionState(ctx context.Context, sessionID string, state models.ConsoleSessionState, errorMessage string) error {
+	var query string
+	var args []interface{}
+
+	if state == models.ConsoleSessionStateDisconnected {
+		query = `
+			UPDATE console_sessions
+			SET state = ?, error_message = ?, disconnected_at = CURRENT_TIMESTAMP, last_activity = CURRENT_TIMESTAMP
+			WHERE session_id = ?
+		`
+		args = []interface{}{state, errorMessage, sessionID}
+	} else if state == models.ConsoleSessionStateError {
+		query = `
+			UPDATE console_sessions
+			SET state = ?, error_message = ?, last_activity = CURRENT_TIMESTAMP
+			WHERE session_id = ?
+		`
+		args = []interface{}{state, errorMessage, sessionID}
+	} else {
+		query = `
+			UPDATE console_sessions
+			SET state = ?, last_activity = CURRENT_TIMESTAMP
+			WHERE session_id = ?
+		`
+		args = []interface{}{state, sessionID}
+	}
+
+	_, err := db.conn.ExecContext(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("failed to update console session state: %w", err)
+	}
+	return nil
+}
+
+// DeleteConsoleSession deletes a console session by session ID
+func (db *DB) DeleteConsoleSession(ctx context.Context, sessionID string) error {
+	query := `DELETE FROM console_sessions WHERE session_id = ?`
+	_, err := db.conn.ExecContext(ctx, query, sessionID)
+	if err != nil {
+		return fmt.Errorf("failed to delete console session: %w", err)
 	}
 	return nil
 }
