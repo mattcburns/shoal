@@ -240,6 +240,7 @@ type ShoalInsertMediaOem struct {
 	GenerateCloudInit bool   `json:"GenerateCloudInit,omitempty"`
 	UserData          string `json:"UserData,omitempty"`
 	MetaData          string `json:"MetaData,omitempty"`
+	OCIConversion     bool   `json:"OCIConversion,omitempty"`
 }
 
 // EjectMediaRequest represents the request body for EjectMedia action

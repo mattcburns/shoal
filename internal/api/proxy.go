@@ -91,7 +91,7 @@ func (h *Handler) handleBMCProxy(w http.ResponseWriter, r *http.Request, path st
 	} else if parts[1] == "Systems" && len(parts) >= 3 {
 		// Extract BMC name and system path
 		bmcName = parts[2]
-		
+
 		// Check if this is a Shoal OEM ProvisioningConfiguration request
 		// Path: /v1/Systems/{system-id}/Oem/Shoal/ProvisioningConfiguration/{Kickstart|Preseed}
 		if len(parts) == 6 && parts[3] == "Oem" && parts[4] == "Shoal" && parts[5] == "ProvisioningConfiguration" {
@@ -111,7 +111,7 @@ func (h *Handler) handleBMCProxy(w http.ResponseWriter, r *http.Request, path st
 			h.writeErrorResponse(w, http.StatusNotFound, "Base.1.0.ResourceNotFound", "Invalid configuration type. Use Kickstart or Preseed")
 			return
 		}
-		
+
 		// Get the actual system ID from the BMC
 		systemID, err := h.bmcSvc.GetFirstSystemID(r.Context(), bmcName)
 		if err != nil {

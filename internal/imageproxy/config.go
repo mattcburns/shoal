@@ -40,6 +40,9 @@ type Config struct {
 
 	// CloudInitStorageDir is the directory for storing generated cloud-init ISOs
 	CloudInitStorageDir string
+
+	// OCIStorageDir is the directory for storing OCI-converted ISOs
+	OCIStorageDir string
 }
 
 // NewConfig creates a new Config from command-line parameters

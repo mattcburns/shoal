@@ -231,6 +231,29 @@ curl -X POST \
 - `UserName` (optional): Username for authenticated image servers.
 - `Password` (optional): Password for authenticated image servers.
 
+**OCI Image Support (Shoal OEM Extension):**
+
+Shoal supports attaching OCI container images as bootable virtual media using the `Oem.Shoal.OCIConversion` extension:
+
+```bash
+curl -X POST \
+  http://localhost:8080/redfish/v1/Managers/bmc1/VirtualMedia/CD1/Actions/VirtualMedia.InsertMedia \
+  -H "X-Auth-Token: <token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "Image": "oci://ghcr.io/fedora/coreos:stable",
+    "Inserted": true,
+    "WriteProtected": true,
+    "Oem": {
+      "Shoal": {
+        "OCIConversion": true
+      }
+    }
+  }'
+```
+
+The OCI image is converted to a bootable ISO on-the-fly and cached for future use. See [OCI Image Support](7_oci_images.md) for details.
+
 **Response:** `204 No Content` on success.
 
 **Operation Tracking:** Each InsertMedia operation is recorded in Shoal's database with status tracking (pending → success/failed), username, timestamp, and any error messages.

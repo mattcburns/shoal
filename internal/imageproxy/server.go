@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"shoal/internal/cloudinit"
+	"shoal/internal/oci"
 )
 
 // Pre-parsed private IP ranges for SSRF protection
@@ -44,6 +45,7 @@ type Server struct {
 	client             *http.Client
 	rateLimiter        *rateLimiter
 	cloudInitGenerator *cloudinit.Generator
+	ociConverter       *oci.Converter
 }
 
 // rateLimiter tracks concurrent downloads per IP
@@ -56,6 +58,7 @@ type rateLimiter struct {
 // NewServer creates a new image proxy server
 func NewServer(config *Config) (*Server, error) {
 	var ciGenerator *cloudinit.Generator
+	var ociConv *oci.Converter
 	var err error
 
 	// Create cloud-init generator if storage directory is configured
@@ -63,6 +66,14 @@ func NewServer(config *Config) (*Server, error) {
 		ciGenerator, err = cloudinit.NewGenerator(config.CloudInitStorageDir)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create cloud-init generator: %w", err)
+		}
+	}
+
+	// Create OCI converter if storage directory is configured
+	if config.OCIStorageDir != "" {
+		ociConv, err = oci.NewConverter(config.OCIStorageDir)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create OCI converter: %w", err)
 		}
 	}
 
@@ -83,6 +94,7 @@ func NewServer(config *Config) (*Server, error) {
 			maxPerIP: config.RateLimit,
 		},
 		cloudInitGenerator: ciGenerator,
+		ociConverter:       ociConv,
 	}, nil
 }
 
@@ -518,4 +530,94 @@ func (s *Server) ServeCloudInitISO(w http.ResponseWriter, r *http.Request) {
 // GetCloudInitGenerator returns the cloud-init generator instance
 func (s *Server) GetCloudInitGenerator() *cloudinit.Generator {
 	return s.cloudInitGenerator
+}
+
+// GetOCIConverter returns the OCI converter instance
+func (s *Server) GetOCIConverter() *oci.Converter {
+	return s.ociConverter
+}
+
+const (
+	// ociISOPathPrefix is the URL path prefix for OCI-converted ISOs
+	ociISOPathPrefix = "oci-iso"
+	// ociISOPathSegments is the expected number of path segments
+	ociISOPathSegments = 2
+)
+
+// ServeOCIISO handles OCI-converted ISO download requests
+// GET /oci-iso/{isoID}?token={token}
+func (s *Server) ServeOCIISO(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if s.ociConverter == nil {
+		http.Error(w, "OCI image conversion not enabled", http.StatusServiceUnavailable)
+		return
+	}
+
+	// Extract ISO ID from path
+	// Path format: /oci-iso/{isoID}
+	pathParts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+	if len(pathParts) != ociISOPathSegments || pathParts[0] != ociISOPathPrefix {
+		http.Error(w, "Invalid path", http.StatusBadRequest)
+		return
+	}
+	isoID := pathParts[1]
+
+	// Get token from query parameter
+	token := r.URL.Query().Get("token")
+	if token == "" {
+		http.Error(w, "Missing token parameter", http.StatusBadRequest)
+		return
+	}
+
+	// Validate client IP against allowed subnets
+	clientIP := getClientIP(r)
+	if !s.isIPAllowed(clientIP) {
+		slog.Warn("OCI ISO request from disallowed IP", "ip", clientIP)
+		http.Error(w, "Access denied", http.StatusForbidden)
+		return
+	}
+
+	// Get ISO info and validate token
+	isoInfo, err := s.ociConverter.GetImage(isoID, token)
+	if err != nil {
+		slog.Warn("Failed to get OCI ISO", "iso_id", isoID, "error", err)
+		http.Error(w, "ISO not found or invalid token", http.StatusNotFound)
+		return
+	}
+
+	// Open ISO file
+	file, err := os.Open(isoInfo.ISOPath)
+	if err != nil {
+		slog.Error("Failed to open OCI ISO file", "path", isoInfo.ISOPath, "error", err)
+		http.Error(w, "Failed to read ISO", http.StatusInternalServerError)
+		return
+	}
+	defer file.Close()
+
+	// Get file info for Content-Length
+	fileInfo, err := file.Stat()
+	if err != nil {
+		slog.Error("Failed to stat OCI ISO file", "path", isoInfo.ISOPath, "error", err)
+		http.Error(w, "Failed to read ISO", http.StatusInternalServerError)
+		return
+	}
+
+	// Set headers
+	w.Header().Set("Content-Type", "application/x-iso9660-image")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"oci-boot-%s.iso\"", isoID))
+	w.Header().Set("Content-Length", fmt.Sprintf("%d", fileInfo.Size()))
+
+	// Stream the file
+	if r.Method == http.MethodGet {
+		_, err = io.Copy(w, file)
+		if err != nil {
+			slog.Warn("Error streaming OCI ISO", "iso_id", isoID, "error", err)
+		}
+	}
+
+	slog.Info("Served OCI ISO", "iso_id", isoID, "client_ip", clientIP, "image_ref", isoInfo.ImageRef)
 }

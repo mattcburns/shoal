@@ -19,6 +19,7 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 package api
 
 import (
+	"context"
 	"net/http"
 
 	"shoal/internal/auth"
@@ -37,9 +38,11 @@ func NewRouter(db *database.DB) http.Handler {
 func NewRouterWithImageProxy(db *database.DB, proxyConfig *ImageProxyConfig) http.Handler {
 	imageProxyURL := ""
 	var cloudInitGen func(string, string) (string, string, error)
+	var ociConv func(context.Context, string) (string, string, error)
 	if proxyConfig != nil && proxyConfig.Enabled {
 		imageProxyURL = proxyConfig.BaseURL
 		cloudInitGen = proxyConfig.CloudInitGeneratorFunc
+		ociConv = proxyConfig.OCIConverterFunc
 	}
 
 	h := &Handler{
@@ -48,6 +51,7 @@ func NewRouterWithImageProxy(db *database.DB, proxyConfig *ImageProxyConfig) htt
 		bmcSvc:                 bmc.New(db),
 		imageProxyURL:          imageProxyURL,
 		cloudInitGeneratorFunc: cloudInitGen,
+		ociConverterFunc:       ociConv,
 	}
 	return newMux(h)
 }
