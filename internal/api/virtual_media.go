@@ -267,7 +267,7 @@ func (h *Handler) handleInsertMedia(w http.ResponseWriter, r *http.Request, bmcN
 	}
 
 	// Rewrite URL to use image proxy if enabled (for non-cloud-init URLs)
-	if h.imageProxyURL != "" && (req.Oem == nil || req.Oem.Shoal == nil || !req.Oem.Shoal.GenerateCloudInit) {
+	if h.imageProxyURL != "" && !isCloudInitRequest(req.Oem) {
 		rewrittenURL := h.rewriteImageURL(req.Image)
 		if rewrittenURL != req.Image {
 			slog.Info("Rewrote image URL for BMC", "original", req.Image, "rewritten", rewrittenURL)
@@ -513,4 +513,9 @@ func (h *Handler) rewriteImageURL(imageURL string) string {
 
 	// Build proxy URL: http://shoal:8082/proxy?url=<encoded-url>
 	return fmt.Sprintf("%s/proxy?url=%s", h.imageProxyURL, encodedURL)
+}
+
+// isCloudInitRequest checks if the request is for cloud-init ISO generation
+func isCloudInitRequest(oem *redfish.InsertMediaRequestOem) bool {
+	return oem != nil && oem.Shoal != nil && oem.Shoal.GenerateCloudInit
 }

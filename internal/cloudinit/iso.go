@@ -78,7 +78,11 @@ func (g *Generator) GenerateISO(userData, metaData string) (isoID, token string,
 	if err := os.MkdirAll(tempDir, 0755); err != nil {
 		return "", "", fmt.Errorf("failed to create temp directory: %w", err)
 	}
-	defer os.RemoveAll(tempDir)
+	defer func() {
+		if err := os.RemoveAll(tempDir); err != nil {
+			slog.Warn("Failed to cleanup temporary directory", "path", tempDir, "error", err)
+		}
+	}()
 
 	// Write user-data file
 	userDataPath := filepath.Join(tempDir, "user-data")

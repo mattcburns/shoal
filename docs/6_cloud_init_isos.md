@@ -175,11 +175,17 @@ This format is compatible with most Linux distributions that support cloud-init,
 # Ubuntu/Debian
 sudo apt-get install genisoimage
 
-# RHEL/CentOS/Rocky
+# RHEL 8+/CentOS Stream/Rocky Linux
+sudo dnf install genisoimage
+
+# RHEL 7/CentOS 7 (older)
 sudo yum install genisoimage
 
 # Fedora
 sudo dnf install genisoimage
+
+# openSUSE/SLES
+sudo zypper install mkisofs
 ```
 
 ### BMC Cannot Download ISO

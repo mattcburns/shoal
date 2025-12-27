@@ -427,6 +427,13 @@ func (rl *rateLimiter) release(ip string) {
 	}
 }
 
+const (
+	// cloudInitPathPrefix is the URL path prefix for cloud-init ISOs
+	cloudInitPathPrefix = "cloudinit-iso"
+	// cloudInitPathSegments is the expected number of path segments
+	cloudInitPathSegments = 2
+)
+
 // ServeCloudInitISO handles cloud-init ISO download requests
 // GET /cloudinit-iso/{isoID}?token={token}
 func (s *Server) ServeCloudInitISO(w http.ResponseWriter, r *http.Request) {
@@ -443,7 +450,7 @@ func (s *Server) ServeCloudInitISO(w http.ResponseWriter, r *http.Request) {
 	// Extract ISO ID from path
 	// Path format: /cloudinit-iso/{isoID}
 	pathParts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
-	if len(pathParts) != 2 || pathParts[0] != "cloudinit-iso" {
+	if len(pathParts) != cloudInitPathSegments || pathParts[0] != cloudInitPathPrefix {
 		http.Error(w, "Invalid path", http.StatusBadRequest)
 		return
 	}
