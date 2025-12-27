@@ -130,17 +130,27 @@ func (h *Handler) handleProvisioningPreseed(w http.ResponseWriter, r *http.Reque
 	_, _ = w.Write([]byte(renderedContent))
 }
 
-// renderProvisioningTemplate performs simple variable substitution in provisioning templates
-// Supports {{system_id}} placeholder for now, can be extended for more variables
+// renderProvisioningTemplate performs simple variable substitution in provisioning templates.
+//
+// Currently supported template variables:
+//   - {{system_id}} - Replaced with the actual system ID from the request URL
+//
+// Template variables use double curly brace syntax: {{variable_name}}
+// All variable names are case-sensitive.
+//
+// Future versions may support additional variables such as:
+//   - {{hostname}} - System hostname
+//   - {{ip_address}} - System IP address
+//   - {{gateway}} - Network gateway
+//
+// Example template usage:
+//
+//	network --bootproto=dhcp --device=eth0 --hostname={{system_id}}
+//
+// The function returns the template content with all supported variables replaced.
 func (h *Handler) renderProvisioningTemplate(content, systemID string) string {
 	// Simple variable substitution - replace {{system_id}} with actual system ID
 	rendered := strings.ReplaceAll(content, "{{system_id}}", systemID)
-
-	// Future: Add more variable substitutions as needed
-	// - {{hostname}}
-	// - {{ip_address}}
-	// - {{gateway}}
-	// etc.
 
 	return rendered
 }
