@@ -30,6 +30,7 @@ import (
 	"time"
 
 	"shoal/internal/api"
+	"shoal/internal/bmc"
 	"shoal/internal/database"
 	"shoal/internal/imageproxy"
 	"shoal/internal/logging"
@@ -53,6 +54,10 @@ func main() {
 		imageProxyRateLimit      = flag.Int("image-proxy-rate-limit", 10, "Max concurrent downloads per IP")
 		cloudInitStorageDir      = flag.String("cloud-init-storage-dir", "/var/lib/shoal/cloud-init", "Directory for storing generated cloud-init ISOs")
 		ociStorageDir            = flag.String("oci-storage-dir", "/var/lib/shoal/oci", "Directory for storing OCI-converted ISOs")
+
+		// VirtualMedia state synchronization configuration
+		vmediaSyncEnabled  = flag.Bool("vmedia-sync-enabled", true, "Enable periodic VirtualMedia state synchronization")
+		vmediaSyncInterval = flag.Int("vmedia-sync-interval", 60, "VirtualMedia state sync interval in seconds")
 	)
 	flag.Parse()
 	// Initialize logging
@@ -173,6 +178,15 @@ func main() {
 	webHandler := web.New(db)
 	mux.Handle("/", webHandler)
 
+	// Create and start VirtualMedia state syncer if enabled
+	var vmediaSyncer *bmc.VirtualMediaSyncer
+	if *vmediaSyncEnabled {
+		bmcService := bmc.New(db)
+		syncInterval := time.Duration(*vmediaSyncInterval) * time.Second
+		vmediaSyncer = bmc.NewVirtualMediaSyncer(db, bmcService, syncInterval, true)
+		vmediaSyncer.Start(ctx)
+	}
+
 	server := &http.Server{
 		Addr:         ":" + *port,
 		Handler:      mux,
@@ -211,6 +225,11 @@ func main() {
 		if err := proxyServer.Shutdown(shutdownCtx); err != nil {
 			slog.Error("Image proxy server forced to shutdown", "error", err)
 		}
+	}
+
+	// Stop VirtualMedia syncer if it was started
+	if vmediaSyncer != nil {
+		vmediaSyncer.Stop()
 	}
 
 	slog.Info("Server exited")
