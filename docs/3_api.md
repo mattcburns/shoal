@@ -260,3 +260,85 @@ curl -X POST \
 - Errors from the downstream BMC are forwarded with original status codes and response bodies.
 
 All VirtualMedia operations require authentication (session token or basic auth).
+
+## Provisioning Configuration Endpoints
+
+Shoal provides HTTP endpoints to serve kickstart and preseed configuration files for automated system installations. These endpoints support dynamic variable substitution for system-specific customization.
+
+### Endpoints
+
+- `GET /provision/kickstart/{system-id}`: Retrieve kickstart configuration file for a specific system.
+- `GET /provision/preseed/{system-id}`: Retrieve preseed configuration file for a specific system.
+
+### Kickstart Configuration
+
+Serve Red Hat/CentOS kickstart files for automated installations.
+
+**Request:**
+```bash
+curl http://localhost:8080/provision/kickstart/server-001
+```
+
+**Response:** Returns the kickstart configuration as `text/plain` with HTTP 200.
+
+**Example kickstart content:**
+```bash
+#kickstart
+install
+text
+url --url="http://mirror.example.com/centos/7/os/x86_64"
+network --bootproto=dhcp --device=eth0 --hostname={{system_id}}
+rootpw --plaintext changeme
+...
+```
+
+### Preseed Configuration
+
+Serve Debian/Ubuntu preseed files for automated installations.
+
+**Request:**
+```bash
+curl http://localhost:8080/provision/preseed/ubuntu-001
+```
+
+**Response:** Returns the preseed configuration as `text/plain` with HTTP 200.
+
+**Example preseed content:**
+```bash
+d-i debian-installer/locale string en_US
+d-i netcfg/get_hostname string {{system_id}}
+d-i netcfg/get_domain string example.com
+...
+```
+
+### Template Variables
+
+Provisioning templates support dynamic variable substitution:
+
+- `{{system_id}}`: Replaced with the actual system ID from the request URL.
+
+Future versions may support additional variables like `{{hostname}}`, `{{ip_address}}`, `{{gateway}}`, etc.
+
+### Integration with Virtual Media
+
+Provisioning files are typically referenced in boot parameters when attaching installation media via Virtual Media:
+
+1. Attach installation ISO via Virtual Media InsertMedia action
+2. Configure boot parameters to reference the kickstart/preseed URL:
+   - For kickstart: `ks=http://shoal.example.com/provision/kickstart/system-001`
+   - For preseed: `url=http://shoal.example.com/provision/preseed/ubuntu-001`
+3. Boot the system from the attached virtual media
+4. The installer fetches the provisioning configuration from Shoal
+
+### Error Responses
+
+- `400 Bad Request`: System ID is missing or empty.
+- `404 Not Found`: No provisioning template found for the specified system.
+- `405 Method Not Allowed`: Only GET requests are supported.
+- `500 Internal Server Error`: Database error retrieving the template.
+
+**Note:** Provisioning endpoints do **not** require authentication to allow installer access during boot. Consider network-level access controls if security is a concern.
+
+### Managing Templates
+
+Provisioning templates are stored in Shoal's database. In the current implementation, templates can be managed via direct database operations. Future versions may include API endpoints for template management (create, update, delete).

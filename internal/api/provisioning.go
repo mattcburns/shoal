@@ -135,12 +135,12 @@ func (h *Handler) handleProvisioningPreseed(w http.ResponseWriter, r *http.Reque
 func (h *Handler) renderProvisioningTemplate(content, systemID string) string {
 	// Simple variable substitution - replace {{system_id}} with actual system ID
 	rendered := strings.ReplaceAll(content, "{{system_id}}", systemID)
-	
+
 	// Future: Add more variable substitutions as needed
 	// - {{hostname}}
 	// - {{ip_address}}
 	// - {{gateway}}
 	// etc.
-	
+
 	return rendered
 }
