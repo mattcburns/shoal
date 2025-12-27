@@ -1431,10 +1431,10 @@ func (db *DB) UpsertProvisioningTemplate(ctx context.Context, systemID, template
 	return nil
 }
 
-// DeleteProvisioningTemplate deletes a provisioning template by system ID
-func (db *DB) DeleteProvisioningTemplate(ctx context.Context, systemID string) error {
-	query := `DELETE FROM provisioning_templates WHERE system_id = ?`
-	_, err := db.conn.ExecContext(ctx, query, systemID)
+// DeleteProvisioningTemplate deletes a provisioning template by system ID and template type
+func (db *DB) DeleteProvisioningTemplate(ctx context.Context, systemID, templateType string) error {
+	query := `DELETE FROM provisioning_templates WHERE system_id = ? AND template_type = ?`
+	_, err := db.conn.ExecContext(ctx, query, systemID, templateType)
 	if err != nil {
 		return fmt.Errorf("failed to delete provisioning template: %w", err)
 	}

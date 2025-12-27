@@ -118,7 +118,7 @@ func TestProvisioningTemplate_Delete(t *testing.T) {
 	}
 
 	// Delete the template
-	err = db.DeleteProvisioningTemplate(ctx, "system-001")
+	err = db.DeleteProvisioningTemplate(ctx, "system-001", "kickstart")
 	if err != nil {
 		t.Fatalf("Failed to delete template: %v", err)
 	}
@@ -209,5 +209,56 @@ func TestProvisioningTemplate_MultipleTypes(t *testing.T) {
 
 	if kickstartTemplate.Content != kickstartContent {
 		t.Errorf("Expected kickstart content, got '%s'", kickstartTemplate.Content)
+	}
+}
+
+func TestProvisioningTemplate_SelectiveDelete(t *testing.T) {
+	db, err := New(":memory:")
+	if err != nil {
+		t.Fatalf("Failed to create database: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	ctx := context.Background()
+	if err := db.Migrate(ctx); err != nil {
+		t.Fatalf("Failed to run migrations: %v", err)
+	}
+
+	// Create both kickstart and preseed templates for the same system
+	err = db.UpsertProvisioningTemplate(ctx, "system-001", "kickstart", "kickstart content")
+	if err != nil {
+		t.Fatalf("Failed to create kickstart template: %v", err)
+	}
+
+	err = db.UpsertProvisioningTemplate(ctx, "system-001", "preseed", "preseed content")
+	if err != nil {
+		t.Fatalf("Failed to create preseed template: %v", err)
+	}
+
+	// Delete only the kickstart template
+	err = db.DeleteProvisioningTemplate(ctx, "system-001", "kickstart")
+	if err != nil {
+		t.Fatalf("Failed to delete kickstart template: %v", err)
+	}
+
+	// Verify kickstart is gone
+	kickstartTemplate, err := db.GetProvisioningTemplate(ctx, "system-001", "kickstart")
+	if err != nil {
+		t.Fatalf("Error getting kickstart template: %v", err)
+	}
+	if kickstartTemplate != nil {
+		t.Error("Expected kickstart template to be deleted")
+	}
+
+	// Verify preseed still exists
+	preseedTemplate, err := db.GetProvisioningTemplate(ctx, "system-001", "preseed")
+	if err != nil {
+		t.Fatalf("Error getting preseed template: %v", err)
+	}
+	if preseedTemplate == nil {
+		t.Error("Expected preseed template to still exist")
+	}
+	if preseedTemplate.Content != "preseed content" {
+		t.Errorf("Expected preseed content unchanged, got '%s'", preseedTemplate.Content)
 	}
 }
