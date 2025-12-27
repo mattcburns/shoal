@@ -176,34 +176,38 @@ func TestProvisioningTemplate_MultipleTypes(t *testing.T) {
 		t.Fatalf("Failed to create kickstart template: %v", err)
 	}
 
-	// Update to preseed (should replace the kickstart due to UNIQUE constraint on system_id)
+	// Create preseed template for the same system (should coexist with kickstart)
 	preseedContent := "preseed content"
 	err = db.UpsertProvisioningTemplate(ctx, "system-001", "preseed", preseedContent)
 	if err != nil {
 		t.Fatalf("Failed to create preseed template: %v", err)
 	}
 
-	// The second upsert should have updated the record
-	template, err := db.GetProvisioningTemplate(ctx, "system-001", "preseed")
+	// Both templates should exist
+	preseedTemplate, err := db.GetProvisioningTemplate(ctx, "system-001", "preseed")
 	if err != nil {
 		t.Fatalf("Failed to get preseed template: %v", err)
 	}
 
-	if template == nil {
+	if preseedTemplate == nil {
 		t.Fatal("Expected preseed template to be found")
 	}
 
-	if template.Content != preseedContent {
-		t.Errorf("Expected preseed content, got '%s'", template.Content)
+	if preseedTemplate.Content != preseedContent {
+		t.Errorf("Expected preseed content, got '%s'", preseedTemplate.Content)
 	}
 
-	// The kickstart template should no longer exist (replaced by preseed)
-	oldTemplate, err := db.GetProvisioningTemplate(ctx, "system-001", "kickstart")
+	// The kickstart template should still exist (not replaced by preseed)
+	kickstartTemplate, err := db.GetProvisioningTemplate(ctx, "system-001", "kickstart")
 	if err != nil {
 		t.Fatalf("Error getting kickstart template: %v", err)
 	}
 
-	if oldTemplate != nil {
-		t.Error("Expected kickstart template to be replaced by preseed")
+	if kickstartTemplate == nil {
+		t.Error("Expected kickstart template to still exist")
+	}
+
+	if kickstartTemplate.Content != kickstartContent {
+		t.Errorf("Expected kickstart content, got '%s'", kickstartTemplate.Content)
 	}
 }

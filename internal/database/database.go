@@ -237,11 +237,12 @@ func (db *DB) Migrate(ctx context.Context) error {
 		// Provisioning templates for kickstart/preseed configurations
 		`CREATE TABLE IF NOT EXISTS provisioning_templates (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			system_id TEXT NOT NULL UNIQUE,
+			system_id TEXT NOT NULL,
 			template_type TEXT NOT NULL,
 			content TEXT NOT NULL,
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			UNIQUE(system_id, template_type)
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_provisioning_system ON provisioning_templates(system_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_provisioning_type ON provisioning_templates(template_type)`,
@@ -1418,8 +1419,7 @@ func (db *DB) GetProvisioningTemplate(ctx context.Context, systemID, templateTyp
 func (db *DB) UpsertProvisioningTemplate(ctx context.Context, systemID, templateType, content string) error {
 	query := `INSERT INTO provisioning_templates (system_id, template_type, content, updated_at)
 		VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-		ON CONFLICT(system_id) DO UPDATE SET 
-			template_type = excluded.template_type,
+		ON CONFLICT(system_id, template_type) DO UPDATE SET 
 			content = excluded.content,
 			updated_at = CURRENT_TIMESTAMP`
 
