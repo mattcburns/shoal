@@ -906,8 +906,10 @@ func (h *Handler) handleBMCDetails(w http.ResponseWriter, r *http.Request) {
 
 <div id="bmc-details" style="display: none;">
 	<!-- Tabs -->
+	<div style="margin-bottom: 20px;">
 		<button id="tab-overview" class="btn btn-primary">Overview</button>
 		<button id="tab-settings" class="btn">Settings</button>
+		<button id="tab-virtualmedia" class="btn">Virtual Media</button>
 	</div>
 
 	<div id="tab-overview-content">
@@ -1002,6 +1004,49 @@ func (h *Handler) handleBMCDetails(w http.ResponseWriter, r *http.Request) {
 		</div>
 	</div>
 
+	<div id="tab-virtualmedia-content" style="display:none;">
+		<div class="details-section">
+			<h3>Virtual Media Slots</h3>
+			<div id="vmedia-status" style="margin-bottom:8px; color:#333;">Loading virtual media...</div>
+			<div id="vmedia-slots"></div>
+		</div>
+
+		<div class="details-section">
+			<h3>Attached Media</h3>
+			<div id="vmedia-attached-list"></div>
+		</div>
+	</div>
+
+</div>
+
+<!-- Virtual Media Attach Dialog -->
+<div id="vmedia-attach-dialog" style="display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.5); z-index:1000;">
+	<div style="position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); background:white; padding:30px; border-radius:8px; max-width:600px; width:90%; box-shadow:0 4px 12px rgba(0,0,0,0.3);">
+		<h3 style="margin-top:0;">Attach Virtual Media</h3>
+		<div id="vmedia-attach-error" class="alert alert-danger" style="display:none; margin-bottom:15px;"></div>
+		<form id="vmedia-attach-form">
+			<input type="hidden" id="vmedia-attach-slot-id" />
+			<div class="form-group">
+				<label for="vmedia-image-url">Image URL *</label>
+				<input type="text" id="vmedia-image-url" class="form-control" placeholder="http://server.example.com/images/ubuntu-22.04.iso" required />
+				<small style="color:#666;">Supported protocols: HTTP, HTTPS, NFS, CIFS</small>
+			</div>
+			<div class="form-group">
+				<label>
+					<input type="checkbox" id="vmedia-write-protected" checked /> Write Protected
+				</label>
+			</div>
+			<div class="form-group">
+				<label>
+					<input type="checkbox" id="vmedia-inserted" checked /> Inserted
+				</label>
+			</div>
+			<div style="margin-top:20px; display:flex; gap:10px; justify-content:flex-end;">
+				<button type="button" class="btn btn-danger" onclick="closeAttachDialog()">Cancel</button>
+				<button type="submit" class="btn btn-primary">Attach Media</button>
+			</div>
+		</form>
+	</div>
 </div>
 
 <div id="error-display" class="alert alert-danger" style="display: none;"></div>
@@ -1079,6 +1124,14 @@ func (h *Handler) handleBMCDetails(w http.ResponseWriter, r *http.Request) {
 </style>
 
 <script>
+// Helper function to escape HTML (used across multiple tabs)
+function escapeHtml(str) {
+    if (!str) return '';
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
+}
+
 function formatBytes(bytes) {
     if (bytes === 0) return '0 Bytes';
     const k = 1024;
@@ -1235,6 +1288,7 @@ function loadBMCDetails() {
             displayStorageDevices(data.storage_devices);
             displaySELEntries(data.sel_entries);
 			initSettingsTab(bmcName);
+			initVirtualMediaTab(bmcName);
         })
         .catch(function(error) {
             document.getElementById('loading-indicator').style.display = 'none';
@@ -1249,25 +1303,40 @@ loadBMCDetails();
 function initSettingsTab(bmcName) {
 	const tabOverviewBtn = document.getElementById('tab-overview');
 	const tabSettingsBtn = document.getElementById('tab-settings');
+	const tabVirtualMediaBtn = document.getElementById('tab-virtualmedia');
 	const overview = document.getElementById('tab-overview-content');
 	const settings = document.getElementById('tab-settings-content');
+	const virtualmedia = document.getElementById('tab-virtualmedia-content');
 
 	function showOverview() {
 		tabOverviewBtn.classList.add('btn-primary');
 		tabSettingsBtn.classList.remove('btn-primary');
+		tabVirtualMediaBtn.classList.remove('btn-primary');
 		overview.style.display = '';
 		settings.style.display = 'none';
+		virtualmedia.style.display = 'none';
 	}
 	function showSettings() {
 		tabSettingsBtn.classList.add('btn-primary');
 		tabOverviewBtn.classList.remove('btn-primary');
+		tabVirtualMediaBtn.classList.remove('btn-primary');
 		overview.style.display = 'none';
 		settings.style.display = '';
+		virtualmedia.style.display = 'none';
 		fetchSettings();
 		loadBootOrderWidget();
 	}
+	function showVirtualMedia() {
+		tabVirtualMediaBtn.classList.add('btn-primary');
+		tabOverviewBtn.classList.remove('btn-primary');
+		tabSettingsBtn.classList.remove('btn-primary');
+		overview.style.display = 'none';
+		settings.style.display = 'none';
+		virtualmedia.style.display = '';
+	}
 	tabOverviewBtn.addEventListener('click', showOverview);
 	tabSettingsBtn.addEventListener('click', showSettings);
+	tabVirtualMediaBtn.addEventListener('click', showVirtualMedia);
 
 	let page = 1;
 	const tbody = document.querySelector('#settings-table tbody');
@@ -1486,13 +1555,6 @@ function initSettingsTab(bmcName) {
 		return messageDiv;
 	}
 
-	// Helper function to escape HTML
-	function escapeHtml(str) {
-		const div = document.createElement('div');
-		div.textContent = str;
-		return div.innerHTML;
-	}
-
 	// Boot Order widget
 	function loadBootOrderWidget() {
 		const status = document.getElementById('boot-order-status');
@@ -1668,6 +1730,263 @@ function initSettingsTab(bmcName) {
 	}
     // Profiles UI removed
 }
+
+// Virtual Media Tab Implementation
+function initVirtualMediaTab(bmcName) {
+	let virtualMediaSlots = [];
+	let currentManagerId = null;
+
+	// Load virtual media slots from API
+	async function loadVirtualMediaSlots() {
+		const statusDiv = document.getElementById('vmedia-status');
+		const slotsDiv = document.getElementById('vmedia-slots');
+		const attachedDiv = document.getElementById('vmedia-attached-list');
+
+		try {
+			statusDiv.textContent = 'Loading virtual media slots...';
+			
+			// First, we need to get the manager ID from the connection methods
+			// For simplicity, we'll use the BMC name as the manager ID
+			currentManagerId = bmcName;
+			
+			const response = await fetch('/redfish/v1/Managers/' + encodeURIComponent(bmcName) + '/VirtualMedia');
+			if (!response.ok) {
+				throw new Error('Failed to fetch virtual media: ' + response.statusText);
+			}
+			
+			const collection = await response.json();
+			
+			if (!collection.Members || collection.Members.length === 0) {
+				statusDiv.textContent = 'No virtual media slots available';
+				slotsDiv.innerHTML = '<p>This BMC does not support virtual media.</p>';
+				attachedDiv.innerHTML = '<p>No media attached.</p>';
+				return;
+			}
+			
+			// Fetch details for each slot
+			virtualMediaSlots = [];
+			const slotPromises = collection.Members.map(member => 
+				fetch(member['@odata.id']).then(r => r.json())
+			);
+			
+			virtualMediaSlots = await Promise.all(slotPromises);
+			
+			statusDiv.textContent = 'Found ' + virtualMediaSlots.length + ' virtual media slot(s)';
+			renderVirtualMediaSlots();
+			renderAttachedMedia();
+			
+		} catch (error) {
+			statusDiv.textContent = 'Error loading virtual media';
+			slotsDiv.innerHTML = '<div class="alert alert-danger">Error: ' + error.message + '</div>';
+		}
+	}
+
+	// Render virtual media slots
+	function renderVirtualMediaSlots() {
+		const slotsDiv = document.getElementById('vmedia-slots');
+		
+		let html = '<div style="display:grid; gap:15px;">';
+		
+		virtualMediaSlots.forEach(slot => {
+			const slotId = slot.Id;
+			const isInserted = slot.Inserted || false;
+			const imageName = slot.ImageName || 'None';
+			const imageUrl = slot.Image || '';
+			const mediaTypes = (slot.MediaTypes || []).join(', ') || 'Unknown';
+			const writeProtected = slot.WriteProtected ? 'Yes' : 'No';
+			
+			html += '<div class="interface-card">';
+			html += '<h4>' + escapeHtml(slotId);
+			if (isInserted) {
+				html += ' <span style="color:#28a745; font-size:14px;">● Inserted</span>';
+			} else {
+				html += ' <span style="color:#666; font-size:14px;">○ Empty</span>';
+			}
+			html += '</h4>';
+			
+			html += '<p><strong>Media Types:</strong> ' + escapeHtml(mediaTypes) + '</p>';
+			
+			if (isInserted) {
+				html += '<p><strong>Image:</strong> ' + escapeHtml(imageName) + '</p>';
+				if (imageUrl) {
+					html += '<p><strong>URL:</strong> <span style="font-size:12px; word-break:break-all;">' + escapeHtml(imageUrl) + '</span></p>';
+				}
+				html += '<p><strong>Write Protected:</strong> ' + writeProtected + '</p>';
+				html += '<button class="btn btn-warning" onclick="ejectMedia(\'' + escapeHtml(slotId) + '\')">Eject Media</button>';
+			} else {
+				html += '<button class="btn btn-primary" onclick="openAttachDialog(\'' + escapeHtml(slotId) + '\')">Attach Media</button>';
+			}
+			
+			html += '</div>';
+		});
+		
+		html += '</div>';
+		slotsDiv.innerHTML = html;
+	}
+
+	// Render attached media list
+	function renderAttachedMedia() {
+		const attachedDiv = document.getElementById('vmedia-attached-list');
+		
+		const attachedSlots = virtualMediaSlots.filter(slot => slot.Inserted);
+		
+		if (attachedSlots.length === 0) {
+			attachedDiv.innerHTML = '<p>No media currently attached.</p>';
+			return;
+		}
+		
+		let html = '<table class="table">';
+		html += '<thead><tr><th>Slot</th><th>Image Name</th><th>URL</th><th>Write Protected</th><th>Actions</th></tr></thead>';
+		html += '<tbody>';
+		
+		attachedSlots.forEach(slot => {
+			html += '<tr>';
+			html += '<td>' + escapeHtml(slot.Id) + '</td>';
+			html += '<td>' + escapeHtml(slot.ImageName || '') + '</td>';
+			html += '<td style="word-break:break-all; max-width:300px;">' + escapeHtml(slot.Image || '') + '</td>';
+			html += '<td>' + (slot.WriteProtected ? 'Yes' : 'No') + '</td>';
+			html += '<td><button class="btn btn-warning btn-sm" onclick="ejectMedia(\'' + escapeHtml(slot.Id) + '\')">Eject</button></td>';
+			html += '</tr>';
+		});
+		
+		html += '</tbody></table>';
+		attachedDiv.innerHTML = html;
+	}
+
+	// Attach media dialog handlers
+	window.openAttachDialog = function(slotId) {
+		document.getElementById('vmedia-attach-slot-id').value = slotId;
+		document.getElementById('vmedia-image-url').value = '';
+		document.getElementById('vmedia-write-protected').checked = true;
+		document.getElementById('vmedia-inserted').checked = true;
+		document.getElementById('vmedia-attach-error').style.display = 'none';
+		document.getElementById('vmedia-attach-dialog').style.display = 'block';
+	};
+
+	window.closeAttachDialog = function() {
+		document.getElementById('vmedia-attach-dialog').style.display = 'none';
+	};
+
+	// Attach media form submission
+	document.getElementById('vmedia-attach-form').addEventListener('submit', async function(e) {
+		e.preventDefault();
+		
+		const slotId = document.getElementById('vmedia-attach-slot-id').value;
+		const imageUrl = document.getElementById('vmedia-image-url').value.trim();
+		const writeProtected = document.getElementById('vmedia-write-protected').checked;
+		const inserted = document.getElementById('vmedia-inserted').checked;
+		const errorDiv = document.getElementById('vmedia-attach-error');
+		
+		// Frontend validation
+		if (!imageUrl) {
+			errorDiv.textContent = 'Image URL is required';
+			errorDiv.style.display = 'block';
+			return;
+		}
+		
+		// Validate URL format
+		try {
+			const url = new URL(imageUrl);
+			const protocol = url.protocol.toLowerCase();
+			if (!['http:', 'https:', 'nfs:', 'cifs:'].includes(protocol)) {
+				errorDiv.textContent = 'Invalid protocol. Supported: HTTP, HTTPS, NFS, CIFS';
+				errorDiv.style.display = 'block';
+				return;
+			}
+		} catch (err) {
+			errorDiv.textContent = 'Invalid URL format';
+			errorDiv.style.display = 'block';
+			return;
+		}
+		
+		errorDiv.style.display = 'none';
+		
+		// Disable form
+		const submitBtn = e.target.querySelector('button[type="submit"]');
+		const originalText = submitBtn.textContent;
+		submitBtn.disabled = true;
+		submitBtn.textContent = 'Attaching...';
+		
+		try {
+			const response = await fetch(
+				'/redfish/v1/Managers/' + encodeURIComponent(currentManagerId) + 
+				'/VirtualMedia/' + encodeURIComponent(slotId) + 
+				'/Actions/VirtualMedia.InsertMedia',
+				{
+					method: 'POST',
+					headers: {
+						'Content-Type': 'application/json'
+					},
+					body: JSON.stringify({
+						Image: imageUrl,
+						Inserted: inserted,
+						WriteProtected: writeProtected
+					})
+				}
+			);
+			
+			if (!response.ok) {
+				const errorData = await response.json().catch(() => ({ error: { message: 'Unknown error' } }));
+				throw new Error(errorData.error?.message || 'Failed to attach media');
+			}
+			
+			// Success - close dialog and reload
+			closeAttachDialog();
+			await loadVirtualMediaSlots();
+			
+		} catch (error) {
+			errorDiv.textContent = 'Error: ' + error.message;
+			errorDiv.style.display = 'block';
+		} finally {
+			submitBtn.disabled = false;
+			submitBtn.textContent = originalText;
+		}
+	});
+
+	// Eject media handler
+	window.ejectMedia = async function(slotId) {
+		if (!confirm('Are you sure you want to eject media from slot "' + slotId + '"?')) {
+			return;
+		}
+		
+		try {
+			const response = await fetch(
+				'/redfish/v1/Managers/' + encodeURIComponent(currentManagerId) + 
+				'/VirtualMedia/' + encodeURIComponent(slotId) + 
+				'/Actions/VirtualMedia.EjectMedia',
+				{
+					method: 'POST',
+					headers: {
+						'Content-Type': 'application/json'
+					},
+					body: JSON.stringify({})
+				}
+			);
+			
+			if (!response.ok) {
+				const errorData = await response.json().catch(() => ({ error: { message: 'Unknown error' } }));
+				throw new Error(errorData.error?.message || 'Failed to eject media');
+			}
+			
+			// Success - reload
+			await loadVirtualMediaSlots();
+			
+		} catch (error) {
+			alert('Error ejecting media: ' + error.message);
+		}
+	};
+
+	// Initial load when tab is first accessed
+	const tabVirtualMediaBtn = document.getElementById('tab-virtualmedia');
+	if (tabVirtualMediaBtn) {
+		tabVirtualMediaBtn.addEventListener('click', function() {
+			if (virtualMediaSlots.length === 0) {
+				loadVirtualMediaSlots();
+			}
+		});
+	}
+}
+
 </script>
 {{end}}`
 
