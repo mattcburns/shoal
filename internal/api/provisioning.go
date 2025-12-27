@@ -22,40 +22,8 @@ import (
 	"strings"
 )
 
-// handleProvisioning routes provisioning requests to the appropriate handler
-func (h *Handler) handleProvisioning(w http.ResponseWriter, r *http.Request) {
-	path := r.URL.Path
-
-	// Route to kickstart handler
-	if strings.HasPrefix(path, "/provision/kickstart/") {
-		systemID := strings.TrimPrefix(path, "/provision/kickstart/")
-		systemID = strings.TrimSuffix(systemID, "/")
-		if systemID == "" {
-			h.writeErrorResponse(w, http.StatusBadRequest, "Base.1.0.PropertyMissing", "System ID is required")
-			return
-		}
-		h.handleProvisioningKickstart(w, r, systemID)
-		return
-	}
-
-	// Route to preseed handler
-	if strings.HasPrefix(path, "/provision/preseed/") {
-		systemID := strings.TrimPrefix(path, "/provision/preseed/")
-		systemID = strings.TrimSuffix(systemID, "/")
-		if systemID == "" {
-			h.writeErrorResponse(w, http.StatusBadRequest, "Base.1.0.PropertyMissing", "System ID is required")
-			return
-		}
-		h.handleProvisioningPreseed(w, r, systemID)
-		return
-	}
-
-	// Unknown provisioning endpoint
-	h.writeErrorResponse(w, http.StatusNotFound, "Base.1.0.ResourceNotFound", "Provisioning resource not found")
-}
-
 // handleProvisioningKickstart serves kickstart configuration files for system installations
-// GET /provision/kickstart/{system-id}
+// GET /redfish/v1/Systems/{system-id}/Oem/Shoal/ProvisioningConfiguration/Kickstart
 func (h *Handler) handleProvisioningKickstart(w http.ResponseWriter, r *http.Request, systemID string) {
 	if r.Method == http.MethodOptions {
 		h.writeAllow(w, http.MethodGet)
@@ -93,7 +61,7 @@ func (h *Handler) handleProvisioningKickstart(w http.ResponseWriter, r *http.Req
 }
 
 // handleProvisioningPreseed serves preseed configuration files for Debian/Ubuntu installations
-// GET /provision/preseed/{system-id}
+// GET /redfish/v1/Systems/{system-id}/Oem/Shoal/ProvisioningConfiguration/Preseed
 func (h *Handler) handleProvisioningPreseed(w http.ResponseWriter, r *http.Request, systemID string) {
 	if r.Method == http.MethodOptions {
 		h.writeAllow(w, http.MethodGet)

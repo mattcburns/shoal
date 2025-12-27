@@ -59,8 +59,8 @@ reboot
 		t.Fatalf("Failed to insert kickstart template: %v", err)
 	}
 
-	// Request the kickstart file
-	req := httptest.NewRequest(http.MethodGet, "/provision/kickstart/system-001", nil)
+	// Request the kickstart file via OEM endpoint
+	req := httptest.NewRequest(http.MethodGet, "/redfish/v1/Systems/system-001/Oem/Shoal/ProvisioningConfiguration/Kickstart", nil)
 	rec := httptest.NewRecorder()
 
 	handler.ServeHTTP(rec, req)
@@ -140,8 +140,8 @@ d-i finish-install/reboot_in_progress note
 		t.Fatalf("Failed to insert preseed template: %v", err)
 	}
 
-	// Request the preseed file
-	req := httptest.NewRequest(http.MethodGet, "/provision/preseed/ubuntu-001", nil)
+	// Request the preseed file via OEM endpoint
+	req := httptest.NewRequest(http.MethodGet, "/redfish/v1/Systems/ubuntu-001/Oem/Shoal/ProvisioningConfiguration/Preseed", nil)
 	rec := httptest.NewRecorder()
 
 	handler.ServeHTTP(rec, req)
@@ -173,7 +173,7 @@ func TestProvisioningKickstart_NotFound(t *testing.T) {
 	defer func() { _ = db.Close() }()
 
 	// Request a kickstart file that doesn't exist
-	req := httptest.NewRequest(http.MethodGet, "/provision/kickstart/nonexistent-system", nil)
+	req := httptest.NewRequest(http.MethodGet, "/redfish/v1/Systems/nonexistent-system/Oem/Shoal/ProvisioningConfiguration/Kickstart", nil)
 	rec := httptest.NewRecorder()
 
 	handler.ServeHTTP(rec, req)
@@ -188,7 +188,7 @@ func TestProvisioningPreseed_NotFound(t *testing.T) {
 	defer func() { _ = db.Close() }()
 
 	// Request a preseed file that doesn't exist
-	req := httptest.NewRequest(http.MethodGet, "/provision/preseed/nonexistent-system", nil)
+	req := httptest.NewRequest(http.MethodGet, "/redfish/v1/Systems/nonexistent-system/Oem/Shoal/ProvisioningConfiguration/Preseed", nil)
 	rec := httptest.NewRecorder()
 
 	handler.ServeHTTP(rec, req)
@@ -202,14 +202,16 @@ func TestProvisioningKickstart_MissingSystemID(t *testing.T) {
 	handler, db := setupTestAPI(t)
 	defer func() { _ = db.Close() }()
 
-	// Request without system ID
-	req := httptest.NewRequest(http.MethodGet, "/provision/kickstart/", nil)
+	// Request without system ID - this will result in a malformed path with double slash
+	// The http.ServeMux will redirect this with a 301
+	req := httptest.NewRequest(http.MethodGet, "/redfish/v1/Systems//Oem/Shoal/ProvisioningConfiguration/Kickstart", nil)
 	rec := httptest.NewRecorder()
 
 	handler.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("Expected 400, got %d: %s", rec.Code, rec.Body.String())
+	// With the new OEM structure and http.ServeMux behavior, we expect a 301 redirect for malformed paths
+	if rec.Code != http.StatusMovedPermanently {
+		t.Fatalf("Expected 301, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
 
@@ -217,14 +219,16 @@ func TestProvisioningPreseed_MissingSystemID(t *testing.T) {
 	handler, db := setupTestAPI(t)
 	defer func() { _ = db.Close() }()
 
-	// Request without system ID
-	req := httptest.NewRequest(http.MethodGet, "/provision/preseed/", nil)
+	// Request without system ID - this will result in a malformed path with double slash
+	// The http.ServeMux will redirect this with a 301
+	req := httptest.NewRequest(http.MethodGet, "/redfish/v1/Systems//Oem/Shoal/ProvisioningConfiguration/Preseed", nil)
 	rec := httptest.NewRecorder()
 
 	handler.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("Expected 400, got %d: %s", rec.Code, rec.Body.String())
+	// With the new OEM structure and http.ServeMux behavior, we expect a 301 redirect for malformed paths
+	if rec.Code != http.StatusMovedPermanently {
+		t.Fatalf("Expected 301, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
 
@@ -241,7 +245,7 @@ func TestProvisioningKickstart_MethodNotAllowed(t *testing.T) {
 	}
 
 	// Try POST instead of GET
-	req := httptest.NewRequest(http.MethodPost, "/provision/kickstart/system-001", nil)
+	req := httptest.NewRequest(http.MethodPost, "/redfish/v1/Systems/system-001/Oem/Shoal/ProvisioningConfiguration/Kickstart", nil)
 	rec := httptest.NewRecorder()
 
 	handler.ServeHTTP(rec, req)
@@ -264,7 +268,7 @@ func TestProvisioningPreseed_MethodNotAllowed(t *testing.T) {
 	}
 
 	// Try POST instead of GET
-	req := httptest.NewRequest(http.MethodPost, "/provision/preseed/system-001", nil)
+	req := httptest.NewRequest(http.MethodPost, "/redfish/v1/Systems/system-001/Oem/Shoal/ProvisioningConfiguration/Preseed", nil)
 	rec := httptest.NewRecorder()
 
 	handler.ServeHTTP(rec, req)
@@ -291,7 +295,7 @@ test={{system_id}}.example.com`
 	}
 
 	// Request the file
-	req := httptest.NewRequest(http.MethodGet, "/provision/kickstart/test-123", nil)
+	req := httptest.NewRequest(http.MethodGet, "/redfish/v1/Systems/test-123/Oem/Shoal/ProvisioningConfiguration/Kickstart", nil)
 	rec := httptest.NewRecorder()
 
 	handler.ServeHTTP(rec, req)

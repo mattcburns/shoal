@@ -11,7 +11,7 @@ Shoal is a Go-based Redfish aggregator that discovers and manages multiple Baseb
 - Virtual Media management for remote ISO/disk image mounting (020)
 - Optional image proxy server for BMCs without direct internet access
 - **Cloud-init ISO generation** for automated provisioning via OEM extension
-- **Kickstart/Preseed provisioning** - HTTP endpoints serving installation configs with dynamic variable substitution
+- **Kickstart/Preseed provisioning** - Redfish OEM extension endpoints serving installation configs with dynamic variable substitution
 
 
 ## Documentation

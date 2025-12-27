@@ -261,22 +261,22 @@ curl -X POST \
 
 All VirtualMedia operations require authentication (session token or basic auth).
 
-## Provisioning Configuration Endpoints
+## Provisioning Configuration Endpoints (OEM Extension)
 
-Shoal provides HTTP endpoints to serve kickstart and preseed configuration files for automated system installations. These endpoints support dynamic variable substitution for system-specific customization.
+Shoal provides DMTF Redfish-compliant OEM extension endpoints to serve kickstart and preseed configuration files for automated system installations. These endpoints support dynamic variable substitution for system-specific customization.
 
 ### Endpoints
 
-- `GET /provision/kickstart/{system-id}`: Retrieve kickstart configuration file for a specific system.
-- `GET /provision/preseed/{system-id}`: Retrieve preseed configuration file for a specific system.
+- `GET /redfish/v1/Systems/{system-id}/Oem/Shoal/ProvisioningConfiguration/Kickstart`: Retrieve kickstart configuration file for a specific system.
+- `GET /redfish/v1/Systems/{system-id}/Oem/Shoal/ProvisioningConfiguration/Preseed`: Retrieve preseed configuration file for a specific system.
 
 ### Kickstart Configuration
 
-Serve Red Hat/CentOS kickstart files for automated installations.
+Serve Red Hat/CentOS kickstart files for automated installations via Redfish OEM extension.
 
 **Request:**
 ```bash
-curl http://localhost:8080/provision/kickstart/server-001
+curl http://localhost:8080/redfish/v1/Systems/server-001/Oem/Shoal/ProvisioningConfiguration/Kickstart
 ```
 
 **Response:** Returns the kickstart configuration as `text/plain` with HTTP 200.
@@ -294,11 +294,11 @@ rootpw --plaintext changeme
 
 ### Preseed Configuration
 
-Serve Debian/Ubuntu preseed files for automated installations.
+Serve Debian/Ubuntu preseed files for automated installations via Redfish OEM extension.
 
 **Request:**
 ```bash
-curl http://localhost:8080/provision/preseed/ubuntu-001
+curl http://localhost:8080/redfish/v1/Systems/ubuntu-001/Oem/Shoal/ProvisioningConfiguration/Preseed
 ```
 
 **Response:** Returns the preseed configuration as `text/plain` with HTTP 200.
@@ -324,20 +324,19 @@ Future versions may support additional variables like `{{hostname}}`, `{{ip_addr
 Provisioning files are typically referenced in boot parameters when attaching installation media via Virtual Media:
 
 1. Attach installation ISO via Virtual Media InsertMedia action
-2. Configure boot parameters to reference the kickstart/preseed URL:
-   - For kickstart: `ks=http://shoal.example.com/provision/kickstart/system-001`
-   - For preseed: `url=http://shoal.example.com/provision/preseed/ubuntu-001`
+2. Configure boot parameters to reference the Redfish OEM provisioning URL:
+   - For kickstart: `ks=http://shoal.example.com/redfish/v1/Systems/system-001/Oem/Shoal/ProvisioningConfiguration/Kickstart`
+   - For preseed: `url=http://shoal.example.com/redfish/v1/Systems/ubuntu-001/Oem/Shoal/ProvisioningConfiguration/Preseed`
 3. Boot the system from the attached virtual media
 4. The installer fetches the provisioning configuration from Shoal
 
 ### Error Responses
 
-- `400 Bad Request`: System ID is missing or empty.
-- `404 Not Found`: No provisioning template found for the specified system.
+- `404 Not Found`: No provisioning template found for the specified system, or invalid configuration type.
 - `405 Method Not Allowed`: Only GET requests are supported.
 - `500 Internal Server Error`: Database error retrieving the template.
 
-**Note:** Provisioning endpoints do **not** require authentication to allow installer access during boot. Consider network-level access controls if security is a concern.
+**Note:** Provisioning OEM endpoints do **not** require authentication to allow installer access during boot. Consider network-level access controls if security is a concern.
 
 ### Managing Templates
 
