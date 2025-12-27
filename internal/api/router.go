@@ -36,15 +36,18 @@ func NewRouter(db *database.DB) http.Handler {
 // NewRouterWithImageProxy constructs an API router with image proxy support
 func NewRouterWithImageProxy(db *database.DB, proxyConfig *ImageProxyConfig) http.Handler {
 	imageProxyURL := ""
+	var cloudInitGen func(string, string) (string, string, error)
 	if proxyConfig != nil && proxyConfig.Enabled {
 		imageProxyURL = proxyConfig.BaseURL
+		cloudInitGen = proxyConfig.CloudInitGeneratorFunc
 	}
 
 	h := &Handler{
-		db:            db,
-		auth:          auth.New(db),
-		bmcSvc:        bmc.New(db),
-		imageProxyURL: imageProxyURL,
+		db:                     db,
+		auth:                   auth.New(db),
+		bmcSvc:                 bmc.New(db),
+		imageProxyURL:          imageProxyURL,
+		cloudInitGeneratorFunc: cloudInitGen,
 	}
 	return newMux(h)
 }

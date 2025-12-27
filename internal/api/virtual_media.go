@@ -251,8 +251,40 @@ func (h *Handler) handleInsertMedia(w http.ResponseWriter, r *http.Request, bmcN
 		return
 	}
 
-	// Rewrite URL to use image proxy if enabled
-	if h.imageProxyURL != "" {
+	// Handle OEM extension for cloud-init ISO generation
+	if req.Oem != nil && req.Oem.Shoal != nil && req.Oem.Shoal.GenerateCloudInit {
+		if h.cloudInitGeneratorFunc == nil {
+			slog.Error("Cloud-init ISO generation requested but not enabled")
+			_ = h.db.UpdateVirtualMediaOperationStatus(r.Context(), op.ID, "failed", "Cloud-init ISO generation not enabled")
+			h.writeErrorResponse(w, http.StatusServiceUnavailable, "Base.1.0.ServiceUnavailable", "Cloud-init ISO generation not enabled")
+			return
+		}
+
+		// Validate required OEM fields
+		if req.Oem.Shoal.UserData == "" {
+			slog.Error("Cloud-init UserData is required")
+			_ = h.db.UpdateVirtualMediaOperationStatus(r.Context(), op.ID, "failed", "UserData is required for cloud-init ISO generation")
+			h.writeErrorResponse(w, http.StatusBadRequest, "Base.1.0.PropertyMissing", "Oem.Shoal.UserData is required for cloud-init ISO generation")
+			return
+		}
+
+		// Generate cloud-init ISO
+		isoID, token, err := h.cloudInitGeneratorFunc(req.Oem.Shoal.UserData, req.Oem.Shoal.MetaData)
+		if err != nil {
+			slog.Error("Failed to generate cloud-init ISO", "error", err)
+			_ = h.db.UpdateVirtualMediaOperationStatus(r.Context(), op.ID, "failed", fmt.Sprintf("Failed to generate cloud-init ISO: %v", err))
+			h.writeErrorResponse(w, http.StatusInternalServerError, "Base.1.0.InternalError", "Failed to generate cloud-init ISO")
+			return
+		}
+
+		// Build cloud-init ISO URL for the BMC
+		// Format: http://shoal:8082/cloudinit-iso/{isoID}?token={token}
+		req.Image = fmt.Sprintf("%s/cloudinit-iso/%s?token=%s", h.imageProxyURL, isoID, token)
+		slog.Info("Generated cloud-init ISO", "iso_id", isoID, "url", req.Image)
+	}
+
+	// Rewrite URL to use image proxy if enabled (for non-cloud-init URLs)
+	if h.imageProxyURL != "" && (req.Oem == nil || req.Oem.Shoal == nil || !req.Oem.Shoal.GenerateCloudInit) {
 		rewrittenURL := h.rewriteImageURL(req.Image)
 		if rewrittenURL != req.Image {
 			slog.Info("Rewrote image URL for BMC", "original", req.Image, "rewritten", rewrittenURL)

@@ -37,6 +37,9 @@ type Config struct {
 
 	// DisableSSRFProtection disables SSRF protection (for testing only)
 	DisableSSRFProtection bool
+
+	// CloudInitStorageDir is the directory for storing generated cloud-init ISOs
+	CloudInitStorageDir string
 }
 
 // NewConfig creates a new Config from command-line parameters
