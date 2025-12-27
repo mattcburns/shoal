@@ -40,9 +40,9 @@ var (
 
 // Server is an HTTP image proxy server
 type Server struct {
-	config            *Config
-	client            *http.Client
-	rateLimiter       *rateLimiter
+	config             *Config
+	client             *http.Client
+	rateLimiter        *rateLimiter
 	cloudInitGenerator *cloudinit.Generator
 }
 

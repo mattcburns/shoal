@@ -233,9 +233,9 @@ func TestServer_isIPAllowed(t *testing.T) {
 				AllowedSubnets: tt.subnets,
 			}
 			server, err := NewServer(config)
-	if err != nil {
-		t.Fatalf("Failed to create server: %v", err)
-	}
+			if err != nil {
+				t.Fatalf("Failed to create server: %v", err)
+			}
 
 			got := server.isIPAllowed(tt.ip)
 			if got != tt.want {
@@ -290,9 +290,9 @@ func TestServer_isDomainAllowed(t *testing.T) {
 				AllowedDomains: tt.domains,
 			}
 			server, err := NewServer(config)
-	if err != nil {
-		t.Fatalf("Failed to create server: %v", err)
-	}
+			if err != nil {
+				t.Fatalf("Failed to create server: %v", err)
+			}
 
 			got := server.isDomainAllowed(tt.host)
 			if got != tt.want {

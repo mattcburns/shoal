@@ -123,7 +123,7 @@ func main() {
 			Enabled: true,
 			BaseURL: baseURL,
 		}
-		
+
 		// Wire cloud-init generator to API if available
 		gen := proxyHandler.GetCloudInitGenerator()
 		if gen != nil {
