@@ -23,9 +23,12 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"time"
+
+	"shoal/internal/cloudinit"
 )
 
 // Pre-parsed private IP ranges for SSRF protection
@@ -37,9 +40,10 @@ var (
 
 // Server is an HTTP image proxy server
 type Server struct {
-	config      *Config
-	client      *http.Client
-	rateLimiter *rateLimiter
+	config             *Config
+	client             *http.Client
+	rateLimiter        *rateLimiter
+	cloudInitGenerator *cloudinit.Generator
 }
 
 // rateLimiter tracks concurrent downloads per IP
@@ -50,7 +54,18 @@ type rateLimiter struct {
 }
 
 // NewServer creates a new image proxy server
-func NewServer(config *Config) *Server {
+func NewServer(config *Config) (*Server, error) {
+	var ciGenerator *cloudinit.Generator
+	var err error
+
+	// Create cloud-init generator if storage directory is configured
+	if config.CloudInitStorageDir != "" {
+		ciGenerator, err = cloudinit.NewGenerator(config.CloudInitStorageDir)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create cloud-init generator: %w", err)
+		}
+	}
+
 	return &Server{
 		config: config,
 		client: &http.Client{
@@ -67,7 +82,8 @@ func NewServer(config *Config) *Server {
 			counters: make(map[string]int),
 			maxPerIP: config.RateLimit,
 		},
-	}
+		cloudInitGenerator: ciGenerator,
+	}, nil
 }
 
 // ServeHTTP handles image proxy requests
@@ -409,4 +425,97 @@ func (rl *rateLimiter) release(ip string) {
 	if rl.counters[ip] == 0 {
 		delete(rl.counters, ip)
 	}
+}
+
+const (
+	// cloudInitPathPrefix is the URL path prefix for cloud-init ISOs
+	cloudInitPathPrefix = "cloudinit-iso"
+	// cloudInitPathSegments is the expected number of path segments
+	cloudInitPathSegments = 2
+)
+
+// ServeCloudInitISO handles cloud-init ISO download requests
+// GET /cloudinit-iso/{isoID}?token={token}
+func (s *Server) ServeCloudInitISO(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if s.cloudInitGenerator == nil {
+		http.Error(w, "Cloud-init ISO generation not enabled", http.StatusServiceUnavailable)
+		return
+	}
+
+	// Extract ISO ID from path
+	// Path format: /cloudinit-iso/{isoID}
+	pathParts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+	if len(pathParts) != cloudInitPathSegments || pathParts[0] != cloudInitPathPrefix {
+		http.Error(w, "Invalid path", http.StatusBadRequest)
+		return
+	}
+	isoID := pathParts[1]
+
+	// Get token from query parameter
+	token := r.URL.Query().Get("token")
+	if token == "" {
+		http.Error(w, "Missing token parameter", http.StatusBadRequest)
+		return
+	}
+
+	// Validate client IP against allowed subnets
+	clientIP := getClientIP(r)
+	if !s.isIPAllowed(clientIP) {
+		slog.Warn("Cloud-init ISO request from disallowed IP", "ip", clientIP)
+		http.Error(w, "Access denied", http.StatusForbidden)
+		return
+	}
+
+	// Get ISO info and validate token
+	isoInfo, err := s.cloudInitGenerator.GetISO(isoID, token)
+	if err != nil {
+		slog.Warn("Failed to get cloud-init ISO", "iso_id", isoID, "error", err)
+		http.Error(w, "ISO not found or invalid token", http.StatusNotFound)
+		return
+	}
+
+	// Open ISO file
+	file, err := os.Open(isoInfo.Path)
+	if err != nil {
+		slog.Error("Failed to open cloud-init ISO file", "path", isoInfo.Path, "error", err)
+		http.Error(w, "Failed to read ISO", http.StatusInternalServerError)
+		return
+	}
+	defer file.Close()
+
+	// Get file info for Content-Length
+	fileInfo, err := file.Stat()
+	if err != nil {
+		slog.Error("Failed to stat cloud-init ISO file", "path", isoInfo.Path, "error", err)
+		http.Error(w, "Failed to read ISO", http.StatusInternalServerError)
+		return
+	}
+
+	// Mark as downloaded
+	s.cloudInitGenerator.MarkDownloaded(isoID)
+
+	// Set headers
+	w.Header().Set("Content-Type", "application/x-iso9660-image")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"cloud-init-%s.iso\"", isoID))
+	w.Header().Set("Content-Length", fmt.Sprintf("%d", fileInfo.Size()))
+
+	// Stream the file
+	if r.Method == http.MethodGet {
+		_, err = io.Copy(w, file)
+		if err != nil {
+			slog.Warn("Error streaming cloud-init ISO", "iso_id", isoID, "error", err)
+		}
+	}
+
+	slog.Info("Served cloud-init ISO", "iso_id", isoID, "client_ip", clientIP)
+}
+
+// GetCloudInitGenerator returns the cloud-init generator instance
+func (s *Server) GetCloudInitGenerator() *cloudinit.Generator {
+	return s.cloudInitGenerator
 }

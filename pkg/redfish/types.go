@@ -221,12 +221,25 @@ type VirtualMediaAction struct {
 
 // InsertMediaRequest represents the request body for InsertMedia action
 type InsertMediaRequest struct {
-	Image                string  `json:"Image"`
-	Inserted             *bool   `json:"Inserted,omitempty"`
-	WriteProtected       *bool   `json:"WriteProtected,omitempty"`
-	TransferProtocolType *string `json:"TransferProtocolType,omitempty"`
-	UserName             *string `json:"UserName,omitempty"`
-	Password             *string `json:"Password,omitempty"`
+	Image                string                 `json:"Image"`
+	Inserted             *bool                  `json:"Inserted,omitempty"`
+	WriteProtected       *bool                  `json:"WriteProtected,omitempty"`
+	TransferProtocolType *string                `json:"TransferProtocolType,omitempty"`
+	UserName             *string                `json:"UserName,omitempty"`
+	Password             *string                `json:"Password,omitempty"`
+	Oem                  *InsertMediaRequestOem `json:"Oem,omitempty"`
+}
+
+// InsertMediaRequestOem represents OEM extensions for InsertMedia
+type InsertMediaRequestOem struct {
+	Shoal *ShoalInsertMediaOem `json:"Shoal,omitempty"`
+}
+
+// ShoalInsertMediaOem represents Shoal-specific OEM extensions for InsertMedia
+type ShoalInsertMediaOem struct {
+	GenerateCloudInit bool   `json:"GenerateCloudInit,omitempty"`
+	UserData          string `json:"UserData,omitempty"`
+	MetaData          string `json:"MetaData,omitempty"`
 }
 
 // EjectMediaRequest represents the request body for EjectMedia action

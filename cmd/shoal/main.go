@@ -51,6 +51,7 @@ func main() {
 		imageProxyAllowedDomains = flag.String("image-proxy-allowed-domains", "*", "Comma-separated list of allowed domains (* for all)")
 		imageProxyAllowedSubnets = flag.String("image-proxy-allowed-subnets", "", "Comma-separated list of allowed IP subnets (CIDR notation)")
 		imageProxyRateLimit      = flag.Int("image-proxy-rate-limit", 10, "Max concurrent downloads per IP")
+		cloudInitStorageDir      = flag.String("cloud-init-storage-dir", "/var/lib/shoal/cloud-init", "Directory for storing generated cloud-init ISOs")
 	)
 	flag.Parse()
 
@@ -93,31 +94,9 @@ func main() {
 	// Initialize HTTP server
 	mux := http.NewServeMux()
 
-	// Determine image proxy base URL for API handler
-	var imageProxyBaseURL string
-	if *enableImageProxy {
-		// Use localhost for internal communication
-		imageProxyBaseURL = fmt.Sprintf("http://localhost:%s", *imageProxyPort)
-	}
-
-	// Register API routes with image proxy configuration
-	var apiHandler http.Handler
-	if *enableImageProxy {
-		apiHandler = api.NewWithImageProxy(db, &api.ImageProxyConfig{
-			Enabled: true,
-			BaseURL: imageProxyBaseURL,
-		})
-	} else {
-		apiHandler = api.New(db)
-	}
-	mux.Handle("/redfish/", apiHandler)
-
-	// Register web interface routes
-	webHandler := web.New(db)
-	mux.Handle("/", webHandler)
-
-	// Start image proxy server if enabled
+	// Start image proxy server if enabled (do this first to get the generator)
 	var proxyServer *http.Server
+	var apiProxyConfig *api.ImageProxyConfig
 	if *enableImageProxy {
 		proxyConfig, err := imageproxy.NewConfig(*imageProxyPort, *imageProxyAllowedDomains, *imageProxyAllowedSubnets, *imageProxyRateLimit)
 		if err != nil {
@@ -125,9 +104,31 @@ func main() {
 			os.Exit(1)
 		}
 
-		proxyHandler := imageproxy.NewServer(proxyConfig)
+		// Set cloud-init storage directory
+		proxyConfig.CloudInitStorageDir = *cloudInitStorageDir
+
+		proxyHandler, err := imageproxy.NewServer(proxyConfig)
+		if err != nil {
+			slog.Error("Failed to create image proxy server", "error", err)
+			os.Exit(1)
+		}
 		proxyMux := http.NewServeMux()
 		proxyMux.Handle("/proxy", proxyHandler)
+		// Add cloud-init ISO endpoint
+		proxyMux.HandleFunc("/cloudinit-iso/", proxyHandler.ServeCloudInitISO)
+
+		// Create API proxy config with cloud-init generator
+		baseURL := fmt.Sprintf("http://localhost:%s", *imageProxyPort)
+		apiProxyConfig = &api.ImageProxyConfig{
+			Enabled: true,
+			BaseURL: baseURL,
+		}
+
+		// Wire cloud-init generator to API if available
+		gen := proxyHandler.GetCloudInitGenerator()
+		if gen != nil {
+			apiProxyConfig.CloudInitGeneratorFunc = gen.GenerateISO
+		}
 
 		proxyServer = &http.Server{
 			Addr:         ":" + *imageProxyPort,
@@ -138,13 +139,27 @@ func main() {
 		}
 
 		go func() {
-			slog.Info("Starting image proxy server", "port", *imageProxyPort)
+			cloudInitEnabled := gen != nil
+			slog.Info("Starting image proxy server", "port", *imageProxyPort, "cloud_init_enabled", cloudInitEnabled)
 			if err := proxyServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 				slog.Error("Image proxy server failed to start", "error", err)
 				os.Exit(1)
 			}
 		}()
 	}
+
+	// Register API routes with image proxy configuration
+	var apiHandler http.Handler
+	if apiProxyConfig != nil {
+		apiHandler = api.NewWithImageProxy(db, apiProxyConfig)
+	} else {
+		apiHandler = api.New(db)
+	}
+	mux.Handle("/redfish/", apiHandler)
+
+	// Register web interface routes
+	webHandler := web.New(db)
+	mux.Handle("/", webHandler)
 
 	server := &http.Server{
 		Addr:         ":" + *port,

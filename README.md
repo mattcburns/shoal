@@ -10,6 +10,7 @@ Shoal is a Go-based Redfish aggregator that discovers and manages multiple Baseb
 - Settings discovery for BIOS, NICs, and storage (009)
 - Virtual Media management for remote ISO/disk image mounting (020)
 - Optional image proxy server for BMCs without direct internet access
+- **Cloud-init ISO generation** for automated provisioning via OEM extension
 
 
 ## Documentation

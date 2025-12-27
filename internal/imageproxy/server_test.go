@@ -31,7 +31,10 @@ func TestServer_ServeHTTP_MissingURL(t *testing.T) {
 		AllowedDomains: []string{"*"},
 		RateLimit:      10,
 	}
-	server := NewServer(config)
+	server, err := NewServer(config)
+	if err != nil {
+		t.Fatalf("Failed to create server: %v", err)
+	}
 
 	req := httptest.NewRequest(http.MethodGet, "/proxy", nil)
 	rec := httptest.NewRecorder()
@@ -49,7 +52,10 @@ func TestServer_ServeHTTP_InvalidURL(t *testing.T) {
 		AllowedDomains: []string{"*"},
 		RateLimit:      10,
 	}
-	server := NewServer(config)
+	server, err := NewServer(config)
+	if err != nil {
+		t.Fatalf("Failed to create server: %v", err)
+	}
 
 	req := httptest.NewRequest(http.MethodGet, "/proxy?url=not-a-valid-url", nil)
 	rec := httptest.NewRecorder()
@@ -67,7 +73,10 @@ func TestServer_ServeHTTP_UnsupportedScheme(t *testing.T) {
 		AllowedDomains: []string{"*"},
 		RateLimit:      10,
 	}
-	server := NewServer(config)
+	server, err := NewServer(config)
+	if err != nil {
+		t.Fatalf("Failed to create server: %v", err)
+	}
 
 	req := httptest.NewRequest(http.MethodGet, "/proxy?url=ftp://example.com/file.iso", nil)
 	rec := httptest.NewRecorder()
@@ -85,7 +94,10 @@ func TestServer_ServeHTTP_DomainNotAllowed(t *testing.T) {
 		AllowedDomains: []string{"example.com"},
 		RateLimit:      10,
 	}
-	server := NewServer(config)
+	server, err := NewServer(config)
+	if err != nil {
+		t.Fatalf("Failed to create server: %v", err)
+	}
 
 	req := httptest.NewRequest(http.MethodGet, "/proxy?url=http://badsite.com/file.iso", nil)
 	rec := httptest.NewRecorder()
@@ -112,7 +124,10 @@ func TestServer_ServeHTTP_Success(t *testing.T) {
 		RateLimit:             10,
 		DisableSSRFProtection: true, // Allow localhost for testing
 	}
-	server := NewServer(config)
+	server, err := NewServer(config)
+	if err != nil {
+		t.Fatalf("Failed to create server: %v", err)
+	}
 
 	req := httptest.NewRequest(http.MethodGet, "/proxy?url="+imageServer.URL+"/test.iso", nil)
 	rec := httptest.NewRecorder()
@@ -161,7 +176,10 @@ func TestServer_ServeHTTP_RangeRequest(t *testing.T) {
 		RateLimit:             10,
 		DisableSSRFProtection: true, // Allow localhost for testing
 	}
-	server := NewServer(config)
+	server, err := NewServer(config)
+	if err != nil {
+		t.Fatalf("Failed to create server: %v", err)
+	}
 
 	req := httptest.NewRequest(http.MethodGet, "/proxy?url="+imageServer.URL+"/test.iso", nil)
 	req.Header.Set("Range", "bytes=0-4")
@@ -214,7 +232,10 @@ func TestServer_isIPAllowed(t *testing.T) {
 			config := &Config{
 				AllowedSubnets: tt.subnets,
 			}
-			server := NewServer(config)
+			server, err := NewServer(config)
+			if err != nil {
+				t.Fatalf("Failed to create server: %v", err)
+			}
 
 			got := server.isIPAllowed(tt.ip)
 			if got != tt.want {
@@ -268,7 +289,10 @@ func TestServer_isDomainAllowed(t *testing.T) {
 			config := &Config{
 				AllowedDomains: tt.domains,
 			}
-			server := NewServer(config)
+			server, err := NewServer(config)
+			if err != nil {
+				t.Fatalf("Failed to create server: %v", err)
+			}
 
 			got := server.isDomainAllowed(tt.host)
 			if got != tt.want {
@@ -284,7 +308,10 @@ func TestServer_validateTargetURL_PrivateIP(t *testing.T) {
 		AllowedDomains: []string{"*"},
 		RateLimit:      10,
 	}
-	server := NewServer(config)
+	server, err := NewServer(config)
+	if err != nil {
+		t.Fatalf("Failed to create server: %v", err)
+	}
 
 	// Test with localhost (should be blocked)
 	req := httptest.NewRequest(http.MethodGet, "/proxy?url=http://localhost/file.iso", nil)
@@ -334,7 +361,10 @@ func TestServer_MethodNotAllowed(t *testing.T) {
 		AllowedDomains: []string{"*"},
 		RateLimit:      10,
 	}
-	server := NewServer(config)
+	server, err := NewServer(config)
+	if err != nil {
+		t.Fatalf("Failed to create server: %v", err)
+	}
 
 	req := httptest.NewRequest(http.MethodPost, "/proxy?url=http://example.com/file.iso", nil)
 	rec := httptest.NewRecorder()
@@ -364,7 +394,10 @@ func TestServer_HeadRequest(t *testing.T) {
 		RateLimit:             10,
 		DisableSSRFProtection: true, // Allow localhost for testing
 	}
-	server := NewServer(config)
+	server, err := NewServer(config)
+	if err != nil {
+		t.Fatalf("Failed to create server: %v", err)
+	}
 
 	req := httptest.NewRequest(http.MethodHead, "/proxy?url="+imageServer.URL+"/test.iso", nil)
 	rec := httptest.NewRecorder()
