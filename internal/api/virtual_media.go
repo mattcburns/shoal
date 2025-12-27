@@ -237,25 +237,10 @@ func (h *Handler) handleInsertMedia(w http.ResponseWriter, r *http.Request, bmcN
 		return
 	}
 
-	// Record operation in database
-	op := &database.VirtualMediaOperation{
-		VirtualMediaResourceID: resource.ID,
-		Operation:              "insert",
-		ImageURL:               req.Image,
-		RequestedBy:            user.Username,
-		Status:                 "pending",
-	}
-	if err := h.db.CreateVirtualMediaOperation(r.Context(), op); err != nil {
-		slog.Error("Failed to create operation record", "error", err)
-		h.writeErrorResponse(w, http.StatusInternalServerError, "Base.1.0.InternalError", "Failed to record operation")
-		return
-	}
-
 	// Handle OEM extension for cloud-init ISO generation
 	if req.Oem != nil && req.Oem.Shoal != nil && req.Oem.Shoal.GenerateCloudInit {
 		if h.cloudInitGeneratorFunc == nil {
 			slog.Error("Cloud-init ISO generation requested but not enabled")
-			_ = h.db.UpdateVirtualMediaOperationStatus(r.Context(), op.ID, "failed", "Cloud-init ISO generation not enabled")
 			h.writeErrorResponse(w, http.StatusServiceUnavailable, "Base.1.0.ServiceUnavailable", "Cloud-init ISO generation not enabled")
 			return
 		}
@@ -263,7 +248,6 @@ func (h *Handler) handleInsertMedia(w http.ResponseWriter, r *http.Request, bmcN
 		// Validate required OEM fields
 		if req.Oem.Shoal.UserData == "" {
 			slog.Error("Cloud-init UserData is required")
-			_ = h.db.UpdateVirtualMediaOperationStatus(r.Context(), op.ID, "failed", "UserData is required for cloud-init ISO generation")
 			h.writeErrorResponse(w, http.StatusBadRequest, "Base.1.0.PropertyMissing", "Oem.Shoal.UserData is required for cloud-init ISO generation")
 			return
 		}
@@ -272,7 +256,6 @@ func (h *Handler) handleInsertMedia(w http.ResponseWriter, r *http.Request, bmcN
 		isoID, token, err := h.cloudInitGeneratorFunc(req.Oem.Shoal.UserData, req.Oem.Shoal.MetaData)
 		if err != nil {
 			slog.Error("Failed to generate cloud-init ISO", "error", err)
-			_ = h.db.UpdateVirtualMediaOperationStatus(r.Context(), op.ID, "failed", fmt.Sprintf("Failed to generate cloud-init ISO: %v", err))
 			h.writeErrorResponse(w, http.StatusInternalServerError, "Base.1.0.InternalError", "Failed to generate cloud-init ISO")
 			return
 		}
@@ -290,6 +273,20 @@ func (h *Handler) handleInsertMedia(w http.ResponseWriter, r *http.Request, bmcN
 			slog.Info("Rewrote image URL for BMC", "original", req.Image, "rewritten", rewrittenURL)
 			req.Image = rewrittenURL
 		}
+	}
+
+	// Record operation in database (after URL has been finalized)
+	op := &database.VirtualMediaOperation{
+		VirtualMediaResourceID: resource.ID,
+		Operation:              "insert",
+		ImageURL:               req.Image,
+		RequestedBy:            user.Username,
+		Status:                 "pending",
+	}
+	if err := h.db.CreateVirtualMediaOperation(r.Context(), op); err != nil {
+		slog.Error("Failed to create operation record", "error", err)
+		h.writeErrorResponse(w, http.StatusInternalServerError, "Base.1.0.InternalError", "Failed to record operation")
+		return
 	}
 
 	// Forward request to downstream BMC
