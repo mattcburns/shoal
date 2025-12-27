@@ -43,9 +43,9 @@ type Converter struct {
 // ImageInfo tracks information about a converted OCI image
 type ImageInfo struct {
 	ID           string
-	ImageRef     string    // Original OCI image reference (e.g., oci://ghcr.io/fedora/coreos:stable)
-	ISOPath      string    // Path to the converted ISO
-	Token        string    // Access token for secure download
+	ImageRef     string // Original OCI image reference (e.g., oci://ghcr.io/fedora/coreos:stable)
+	ISOPath      string // Path to the converted ISO
+	Token        string // Access token for secure download
 	CreatedAt    time.Time
 	LastUsed     time.Time
 	Size         int64

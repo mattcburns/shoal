@@ -107,6 +107,9 @@ func main() {
 		// Set cloud-init storage directory
 		proxyConfig.CloudInitStorageDir = *cloudInitStorageDir
 
+		// Set OCI storage directory
+		proxyConfig.OCIStorageDir = *ociStorageDir
+
 		proxyHandler, err := imageproxy.NewServer(proxyConfig)
 		if err != nil {
 			slog.Error("Failed to create image proxy server", "error", err)
@@ -116,8 +119,10 @@ func main() {
 		proxyMux.Handle("/proxy", proxyHandler)
 		// Add cloud-init ISO endpoint
 		proxyMux.HandleFunc("/cloudinit-iso/", proxyHandler.ServeCloudInitISO)
+		// Add OCI ISO endpoint
+		proxyMux.HandleFunc("/oci-iso/", proxyHandler.ServeOCIISO)
 
-		// Create API proxy config with cloud-init generator
+		// Create API proxy config with cloud-init generator and OCI converter
 		baseURL := fmt.Sprintf("http://localhost:%s", *imageProxyPort)
 		apiProxyConfig = &api.ImageProxyConfig{
 			Enabled: true,
@@ -130,6 +135,12 @@ func main() {
 			apiProxyConfig.CloudInitGeneratorFunc = gen.GenerateISO
 		}
 
+		// Wire OCI converter to API if available
+		ociConv := proxyHandler.GetOCIConverter()
+		if ociConv != nil {
+			apiProxyConfig.OCIConverterFunc = ociConv.ConvertToISO
+		}
+
 		proxyServer = &http.Server{
 			Addr:         ":" + *imageProxyPort,
 			Handler:      proxyMux,
@@ -140,7 +151,8 @@ func main() {
 
 		go func() {
 			cloudInitEnabled := gen != nil
-			slog.Info("Starting image proxy server", "port", *imageProxyPort, "cloud_init_enabled", cloudInitEnabled)
+			ociEnabled := ociConv != nil
+			slog.Info("Starting image proxy server", "port", *imageProxyPort, "cloud_init_enabled", cloudInitEnabled, "oci_enabled", ociEnabled)
 			if err := proxyServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 				slog.Error("Image proxy server failed to start", "error", err)
 				os.Exit(1)
