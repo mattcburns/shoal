@@ -1482,6 +1482,8 @@ func (db *DB) DeleteProvisioningTemplate(ctx context.Context, systemID, template
 // Console Capability operations
 
 // UpsertConsoleCapability creates or updates a console capability record
+// NOTE: Part of console pass-through feature (design/021_Console_Pass_Through.md).
+// Currently only exercised in tests; will be called by console discovery sync in Milestone 2.
 func (db *DB) UpsertConsoleCapability(ctx context.Context, cap *models.ConsoleCapability) error {
 	query := `
 		INSERT INTO console_capabilities (
@@ -1505,6 +1507,8 @@ func (db *DB) UpsertConsoleCapability(ctx context.Context, cap *models.ConsoleCa
 }
 
 // GetConsoleCapabilities retrieves console capabilities for a connection method and manager
+// NOTE: Part of console pass-through feature (design/021_Console_Pass_Through.md).
+// Currently only exercised in tests; will be called by Redfish API handlers in Milestone 3.
 func (db *DB) GetConsoleCapabilities(ctx context.Context, connectionMethodID, managerID string) ([]models.ConsoleCapability, error) {
 	query := `
 		SELECT id, connection_method_id, manager_id, console_type, service_enabled,
@@ -1537,6 +1541,8 @@ func (db *DB) GetConsoleCapabilities(ctx context.Context, connectionMethodID, ma
 }
 
 // GetConsoleCapability retrieves a specific console capability by type
+// NOTE: Part of console pass-through feature (design/021_Console_Pass_Through.md).
+// Currently only exercised in tests; will be called by console action handlers in Milestone 3.
 func (db *DB) GetConsoleCapability(ctx context.Context, connectionMethodID, managerID string, consoleType models.ConsoleType) (*models.ConsoleCapability, error) {
 	query := `
 		SELECT id, connection_method_id, manager_id, console_type, service_enabled,
@@ -1562,6 +1568,8 @@ func (db *DB) GetConsoleCapability(ctx context.Context, connectionMethodID, mana
 // Console Session operations
 
 // CreateConsoleSession creates a new console session record
+// NOTE: Part of console pass-through feature (design/021_Console_Pass_Through.md).
+// Currently only exercised in tests; will be called by ConnectSerialConsole/ConnectGraphicalConsole actions in Milestone 3.
 func (db *DB) CreateConsoleSession(ctx context.Context, session *models.ConsoleSession) error {
 	query := `
 		INSERT INTO console_sessions (
@@ -1587,6 +1595,8 @@ func (db *DB) CreateConsoleSession(ctx context.Context, session *models.ConsoleS
 }
 
 // GetConsoleSession retrieves a console session by session ID
+// NOTE: Part of console pass-through feature (design/021_Console_Pass_Through.md).
+// Currently only exercised in tests; will be called by WebSocket gateway and session management in Milestone 4.
 func (db *DB) GetConsoleSession(ctx context.Context, sessionID string) (*models.ConsoleSession, error) {
 	query := `
 		SELECT id, session_id, connection_method_id, manager_id, console_type, connect_type,
@@ -1632,6 +1642,8 @@ func (db *DB) GetConsoleSession(ctx context.Context, sessionID string) (*models.
 }
 
 // GetConsoleSessions retrieves all console sessions for a connection method
+// NOTE: Part of console pass-through feature (design/021_Console_Pass_Through.md).
+// Currently only exercised in tests; will be called by session collection handler in Milestone 3.
 func (db *DB) GetConsoleSessions(ctx context.Context, connectionMethodID string, state models.ConsoleSessionState) ([]models.ConsoleSession, error) {
 	var query string
 	var args []interface{}
@@ -1703,6 +1715,8 @@ func (db *DB) GetConsoleSessions(ctx context.Context, connectionMethodID string,
 }
 
 // UpdateConsoleSessionState updates the state of a console session
+// NOTE: Part of console pass-through feature (design/021_Console_Pass_Through.md).
+// Currently only exercised in tests; will be called by WebSocket session handlers in Milestone 4.
 func (db *DB) UpdateConsoleSessionState(ctx context.Context, sessionID string, state models.ConsoleSessionState, errorMessage string) error {
 	var query string
 	var args []interface{}
@@ -1738,6 +1752,8 @@ func (db *DB) UpdateConsoleSessionState(ctx context.Context, sessionID string, s
 }
 
 // DeleteConsoleSession deletes a console session by session ID
+// NOTE: Part of console pass-through feature (design/021_Console_Pass_Through.md).
+// Currently only exercised in tests; will be called by session cleanup routines in Milestone 4.
 func (db *DB) DeleteConsoleSession(ctx context.Context, sessionID string) error {
 	query := `DELETE FROM console_sessions WHERE session_id = ?`
 	_, err := db.conn.ExecContext(ctx, query, sessionID)

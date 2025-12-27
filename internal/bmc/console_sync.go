@@ -27,6 +27,8 @@ import (
 )
 
 // SyncConsoleCapabilities discovers and caches console capabilities from a connection method
+// NOTE: Part of console pass-through feature (design/021_Console_Pass_Through.md, Milestone 1).
+// Currently only exercised in tests; will be called periodically by connection method sync in Milestone 2.
 func (s *Service) SyncConsoleCapabilities(ctx context.Context, connMethodID string) error {
 	// Get connection method details
 	cm, err := s.db.GetConnectionMethod(ctx, connMethodID)
