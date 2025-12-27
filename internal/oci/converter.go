@@ -392,12 +392,15 @@ func (c *Converter) CleanupOldImages(maxAge time.Duration) error {
 	for id, info := range c.images {
 		if time.Since(info.LastUsed) > maxAge {
 			// Remove ISO file
-			if err := os.Remove(info.ISOPath); err != nil && !os.IsNotExist(err) {
-				slog.Warn("Failed to remove old OCI ISO", "path", info.ISOPath, "error", err)
-			} else {
-				removed = append(removed, id)
-				delete(c.images, id)
+			if err := os.Remove(info.ISOPath); err != nil {
+				if !os.IsNotExist(err) {
+					slog.Warn("Failed to remove old OCI ISO", "path", info.ISOPath, "error", err)
+				}
+				// File doesn't exist or failed to remove, but continue cleanup
 			}
+			// Always remove from cache, even if file removal failed or file didn't exist
+			removed = append(removed, id)
+			delete(c.images, id)
 		}
 	}
 
@@ -434,7 +437,8 @@ func generateShortID() string {
 
 // isMutableTag checks if an OCI image reference uses a mutable tag
 func isMutableTag(ociImage string) bool {
-	// Common mutable tags
+	// Common mutable tags that may change over time
+	// Note: :master is included for backward compatibility with older images
 	mutableTags := []string{":latest", ":stable", ":main", ":master", ":dev", ":nightly"}
 
 	for _, tag := range mutableTags {
