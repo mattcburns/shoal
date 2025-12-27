@@ -22,8 +22,8 @@ import (
 
 func TestDetectVendor_Dell(t *testing.T) {
 	testCases := []struct {
-		name         string
-		managerData  map[string]interface{}
+		name           string
+		managerData    map[string]interface{}
 		expectedVendor VendorType
 	}{
 		{
@@ -73,8 +73,8 @@ func TestDetectVendor_Dell(t *testing.T) {
 
 func TestDetectVendor_Supermicro(t *testing.T) {
 	testCases := []struct {
-		name         string
-		managerData  map[string]interface{}
+		name           string
+		managerData    map[string]interface{}
 		expectedVendor VendorType
 	}{
 		{
@@ -124,8 +124,8 @@ func TestDetectVendor_Supermicro(t *testing.T) {
 
 func TestDetectVendor_HPE(t *testing.T) {
 	testCases := []struct {
-		name         string
-		managerData  map[string]interface{}
+		name           string
+		managerData    map[string]interface{}
 		expectedVendor VendorType
 	}{
 		{
@@ -186,8 +186,8 @@ func TestDetectVendor_HPE(t *testing.T) {
 
 func TestDetectVendor_Unknown(t *testing.T) {
 	testCases := []struct {
-		name         string
-		managerData  map[string]interface{}
+		name        string
+		managerData map[string]interface{}
 	}{
 		{
 			name: "Generic BMC",
@@ -197,7 +197,7 @@ func TestDetectVendor_Unknown(t *testing.T) {
 			},
 		},
 		{
-			name: "Empty data",
+			name:        "Empty data",
 			managerData: map[string]interface{}{},
 		},
 		{
@@ -363,10 +363,10 @@ func TestExtractVendorCapability_Unknown(t *testing.T) {
 
 func TestVendorCapability_JSON(t *testing.T) {
 	original := &VendorCapability{
-		Vendor:              VendorDell,
-		Model:               "iDRAC9",
-		FirmwareVersion:     "4.40.00.00",
-		SupportsWebSocket:   true,
+		Vendor:               VendorDell,
+		Model:                "iDRAC9",
+		FirmwareVersion:      "4.40.00.00",
+		SupportsWebSocket:    true,
 		SupportsHTML5Console: true,
 		SerialConsoleOEM: &SerialConsoleOEMInfo{
 			WebSocketEndpoint: "/ws/serial",

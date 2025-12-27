@@ -33,14 +33,14 @@ const (
 
 // VendorCapability represents vendor-specific console capabilities
 type VendorCapability struct {
-	Vendor                   VendorType              `json:"vendor"`
-	Model                    string                  `json:"model,omitempty"`
-	FirmwareVersion          string                  `json:"firmware_version,omitempty"`
-	SerialConsoleOEM         *SerialConsoleOEMInfo   `json:"serial_console_oem,omitempty"`
-	GraphicalConsoleOEM      *GraphicalConsoleOEMInfo `json:"graphical_console_oem,omitempty"`
-	SupportsWebSocket        bool                    `json:"supports_websocket"`
-	SupportsHTML5Console     bool                    `json:"supports_html5_console"`
-	AdditionalCapabilities   map[string]interface{}  `json:"additional_capabilities,omitempty"`
+	Vendor                 VendorType               `json:"vendor"`
+	Model                  string                   `json:"model,omitempty"`
+	FirmwareVersion        string                   `json:"firmware_version,omitempty"`
+	SerialConsoleOEM       *SerialConsoleOEMInfo    `json:"serial_console_oem,omitempty"`
+	GraphicalConsoleOEM    *GraphicalConsoleOEMInfo `json:"graphical_console_oem,omitempty"`
+	SupportsWebSocket      bool                     `json:"supports_websocket"`
+	SupportsHTML5Console   bool                     `json:"supports_html5_console"`
+	AdditionalCapabilities map[string]interface{}   `json:"additional_capabilities,omitempty"`
 }
 
 // SerialConsoleOEMInfo contains vendor-specific serial console endpoints
@@ -97,7 +97,7 @@ func DetectVendor(managerData map[string]interface{}) VendorType {
 // detectVendorFromManufacturer detects vendor from Manufacturer field
 func detectVendorFromManufacturer(manufacturer string) VendorType {
 	manufacturer = strings.ToLower(manufacturer)
-	
+
 	if strings.Contains(manufacturer, "dell") {
 		return VendorDell
 	}
@@ -107,30 +107,30 @@ func detectVendorFromManufacturer(manufacturer string) VendorType {
 	if strings.Contains(manufacturer, "hpe") || strings.Contains(manufacturer, "hewlett") || strings.Contains(manufacturer, "hp enterprise") {
 		return VendorHPE
 	}
-	
+
 	return VendorUnknown
 }
 
 // detectVendorFromModel detects vendor from Model field
 func detectVendorFromModel(model string) VendorType {
 	model = strings.ToLower(model)
-	
+
 	// Dell iDRAC models
 	if strings.Contains(model, "idrac") {
 		return VendorDell
 	}
-	
+
 	// Supermicro models often start with X or H series
 	if strings.HasPrefix(model, "x") || strings.HasPrefix(model, "h") {
 		// This is a weak heuristic, but combined with other checks it helps
 		// Only use this as a fallback
 	}
-	
+
 	// HPE iLO models
 	if strings.Contains(model, "ilo") || strings.Contains(model, "integrated lights-out") {
 		return VendorHPE
 	}
-	
+
 	return VendorUnknown
 }
 
@@ -140,12 +140,12 @@ func detectVendorFromOEM(oem map[string]interface{}) VendorType {
 	if _, ok := oem["Dell"]; ok {
 		return VendorDell
 	}
-	
+
 	// Check for Supermicro OEM namespace
 	if _, ok := oem["Supermicro"]; ok {
 		return VendorSupermicro
 	}
-	
+
 	// Check for HPE OEM namespace
 	if _, ok := oem["Hpe"]; ok {
 		return VendorHPE
@@ -153,14 +153,14 @@ func detectVendorFromOEM(oem map[string]interface{}) VendorType {
 	if _, ok := oem["Hp"]; ok {
 		return VendorHPE
 	}
-	
+
 	return VendorUnknown
 }
 
 // detectVendorFromODataType detects vendor from @odata.type
 func detectVendorFromODataType(odataType string) VendorType {
 	odataType = strings.ToLower(odataType)
-	
+
 	if strings.Contains(odataType, "dell") {
 		return VendorDell
 	}
@@ -170,7 +170,7 @@ func detectVendorFromODataType(odataType string) VendorType {
 	if strings.Contains(odataType, "hpe") || strings.Contains(odataType, "hp.") {
 		return VendorHPE
 	}
-	
+
 	return VendorUnknown
 }
 
@@ -268,7 +268,7 @@ func (vc *VendorCapability) extractHPEOEM(oem map[string]interface{}) {
 	// HPE can use either "Hpe" or "Hp" namespace
 	var hpeOEM map[string]interface{}
 	var ok bool
-	
+
 	if hpeOEM, ok = oem["Hpe"].(map[string]interface{}); !ok {
 		hpeOEM, ok = oem["Hp"].(map[string]interface{})
 		if !ok {
