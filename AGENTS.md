@@ -198,6 +198,15 @@ Current allowlist (intentionally retained though flagged):
 - `(*DB).UpdateConnectionMethodAggregatedData` (future aggregation caching; covered by tests)
 - `(*DB).UpdateConnectionMethodLastSeen` (future monitoring feature; covered by tests)
 - `pkg/auth.isHashed` (intentionally unexported helper, only used in password tests)
+- `(*DB).UpsertConsoleCapability` (console pass-through feature Milestone 1; design/021; covered by tests)
+- `(*DB).GetConsoleCapabilities` (console pass-through feature Milestone 3; design/021; covered by tests)
+- `(*DB).GetConsoleCapability` (console pass-through feature Milestone 3; design/021; covered by tests)
+- `(*DB).CreateConsoleSession` (console pass-through feature Milestone 3; design/021; covered by tests)
+- `(*DB).GetConsoleSession` (console pass-through feature Milestone 4; design/021; covered by tests)
+- `(*DB).GetConsoleSessions` (console pass-through feature Milestone 3; design/021; covered by tests)
+- `(*DB).UpdateConsoleSessionState` (console pass-through feature Milestone 4; design/021; covered by tests)
+- `(*DB).DeleteConsoleSession` (console pass-through feature Milestone 4; design/021; covered by tests)
+- `(*Service).SyncConsoleCapabilities` (console pass-through feature Milestone 2; design/021; covered by tests)
 
 Removal / retention guidelines:
 - Remove immediately if: no test coverage, no design doc reference, and not part of an accepted roadmap item.

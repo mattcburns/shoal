@@ -180,3 +180,53 @@ type SettingValue struct {
 	CurrentValue    interface{} `json:"current_value" db:"current_value"`
 	SourceTimestamp string      `json:"source_timestamp" db:"source_timestamp"`
 }
+
+// ConsoleType represents the type of console
+type ConsoleType string
+
+const (
+	ConsoleTypeSerial    ConsoleType = "SerialConsole"
+	ConsoleTypeGraphical ConsoleType = "GraphicalConsole"
+)
+
+// ConsoleCapability represents console capabilities discovered from a BMC Manager
+type ConsoleCapability struct {
+	ID                   int64       `json:"id" db:"id"`
+	ConnectionMethodID   string      `json:"connection_method_id" db:"connection_method_id"`
+	ManagerID            string      `json:"manager_id" db:"manager_id"`
+	ConsoleType          ConsoleType `json:"console_type" db:"console_type"`
+	ServiceEnabled       bool        `json:"service_enabled" db:"service_enabled"`
+	MaxConcurrentSession int         `json:"max_concurrent_sessions" db:"max_concurrent_sessions"`
+	ConnectTypes         string      `json:"connect_types" db:"connect_types"`       // JSON array of supported connection types
+	VendorData           string      `json:"vendor_data,omitempty" db:"vendor_data"` // JSON: vendor-specific OEM endpoints
+	LastUpdated          time.Time   `json:"last_updated" db:"last_updated"`
+}
+
+// ConsoleSessionState represents the state of a console session
+type ConsoleSessionState string
+
+const (
+	ConsoleSessionStateConnecting   ConsoleSessionState = "connecting"
+	ConsoleSessionStateActive       ConsoleSessionState = "active"
+	ConsoleSessionStateDisconnected ConsoleSessionState = "disconnected"
+	ConsoleSessionStateError        ConsoleSessionState = "error"
+)
+
+// ConsoleSession represents an active or past console session
+type ConsoleSession struct {
+	ID                 int64               `json:"id" db:"id"`
+	SessionID          string              `json:"session_id" db:"session_id"`
+	ConnectionMethodID string              `json:"connection_method_id" db:"connection_method_id"`
+	ManagerID          string              `json:"manager_id" db:"manager_id"`
+	ConsoleType        ConsoleType         `json:"console_type" db:"console_type"`
+	ConnectType        string              `json:"connect_type" db:"connect_type"`
+	State              ConsoleSessionState `json:"state" db:"state"`
+	CreatedBy          string              `json:"created_by" db:"created_by"`
+	CreatedAt          time.Time           `json:"created_at" db:"created_at"`
+	LastActivity       time.Time           `json:"last_activity" db:"last_activity"`
+	DisconnectedAt     *time.Time          `json:"disconnected_at,omitempty" db:"disconnected_at"`
+	WebSocketURI       string              `json:"websocket_uri,omitempty" db:"websocket_uri"`
+	BMCWebSocketURI    string              `json:"bmc_websocket_uri,omitempty" db:"bmc_websocket_uri"`
+	ErrorMessage       string              `json:"error_message,omitempty" db:"error_message"`
+	Metadata           string              `json:"metadata,omitempty" db:"metadata"` // JSON: session-specific data
+}
