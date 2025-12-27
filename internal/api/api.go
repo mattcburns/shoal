@@ -104,6 +104,14 @@ func (h *Handler) handleRedfish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// OEM ProvisioningConfiguration endpoints (no auth required for installer access during boot)
+	// Path pattern: /v1/Systems/{system-id}/Oem/Shoal/ProvisioningConfiguration/{Kickstart|Preseed}
+	if strings.Contains(path, "/Oem/Shoal/ProvisioningConfiguration/") {
+		// Let the proxy handler deal with it (it will intercept before proxying)
+		h.handleBMCProxy(w, r, path)
+		return
+	}
+
 	// All other endpoints require authentication
 	user, err := h.auth.AuthenticateRequest(r)
 	if err != nil {
