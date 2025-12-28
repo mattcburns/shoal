@@ -54,7 +54,7 @@ func mockRedfishManagerHandler(vendor VendorType) http.HandlerFunc {
 			"Id":          managerID,
 			"Name":        "Manager for Test BMC",
 			"SerialConsole": map[string]interface{}{
-				"ServiceEnabled":       true,
+				"ServiceEnabled":        true,
 				"MaxConcurrentSessions": 1,
 				"ConnectTypesSupported": []string{"Oem"},
 			},
