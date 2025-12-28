@@ -122,12 +122,12 @@ func (h *Handler) handleConnectSerialConsole(w http.ResponseWriter, r *http.Requ
 
 	// Return session resource
 	sessionResource := map[string]interface{}{
-		"@odata.type": "#ShoalConsoleSession.v1_0_0.ConsoleSession",
-		"@odata.id":   fmt.Sprintf("/redfish/v1/Managers/%s/Oem/Shoal/ConsoleSessions/%s", managerID, sessionID),
-		"Id":          sessionID,
-		"ConsoleType": string(consoleSession.ConsoleType),
-		"ConnectType": consoleSession.ConnectType,
-		"State":       string(consoleSession.State),
+		"@odata.type":  "#ShoalConsoleSession.v1_0_0.ConsoleSession",
+		"@odata.id":    fmt.Sprintf("/redfish/v1/Managers/%s/Oem/Shoal/ConsoleSessions/%s", managerID, sessionID),
+		"Id":           sessionID,
+		"ConsoleType":  string(consoleSession.ConsoleType),
+		"ConnectType":  consoleSession.ConnectType,
+		"State":        string(consoleSession.State),
 		"WebSocketURI": consoleSession.WebSocketURI,
 	}
 
@@ -205,10 +205,10 @@ func (h *Handler) handleConsoleSessionCollection(w http.ResponseWriter, r *http.
 	}
 
 	collection := map[string]interface{}{
-		"@odata.type":  "#ShoalConsoleSessionCollection.v1_0_0.ConsoleSessionCollection",
-		"@odata.id":    fmt.Sprintf("/redfish/v1/Managers/%s/Oem/Shoal/ConsoleSessions", managerID),
-		"Name":         "Console Session Collection",
-		"Members":      members,
+		"@odata.type":         "#ShoalConsoleSessionCollection.v1_0_0.ConsoleSessionCollection",
+		"@odata.id":           fmt.Sprintf("/redfish/v1/Managers/%s/Oem/Shoal/ConsoleSessions", managerID),
+		"Name":                "Console Session Collection",
+		"Members":             members,
 		"Members@odata.count": len(members),
 	}
 
@@ -350,11 +350,11 @@ func (h *Handler) isConsoleRequest(path string) bool {
 	// /v1/Managers/{id}/Oem/Shoal/ConsoleSessions
 	// /v1/Managers/{id}/Oem/Shoal/ConsoleSessions/{sessionId}
 	// /v1/Managers/{id}/Oem/Shoal/ConsoleSessions/{sessionId}/Actions/Disconnect
-	
+
 	if !strings.HasPrefix(path, "/v1/Managers/") {
 		return false
 	}
-	
+
 	// Check for console action or OEM console paths
 	return strings.Contains(path, "/Actions/Oem/Shoal.ConnectSerialConsole") ||
 		strings.Contains(path, "/Oem/Shoal/ConsoleSessions")
@@ -365,7 +365,7 @@ func (h *Handler) handleConsoleRequest(w http.ResponseWriter, r *http.Request, p
 	// Add user to context for handlers
 	ctx := context.WithValue(r.Context(), ctxkeys.User, user)
 	r = r.WithContext(ctx)
-	
+
 	managerID, sessionID, action := parseConsolePath("/redfish" + path)
 
 	switch action {
@@ -448,7 +448,7 @@ func parseConsolePath(path string) (string, string, string) {
 	// /redfish/v1/Managers/{managerID}/Oem/Shoal/ConsoleSessions/{sessionID}/Actions/Disconnect
 
 	parts := strings.Split(strings.Trim(path, "/"), "/")
-	
+
 	if len(parts) < 4 || parts[0] != "redfish" || parts[1] != "v1" || parts[2] != "Managers" {
 		return "", "", ""
 	}
