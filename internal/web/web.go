@@ -890,6 +890,11 @@ func (h *Handler) handleBMCDetails(w http.ResponseWriter, r *http.Request) {
 	}
 
 	detailsTemplate := `{{define "content"}}
+<!-- Load xterm.js for console terminal -->
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css" />
+<script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script>
+
 <h2>BMC Details - {{.Title}}</h2>
 
 <div style="margin-bottom: 20px;">
@@ -910,6 +915,7 @@ func (h *Handler) handleBMCDetails(w http.ResponseWriter, r *http.Request) {
 		<button id="tab-overview" class="btn btn-primary">Overview</button>
 		<button id="tab-settings" class="btn">Settings</button>
 		<button id="tab-virtualmedia" class="btn">Virtual Media</button>
+		<button id="tab-console" class="btn">Console</button>
 	</div>
 
 	<div id="tab-overview-content">
@@ -1014,6 +1020,26 @@ func (h *Handler) handleBMCDetails(w http.ResponseWriter, r *http.Request) {
 		<div class="details-section">
 			<h3>Attached Media</h3>
 			<div id="vmedia-attached-list"></div>
+		</div>
+	</div>
+
+	<div id="tab-console-content" style="display:none;">
+		<div class="details-section">
+			<h3>Serial Console</h3>
+			<div id="console-status" style="margin-bottom:12px; color:#333;"></div>
+			<div id="console-controls" style="margin-bottom:12px;">
+				<button id="btn-console-connect" class="btn btn-primary">Open Console</button>
+				<button id="btn-console-disconnect" class="btn btn-danger" style="display:none;">Disconnect</button>
+			</div>
+			<div id="terminal-container" style="display:none; background:#000; padding:10px; border-radius:4px; height:500px; overflow:hidden;">
+				<div id="terminal"></div>
+			</div>
+		</div>
+
+		<div class="details-section">
+			<h3>Active Console Sessions</h3>
+			<div id="console-sessions-status" style="margin-bottom:8px; color:#333;">Loading active sessions...</div>
+			<div id="console-sessions-list"></div>
 		</div>
 	</div>
 
@@ -1289,6 +1315,7 @@ function loadBMCDetails() {
             displaySELEntries(data.sel_entries);
 			initSettingsTab(bmcName);
 			initVirtualMediaTab(bmcName);
+			initConsoleTab(bmcName);
         })
         .catch(function(error) {
             document.getElementById('loading-indicator').style.display = 'none';
@@ -1304,25 +1331,31 @@ function initSettingsTab(bmcName) {
 	const tabOverviewBtn = document.getElementById('tab-overview');
 	const tabSettingsBtn = document.getElementById('tab-settings');
 	const tabVirtualMediaBtn = document.getElementById('tab-virtualmedia');
+	const tabConsoleBtn = document.getElementById('tab-console');
 	const overview = document.getElementById('tab-overview-content');
 	const settings = document.getElementById('tab-settings-content');
 	const virtualmedia = document.getElementById('tab-virtualmedia-content');
+	const console = document.getElementById('tab-console-content');
 
 	function showOverview() {
 		tabOverviewBtn.classList.add('btn-primary');
 		tabSettingsBtn.classList.remove('btn-primary');
 		tabVirtualMediaBtn.classList.remove('btn-primary');
+		tabConsoleBtn.classList.remove('btn-primary');
 		overview.style.display = '';
 		settings.style.display = 'none';
 		virtualmedia.style.display = 'none';
+		console.style.display = 'none';
 	}
 	function showSettings() {
 		tabSettingsBtn.classList.add('btn-primary');
 		tabOverviewBtn.classList.remove('btn-primary');
 		tabVirtualMediaBtn.classList.remove('btn-primary');
+		tabConsoleBtn.classList.remove('btn-primary');
 		overview.style.display = 'none';
 		settings.style.display = '';
 		virtualmedia.style.display = 'none';
+		console.style.display = 'none';
 		fetchSettings();
 		loadBootOrderWidget();
 	}
@@ -1330,13 +1363,26 @@ function initSettingsTab(bmcName) {
 		tabVirtualMediaBtn.classList.add('btn-primary');
 		tabOverviewBtn.classList.remove('btn-primary');
 		tabSettingsBtn.classList.remove('btn-primary');
+		tabConsoleBtn.classList.remove('btn-primary');
 		overview.style.display = 'none';
 		settings.style.display = 'none';
 		virtualmedia.style.display = '';
+		console.style.display = 'none';
+	}
+	function showConsole() {
+		tabConsoleBtn.classList.add('btn-primary');
+		tabOverviewBtn.classList.remove('btn-primary');
+		tabSettingsBtn.classList.remove('btn-primary');
+		tabVirtualMediaBtn.classList.remove('btn-primary');
+		overview.style.display = 'none';
+		settings.style.display = 'none';
+		virtualmedia.style.display = 'none';
+		console.style.display = '';
 	}
 	tabOverviewBtn.addEventListener('click', showOverview);
 	tabSettingsBtn.addEventListener('click', showSettings);
 	tabVirtualMediaBtn.addEventListener('click', showVirtualMedia);
+	tabConsoleBtn.addEventListener('click', showConsole);
 
 	let page = 1;
 	const tbody = document.querySelector('#settings-table tbody');
@@ -1983,6 +2029,244 @@ function initVirtualMediaTab(bmcName) {
 			if (virtualMediaSlots.length === 0) {
 				loadVirtualMediaSlots();
 			}
+		});
+	}
+}
+
+// Console Tab Implementation
+function initConsoleTab(bmcName) {
+	let terminal = null;
+	let fitAddon = null;
+	let websocket = null;
+	let currentSessionId = null;
+
+	const statusDiv = document.getElementById('console-status');
+	const btnConnect = document.getElementById('btn-console-connect');
+	const btnDisconnect = document.getElementById('btn-console-disconnect');
+	const terminalContainer = document.getElementById('terminal-container');
+	const sessionsStatus = document.getElementById('console-sessions-status');
+	const sessionsList = document.getElementById('console-sessions-list');
+
+	// Initialize xterm.js terminal
+	function initTerminal() {
+		if (terminal) return;
+
+		terminal = new Terminal({
+			cursorBlink: true,
+			fontSize: 14,
+			fontFamily: 'Courier New, monospace',
+			theme: {
+				background: '#000000',
+				foreground: '#ffffff'
+			},
+			rows: 30,
+			cols: 120
+		});
+
+		if (window.FitAddon) {
+			fitAddon = new FitAddon.FitAddon();
+			terminal.loadAddon(fitAddon);
+		}
+
+		terminal.open(document.getElementById('terminal'));
+		
+		if (fitAddon) {
+			fitAddon.fit();
+		}
+
+		// Handle terminal input - send to websocket
+		terminal.onData(function(data) {
+			if (websocket && websocket.readyState === WebSocket.OPEN) {
+				websocket.send(data);
+			}
+		});
+
+		// Handle window resize
+		window.addEventListener('resize', function() {
+			if (fitAddon) {
+				fitAddon.fit();
+			}
+		});
+	}
+
+	// Connect to console
+	async function connectConsole() {
+		try {
+			btnConnect.disabled = true;
+			btnConnect.textContent = 'Connecting...';
+			statusDiv.textContent = 'Creating console session...';
+
+			// Create console session via Redfish API
+			const response = await fetch(
+				'/redfish/v1/Managers/' + encodeURIComponent(bmcName) + 
+				'/Actions/Oem/Shoal.ConnectSerialConsole',
+				{
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({ ConnectType: 'Oem' })
+				}
+			);
+
+			if (!response.ok) {
+				const errorData = await response.json().catch(() => ({ error: { message: 'Unknown error' } }));
+				throw new Error(errorData.error?.message || 'Failed to create console session');
+			}
+
+			const sessionData = await response.json();
+			currentSessionId = sessionData.Id;
+
+			statusDiv.textContent = 'Connecting to console WebSocket...';
+
+			// Initialize terminal if not already done
+			initTerminal();
+
+			// Connect WebSocket
+			const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+			const wsUrl = wsProtocol + '//' + window.location.host + '/ws/console/' + currentSessionId;
+
+			websocket = new WebSocket(wsUrl);
+
+			websocket.onopen = function() {
+				statusDiv.textContent = 'Connected to serial console';
+				terminalContainer.style.display = 'block';
+				btnConnect.style.display = 'none';
+				btnDisconnect.style.display = 'inline-block';
+				terminal.focus();
+			};
+
+			websocket.onmessage = function(event) {
+				if (terminal) {
+					terminal.write(event.data);
+				}
+			};
+
+			websocket.onerror = function(error) {
+				statusDiv.textContent = 'WebSocket error occurred';
+				console.error('WebSocket error:', error);
+			};
+
+			websocket.onclose = function() {
+				statusDiv.textContent = 'Console disconnected';
+				terminalContainer.style.display = 'none';
+				btnConnect.style.display = 'inline-block';
+				btnConnect.disabled = false;
+				btnConnect.textContent = 'Open Console';
+				btnDisconnect.style.display = 'none';
+				websocket = null;
+				currentSessionId = null;
+				loadActiveSessions();
+			};
+
+		} catch (error) {
+			statusDiv.textContent = 'Error: ' + error.message;
+			btnConnect.disabled = false;
+			btnConnect.textContent = 'Open Console';
+		}
+	}
+
+	// Disconnect from console
+	async function disconnectConsole() {
+		if (websocket) {
+			websocket.close();
+		}
+
+		if (currentSessionId) {
+			try {
+				await fetch(
+					'/redfish/v1/Managers/' + encodeURIComponent(bmcName) + 
+					'/Oem/Shoal/ConsoleSessions/' + currentSessionId + 
+					'/Actions/Disconnect',
+					{ method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }
+				);
+			} catch (error) {
+				console.error('Error disconnecting session:', error);
+			}
+		}
+	}
+
+	// Load active console sessions
+	async function loadActiveSessions() {
+		try {
+			sessionsStatus.textContent = 'Loading active sessions...';
+			
+			const response = await fetch(
+				'/redfish/v1/Managers/' + encodeURIComponent(bmcName) + 
+				'/Oem/Shoal/ConsoleSessions'
+			);
+
+			if (!response.ok) {
+				throw new Error('Failed to load sessions');
+			}
+
+			const collection = await response.json();
+			const sessions = collection.Members || [];
+
+			if (sessions.length === 0) {
+				sessionsStatus.textContent = 'No active console sessions';
+				sessionsList.innerHTML = '<p>No active sessions found.</p>';
+				return;
+			}
+
+			sessionsStatus.textContent = 'Active sessions: ' + sessions.length;
+
+			let html = '<table class="table"><thead><tr><th>Session ID</th><th>Type</th><th>State</th><th>Created By</th><th>Created</th><th>Actions</th></tr></thead><tbody>';
+
+			for (const sessionRef of sessions) {
+				const sessionResp = await fetch(sessionRef['@odata.id']);
+				const session = await sessionResp.json();
+
+				html += '<tr>';
+				html += '<td>' + escapeHtml(session.Id) + '</td>';
+				html += '<td>' + escapeHtml(session.ConsoleType) + '</td>';
+				html += '<td>' + escapeHtml(session.State) + '</td>';
+				html += '<td>' + escapeHtml(session.CreatedBy) + '</td>';
+				html += '<td>' + new Date(session.CreatedTime).toLocaleString() + '</td>';
+				html += '<td><button class="btn btn-danger btn-sm" onclick="terminateSession(\'' + session.Id + '\')">Terminate</button></td>';
+				html += '</tr>';
+			}
+
+			html += '</tbody></table>';
+			sessionsList.innerHTML = html;
+
+		} catch (error) {
+			sessionsStatus.textContent = 'Error loading sessions';
+			sessionsList.innerHTML = '<div class="alert alert-danger">Error: ' + error.message + '</div>';
+		}
+	}
+
+	// Terminate a session
+	window.terminateSession = async function(sessionId) {
+		if (!confirm('Are you sure you want to terminate this console session?')) {
+			return;
+		}
+
+		try {
+			const response = await fetch(
+				'/redfish/v1/Managers/' + encodeURIComponent(bmcName) + 
+				'/Oem/Shoal/ConsoleSessions/' + sessionId + 
+				'/Actions/Disconnect',
+				{ method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }
+			);
+
+			if (!response.ok) {
+				throw new Error('Failed to terminate session');
+			}
+
+			await loadActiveSessions();
+		} catch (error) {
+			alert('Error terminating session: ' + error.message);
+		}
+	};
+
+	// Event handlers
+	btnConnect.addEventListener('click', connectConsole);
+	btnDisconnect.addEventListener('click', disconnectConsole);
+
+	// Load sessions when tab is accessed
+	const tabConsoleBtn = document.getElementById('tab-console');
+	if (tabConsoleBtn) {
+		tabConsoleBtn.addEventListener('click', function() {
+			loadActiveSessions();
 		});
 	}
 }
