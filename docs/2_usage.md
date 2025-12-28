@@ -13,6 +13,9 @@ Access the web interface at `http://localhost:8080`.
   - **Network Interfaces**: NIC details with MAC addresses and IP addresses.
   - **Storage Devices**: Drive information with capacity, model, serial numbers, and health status.
   - **System Event Log (SEL)**: Recent log entries with severity levels and timestamps.
+  - **Settings**: Browse and configure BIOS, network, and storage settings with pagination and filtering.
+  - **Virtual Media**: Attach and eject ISO/disk images to virtual media slots.
+  - **Console**: Access the BMC's serial console directly in the browser via WebSocket connection.
 - **Connection Testing**: Quick connectivity tests for any BMC with a one-click "Test" button.
 - **Power Control**: Execute power actions (On, ForceOff, ForceRestart) directly from the web UI.
 - **Real-time Feedback**: Success/error messaging for all operations.
@@ -64,3 +67,37 @@ Shoal implements role-based access control with three user roles:
 
 - **Web Interface** (administrators only): Navigate to "Manage Users" to add, edit, or delete users.
 - **User Profile**: All users can access their profile from the menu to change their own password.
+
+## Serial Console Access
+
+The Console tab on the BMC Details page provides browser-based access to the BMC's serial console.
+
+### Access Requirements
+
+- **Operator** or **Administrator** role required
+- Users can only access their own console sessions
+- Administrators can view and terminate all active sessions
+
+### Using the Console
+
+1. Navigate to a BMC's Details page
+2. Click the **Console** tab
+3. Click **Open Console** to create a new console session
+4. The terminal will connect via WebSocket and display the serial console output
+5. Type directly in the terminal to send commands to the BMC
+6. Click **Disconnect** to end the session
+
+### Active Sessions
+
+The Console tab shows all active console sessions:
+- Session ID and connection status
+- User who created the session
+- Creation timestamp
+- Administrators can terminate any session using the **Terminate** button
+
+### Technical Details
+
+- Uses xterm.js terminal emulator with responsive sizing
+- WebSocket connection at `/ws/console/{sessionId}`
+- Session state tracked: connecting → active → disconnected
+- Automatic cleanup on disconnect

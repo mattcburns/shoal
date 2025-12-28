@@ -284,6 +284,161 @@ curl -X POST \
 
 All VirtualMedia operations require authentication (session token or basic auth).
 
+## Serial Console Pass-Through (OEM Extension)
+
+Shoal provides OEM extension endpoints for browser-based serial console access to managed BMCs using WebSocket connections.
+
+### Access Control
+
+- Requires **Operator** or **Administrator** role
+- Users can only connect to their own console sessions
+- Administrators can view and terminate all sessions
+
+### Endpoints
+
+- `POST /redfish/v1/Managers/{manager-id}/Actions/Oem/Shoal.ConnectSerialConsole`: Create a new console session
+- `GET /redfish/v1/Managers/{manager-id}/Oem/Shoal/ConsoleSessions`: List all console sessions for a manager
+- `GET /redfish/v1/Managers/{manager-id}/Oem/Shoal/ConsoleSessions/{session-id}`: Get console session details
+- `POST /redfish/v1/Managers/{manager-id}/Oem/Shoal/ConsoleSessions/{session-id}/Actions/Disconnect`: Disconnect an active session
+- `WebSocket /ws/console/{session-id}`: WebSocket endpoint for bidirectional console I/O
+
+### Create Console Session
+
+Initiate a new serial console session to a BMC.
+
+**Request:**
+```bash
+curl -X POST \
+  http://localhost:8080/redfish/v1/Managers/bmc1/Actions/Oem/Shoal.ConnectSerialConsole \
+  -H "X-Auth-Token: <token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "ConnectType": "Oem"
+  }'
+```
+
+**Response:** `201 Created`
+```json
+{
+  "@odata.type": "#ShoalConsoleSession.v1_0_0.ConsoleSession",
+  "@odata.id": "/redfish/v1/Managers/bmc1/Oem/Shoal/ConsoleSessions/abc-123",
+  "Id": "abc-123",
+  "ConsoleType": "Serial",
+  "ConnectType": "Oem",
+  "State": "connecting",
+  "WebSocketURI": "/ws/console/abc-123"
+}
+```
+
+### WebSocket Connection
+
+Connect to the console session using the WebSocket URI from the session creation response.
+
+**JavaScript Example:**
+```javascript
+const ws = new WebSocket('ws://localhost:8080/ws/console/abc-123');
+
+// Receive console output
+ws.onmessage = (event) => {
+  console.log('Console output:', event.data);
+};
+
+// Send console input
+ws.send('ls\n');
+
+// Close connection
+ws.close();
+```
+
+**Authentication:** WebSocket connections require authentication via session token in cookies or headers.
+
+### List Console Sessions
+
+Retrieve all console sessions for a manager.
+
+**Request:**
+```bash
+curl http://localhost:8080/redfish/v1/Managers/bmc1/Oem/Shoal/ConsoleSessions \
+  -H "X-Auth-Token: <token>"
+```
+
+**Response:**
+```json
+{
+  "@odata.type": "#ShoalConsoleSessionCollection.v1_0_0.ConsoleSessionCollection",
+  "@odata.id": "/redfish/v1/Managers/bmc1/Oem/Shoal/ConsoleSessions",
+  "Name": "Console Session Collection",
+  "Members": [
+    {
+      "@odata.id": "/redfish/v1/Managers/bmc1/Oem/Shoal/ConsoleSessions/abc-123"
+    }
+  ],
+  "Members@odata.count": 1
+}
+```
+
+### Get Console Session
+
+Retrieve details for a specific console session.
+
+**Request:**
+```bash
+curl http://localhost:8080/redfish/v1/Managers/bmc1/Oem/Shoal/ConsoleSessions/abc-123 \
+  -H "X-Auth-Token: <token>"
+```
+
+**Response:**
+```json
+{
+  "@odata.type": "#ShoalConsoleSession.v1_0_0.ConsoleSession",
+  "@odata.id": "/redfish/v1/Managers/bmc1/Oem/Shoal/ConsoleSessions/abc-123",
+  "Id": "abc-123",
+  "Name": "Serial Console Session",
+  "ConsoleType": "Serial",
+  "ConnectType": "Oem",
+  "State": "active",
+  "CreatedBy": "admin",
+  "CreatedTime": "2025-12-28T03:00:00Z",
+  "LastActivityTime": "2025-12-28T03:05:00Z",
+  "WebSocketURI": "/ws/console/abc-123",
+  "Actions": {
+    "#ConsoleSession.Disconnect": {
+      "target": "/redfish/v1/Managers/bmc1/Oem/Shoal/ConsoleSessions/abc-123/Actions/Disconnect"
+    }
+  }
+}
+```
+
+**Session States:**
+- `connecting`: Session is being established with the BMC
+- `active`: Console is connected and ready for I/O
+- `disconnected`: Session has been closed
+- `error`: Connection failed (check `ErrorMessage` field)
+
+### Disconnect Console Session
+
+Terminate an active console session.
+
+**Request:**
+```bash
+curl -X POST \
+  http://localhost:8080/redfish/v1/Managers/bmc1/Oem/Shoal/ConsoleSessions/abc-123/Actions/Disconnect \
+  -H "X-Auth-Token: <token>" \
+  -H "Content-Type: application/json" \
+  -d '{}'
+```
+
+**Response:** `204 No Content`
+
+### Error Handling
+
+- `400 Bad Request`: Invalid ConnectType (only "Oem" is supported)
+- `403 Forbidden`: Insufficient privileges (requires Operator or Admin role)
+- `404 Not Found`: Manager or session not found
+- `503 Service Unavailable`: Console session not ready for WebSocket connection
+
+All console operations require authentication and appropriate role permissions.
+
 ## Provisioning Configuration Endpoints (OEM Extension)
 
 Shoal provides DMTF Redfish-compliant OEM extension endpoints to serve kickstart and preseed configuration files for automated system installations. These endpoints support dynamic variable substitution for system-specific customization.
