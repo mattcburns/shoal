@@ -225,31 +225,7 @@ func setupTestDB(t *testing.T) (*database.DB, func()) {
 
 func createTestUserAndSession(t *testing.T, db *database.DB, role string) (*models.User, *models.Session) {
 	t.Helper()
-	ctx := context.Background()
-
-	passwordHash, _ := hashPassword("password")
-	user := &models.User{
-		ID:           role + "-user",
-		Username:     role,
-		PasswordHash: passwordHash,
-		Role:         role,
-		Enabled:      true,
-	}
-	if err := db.CreateUser(ctx, user); err != nil {
-		t.Fatalf("Failed to create user: %v", err)
-	}
-
-	session := &models.Session{
-		ID:        role + "-session",
-		UserID:    user.ID,
-		Token:     role + "-token",
-		ExpiresAt: time.Now().Add(24 * time.Hour),
-	}
-	if err := db.CreateSession(ctx, session); err != nil {
-		t.Fatalf("Failed to create session: %v", err)
-	}
-
-	return user, session
+	return createTestUserWithRole(t, db, role, role)
 }
 
 func createTestUserWithRole(t *testing.T, db *database.DB, username, role string) (*models.User, *models.Session) {

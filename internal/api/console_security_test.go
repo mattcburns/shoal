@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -354,7 +355,7 @@ func TestConsoleSessionConcurrencyLimit(t *testing.T) {
 	// Create 2 active sessions
 	for i := 0; i < 2; i++ {
 		consoleSession := &models.ConsoleSession{
-			SessionID:          string(rune('a' + i)) + "-session",
+			SessionID:          fmt.Sprintf("session-%d", i),
 			ConnectionMethodID: cm.ID,
 			ManagerID:          cm.ID,
 			ConsoleType:        models.ConsoleTypeSerial,
@@ -363,7 +364,7 @@ func TestConsoleSessionConcurrencyLimit(t *testing.T) {
 			CreatedBy:          user.Username,
 			CreatedAt:          time.Now(),
 			LastActivity:       time.Now(),
-			WebSocketURI:       "/ws/console/" + string(rune('a'+i)) + "-session",
+			WebSocketURI:       fmt.Sprintf("/ws/console/session-%d", i),
 		}
 		if err := db.CreateConsoleSession(ctx, consoleSession); err != nil {
 			t.Fatalf("Failed to create console session: %v", err)

@@ -40,14 +40,16 @@ import (
 // WebSocket upgrader with secure origin checking
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool {
-		// In production, verify the Origin header matches the host
-		// For now, allow same origin only
+		// TODO: Security - Implement proper origin validation before production deployment
+		// Currently allowing all origins for development/testing.
+		// In production, should validate origin against configured allowed origins
+		// to prevent CSRF attacks.
 		origin := r.Header.Get("Origin")
 		if origin == "" {
 			// No origin header - allow for non-browser clients
 			return true
 		}
-		// TODO: In production, validate origin against configured allowed origins
+		// TODO: Validate origin against allowed list
 		return true
 	},
 	// Enable compression for better performance
