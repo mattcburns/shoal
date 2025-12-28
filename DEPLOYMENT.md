@@ -84,10 +84,54 @@ The production build includes:
 
 The binary accepts the following command-line flags:
 
+### Core Configuration
 - `-port`: HTTP server port (default: "8080")
 - `-db`: SQLite database path (default: "shoal.db")
 - `-encryption-key`: Encryption key for BMC passwords (can also use SHOAL_ENCRYPTION_KEY env var)
 - `-log-level`: Log level - debug, info, warn, error (default: "info")
+
+### Console Pass-Through Configuration
+
+The console pass-through feature provides secure, audited access to BMC serial consoles. This feature requires operator or admin privileges and includes automatic session management and cleanup.
+
+**Security Features:**
+- **Authentication**: All console endpoints require valid session authentication
+- **Role-Based Access**: Operator or admin role required (viewers cannot access consoles)
+- **Session Ownership**: Users can only access their own console sessions (admins can access any)
+- **Automatic Timeouts**: 
+  - **Idle Timeout**: Sessions automatically disconnect after 30 minutes of inactivity
+  - **Max Duration**: Sessions automatically disconnect after 12 hours
+  - **Cleanup Interval**: Background task runs every 5 minutes to clean up expired sessions
+
+**Audit Logging:**
+All console operations are logged with structured logging (JSON format). Logs include:
+- Console session creation (user, manager, timestamp, console type)
+- Session disconnections (user, duration, reason: manual/idle/timeout)
+- Authentication failures (user, session ID, remote address)
+- Error conditions (connection failures, timeouts, BMC errors)
+- Automatic cleanup events (idle duration, total duration)
+
+**Production Security Recommendations:**
+1. **TLS/HTTPS Required**: Always deploy Shoal behind a reverse proxy (nginx, Apache) with TLS
+2. **WebSocket Security**: Ensure WSS (WebSocket Secure) is used for console connections in production
+3. **Network Isolation**: Deploy Shoal in a secure network segment with controlled access to BMC management network
+4. **Session Monitoring**: Monitor audit logs for unusual console access patterns
+5. **Rate Limiting**: Consider implementing rate limiting at reverse proxy level for `/ws/console/` endpoints
+6. **Origin Validation**: WebSocket origin validation is currently permissive; plan to implement strict origin checking before production deployment
+
+**Example Audit Log Entry:**
+```json
+{
+  "time": "2025-12-28T16:30:00Z",
+  "level": "INFO",
+  "msg": "Console session created",
+  "session_id": "abc123",
+  "manager": "bmc-server01",
+  "user": "admin",
+  "console_type": "SerialConsole",
+  "connection_method": "cm-001"
+}
+```
 
 ## Systemd Service Example
 

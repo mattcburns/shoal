@@ -75,12 +75,30 @@ type ImageProxyConfig struct {
 
 // New creates a new API handler
 func New(db *database.DB) http.Handler {
-	return NewRouter(db)
+	handler, _, _ := NewWithCleanup(db)
+	return handler
+}
+
+// NewWithCleanup creates a new API handler and starts console session cleanup
+func NewWithCleanup(db *database.DB) (http.Handler, context.Context, context.CancelFunc) {
+	return NewWithImageProxyAndCleanup(db, nil)
 }
 
 // NewWithImageProxy creates a new API handler with image proxy configuration
 func NewWithImageProxy(db *database.DB, proxyConfig *ImageProxyConfig) http.Handler {
-	return NewRouterWithImageProxy(db, proxyConfig)
+	handler, _, _ := NewWithImageProxyAndCleanup(db, proxyConfig)
+	return handler
+}
+
+// NewWithImageProxyAndCleanup creates a new API handler with image proxy configuration and console cleanup
+func NewWithImageProxyAndCleanup(db *database.DB, proxyConfig *ImageProxyConfig) (http.Handler, context.Context, context.CancelFunc) {
+	h := NewRouterWithImageProxy(db, proxyConfig)
+	
+	// Start console session cleanup task
+	ctx, cancel := context.WithCancel(context.Background())
+	h.StartConsoleSessionCleanup(ctx)
+	
+	return newMux(h), ctx, cancel
 }
 
 // handleRedfish routes Redfish API requests

@@ -31,11 +31,13 @@ import (
 // This does not change any routes or behavior; it simply centralizes mux setup
 // so other code can delegate to it.
 func NewRouter(db *database.DB) http.Handler {
-	return NewRouterWithImageProxy(db, nil)
+	h := NewRouterWithImageProxy(db, nil)
+	return newMux(h)
 }
 
 // NewRouterWithImageProxy constructs an API router with image proxy support
-func NewRouterWithImageProxy(db *database.DB, proxyConfig *ImageProxyConfig) http.Handler {
+// Returns the created Handler for cleanup initialization
+func NewRouterWithImageProxy(db *database.DB, proxyConfig *ImageProxyConfig) *Handler {
 	imageProxyURL := ""
 	var cloudInitGen func(string, string) (string, string, error)
 	var ociConv func(context.Context, string) (string, string, error)
@@ -53,12 +55,12 @@ func NewRouterWithImageProxy(db *database.DB, proxyConfig *ImageProxyConfig) htt
 		cloudInitGeneratorFunc: cloudInitGen,
 		ociConverterFunc:       ociConv,
 	}
-	return newMux(h)
+	return h
 }
 
 // newMux wires the HTTP routes to the existing handler methods on Handler.
 // It mirrors the registrations performed in api.go:New to preserve behavior.
-func newMux(h *Handler) *http.ServeMux {
+func newMux(h *Handler) http.Handler {
 	mux := http.NewServeMux()
 
 	// Redfish service root and versioning

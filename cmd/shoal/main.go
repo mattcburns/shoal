@@ -167,10 +167,12 @@ func main() {
 
 	// Register API routes with image proxy configuration
 	var apiHandler http.Handler
+	var consoleCleanupCtx context.Context
+	var consoleCleanupCancel context.CancelFunc
 	if apiProxyConfig != nil {
-		apiHandler = api.NewWithImageProxy(db, apiProxyConfig)
+		apiHandler, consoleCleanupCtx, consoleCleanupCancel = api.NewWithImageProxyAndCleanup(db, apiProxyConfig)
 	} else {
-		apiHandler = api.New(db)
+		apiHandler, consoleCleanupCtx, consoleCleanupCancel = api.NewWithCleanup(db)
 	}
 	mux.Handle("/redfish/", apiHandler)
 
@@ -230,6 +232,16 @@ func main() {
 	// Stop VirtualMedia syncer if it was started
 	if vmediaSyncer != nil {
 		vmediaSyncer.Stop()
+	}
+
+	// Stop console session cleanup task
+	if consoleCleanupCancel != nil {
+		consoleCleanupCancel()
+		// Give cleanup task a moment to finish
+		select {
+		case <-consoleCleanupCtx.Done():
+		case <-time.After(2 * time.Second):
+		}
 	}
 
 	slog.Info("Server exited")
