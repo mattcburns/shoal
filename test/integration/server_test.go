@@ -77,6 +77,7 @@ func setupTestServer(t *testing.T) *TestServer {
 	// Create combined server
 	mux := http.NewServeMux()
 	mux.Handle("/redfish/", apiHandler)
+	mux.Handle("/ws/", apiHandler) // WebSocket console endpoints
 	mux.Handle("/", webHandler)
 
 	server := httptest.NewServer(mux)
