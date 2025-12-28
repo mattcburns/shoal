@@ -122,6 +122,12 @@ func (h *Handler) handleRedfish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Handle console endpoints (OEM extensions)
+	if h.isConsoleRequest(path) {
+		h.handleConsoleRequest(w, r, path, user)
+		return
+	}
+
 	// Check if this is a BMC proxy request
 	if h.isBMCProxyRequest(path) {
 		h.handleBMCProxy(w, r, path)
