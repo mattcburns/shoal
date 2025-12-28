@@ -288,6 +288,63 @@ All VirtualMedia operations require authentication (session token or basic auth)
 
 Shoal provides OEM extension endpoints for browser-based serial console access to managed BMCs using WebSocket connections.
 
+### Manager Resource Console Properties
+
+Shoal enhances the standard Redfish Manager resource with console capability information and OEM action links.
+
+**Request:**
+```bash
+curl -H "X-Auth-Token: <token>" \
+  http://localhost:8080/redfish/v1/Managers/bmc1
+```
+
+**Response:** `200 OK`
+```json
+{
+  "@odata.type": "#Manager.v1_10_0.Manager",
+  "@odata.id": "/redfish/v1/Managers/bmc1",
+  "Id": "bmc1",
+  "Name": "Manager for BMC 1",
+  "SerialConsole": {
+    "ServiceEnabled": true,
+    "MaxConcurrentSessions": 1,
+    "ConnectTypesSupported": ["Oem"]
+  },
+  "GraphicalConsole": {
+    "ServiceEnabled": true,
+    "MaxConcurrentSessions": 4,
+    "ConnectTypesSupported": ["KVMIP", "Oem"]
+  },
+  "Oem": {
+    "Shoal": {
+      "@odata.type": "#ShoalManager.v1_0_0.ShoalManager",
+      "ConsoleActions": {
+        "#Manager.ConnectSerialConsole": {
+          "target": "/redfish/v1/Managers/bmc1/Actions/Oem/Shoal.ConnectSerialConsole"
+        },
+        "#Manager.ConnectGraphicalConsole": {
+          "target": "/redfish/v1/Managers/bmc1/Actions/Oem/Shoal.ConnectGraphicalConsole"
+        }
+      },
+      "ConsoleSessions": {
+        "@odata.id": "/redfish/v1/Managers/bmc1/Oem/Shoal/ConsoleSessions"
+      }
+    }
+  }
+}
+```
+
+**Console Properties:**
+- `SerialConsole`: Indicates availability and limits for text-based serial console access
+- `GraphicalConsole`: Indicates availability and limits for graphical KVM console access (future)
+- `ServiceEnabled`: Whether the console service is available on this BMC
+- `MaxConcurrentSessions`: Maximum number of simultaneous console sessions allowed
+- `ConnectTypesSupported`: Supported connection methods (typically includes "Oem" for Shoal's WebSocket-based implementation)
+
+**OEM Extensions:**
+- `ConsoleActions`: Links to Shoal-specific console connection actions
+- `ConsoleSessions`: Link to the collection of active console sessions for this manager
+
 ### Access Control
 
 - Requires **Operator** or **Administrator** role
@@ -329,6 +386,62 @@ curl -X POST \
   "WebSocketURI": "/ws/console/abc-123"
 }
 ```
+
+**Error Responses:**
+
+- `400 Bad Request`: Invalid ConnectType (only "Oem" is supported)
+```json
+{
+  "error": {
+    "code": "Base.1.0.GeneralError",
+    "message": "only ConnectType 'Oem' is supported"
+  }
+}
+```
+
+- `403 Forbidden`: Insufficient privileges (requires Operator or Administrator role)
+```json
+{
+  "error": {
+    "code": "Base.1.0.GeneralError",
+    "message": "operator privileges required for console access"
+  }
+}
+```
+
+- `404 Not Found`: Manager not found
+```json
+{
+  "error": {
+    "code": "Base.1.0.GeneralError",
+    "message": "manager not found"
+  }
+}
+```
+
+- `503 Service Unavailable`: Console service disabled or max sessions exceeded
+```json
+{
+  "error": {
+    "code": "Base.1.0.GeneralError",
+    "message": "serial console is not enabled on this manager"
+  }
+}
+```
+```json
+{
+  "error": {
+    "code": "Base.1.0.GeneralError",
+    "message": "maximum concurrent sessions (1) exceeded"
+  }
+}
+```
+
+**Validation:**
+- Checks if serial console is enabled on the target BMC
+- Enforces maximum concurrent session limits
+- Verifies user has Operator or Administrator role
+- Only accepts "Oem" as ConnectType (WebSocket-based connection)
 
 ### WebSocket Connection
 
