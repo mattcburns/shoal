@@ -446,14 +446,14 @@ func TestConsoleSessionIdleTimeout(t *testing.T) {
 	// Run cleanup
 	t.Logf("Running cleanup with idle timeout: %v, max duration: %v", ConsoleSessionIdleTimeout, ConsoleSessionMaxDuration)
 	t.Logf("Handler: %v, DB: %v", h != nil, h.db != nil)
-	
+
 	// Get connection methods to verify they exist
 	cms, err := db.GetConnectionMethods(ctx)
 	if err != nil {
 		t.Fatalf("Failed to get connection methods: %v", err)
 	}
 	t.Logf("Connection methods: %d", len(cms))
-	
+
 	// Check if sessions exist before cleanup
 	for _, cm := range cms {
 		sessions, err := db.GetConsoleSessions(ctx, cm.ID, models.ConsoleSessionStateActive)
@@ -465,7 +465,7 @@ func TestConsoleSessionIdleTimeout(t *testing.T) {
 			t.Logf("  Session %s: idle=%v, total=%v", s.SessionID, time.Now().Sub(s.LastActivity), time.Now().Sub(s.CreatedAt))
 		}
 	}
-	
+
 	h.cleanupIdleAndExpiredSessions(ctx)
 	t.Logf("Cleanup complete")
 
@@ -520,7 +520,7 @@ func TestConsoleSessionMaxDuration(t *testing.T) {
 		ConnectType:        "Oem",
 		State:              models.ConsoleSessionStateActive,
 		CreatedBy:          "testuser",
-		CreatedAt:          time.Now().Add(-13 * time.Hour), // Exceeds 12 hour max
+		CreatedAt:          time.Now().Add(-13 * time.Hour),  // Exceeds 12 hour max
 		LastActivity:       time.Now().Add(-1 * time.Minute), // Still active
 		WebSocketURI:       "/ws/console/long-session",
 	}
