@@ -94,6 +94,40 @@ func (h *Handler) handleConnectSerialConsole(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
+	// Check console capability and max sessions
+	capability, err := h.db.GetConsoleCapability(ctx, cm.ID, "", models.ConsoleTypeSerial)
+	if err != nil || capability == nil {
+		// Console capability not found - may not be synced yet
+		slog.Warn("Console capability not found", "connection_method", cm.ID, "manager", managerID)
+		// Allow connection attempt anyway - capability may be synced later
+	} else {
+		// Check if console is enabled
+		if !capability.ServiceEnabled {
+			h.writeErrorResponse(w, http.StatusServiceUnavailable, "Base.1.0.GeneralError", "serial console is not enabled on this manager")
+			return
+		}
+
+		// Check max concurrent sessions
+		activeSessions, err := h.db.GetConsoleSessions(ctx, cm.ID, models.ConsoleSessionStateActive)
+		if err != nil {
+			slog.Error("Failed to get active console sessions", "error", err)
+		} else {
+			// Count active serial console sessions
+			activeSerialSessions := 0
+			for _, session := range activeSessions {
+				if session.ConsoleType == models.ConsoleTypeSerial {
+					activeSerialSessions++
+				}
+			}
+
+			if capability.MaxConcurrentSession > 0 && activeSerialSessions >= capability.MaxConcurrentSession {
+				h.writeErrorResponse(w, http.StatusServiceUnavailable, "Base.1.0.GeneralError", 
+					fmt.Sprintf("maximum concurrent sessions (%d) exceeded", capability.MaxConcurrentSession))
+				return
+			}
+		}
+	}
+
 	// Create session ID
 	sessionID := uuid.New().String()
 

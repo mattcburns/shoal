@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -255,3 +256,282 @@ func hashPassword(password string) (string, error) {
 	// Use a simple hash for testing
 	return "hashed:" + password, nil
 }
+
+func TestConnectSerialConsole_MaxSessionsExceeded(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	handler := NewRouter(db)
+
+	ctx := context.Background()
+	user, session := createTestUserAndSession(t, db, "operator")
+	defer db.DeleteSession(ctx, session.ID)
+	defer db.DeleteUser(ctx, user.ID)
+
+	// Create connection method
+	cm := &models.ConnectionMethod{
+		ID:                   "test-cm",
+		Name:                 "Test CM",
+		ConnectionMethodType: "Redfish",
+		Address:              "https://bmc.example.com",
+		Username:             "admin",
+		Password:             "password",
+		Enabled:              true,
+	}
+	if err := db.CreateConnectionMethod(ctx, cm); err != nil {
+		t.Fatalf("Failed to create connection method: %v", err)
+	}
+	defer db.DeleteConnectionMethod(ctx, cm.ID)
+
+	// Create console capability with max 1 session
+	capability := &models.ConsoleCapability{
+		ConnectionMethodID:   cm.ID,
+		ManagerID:            "",
+		ConsoleType:          models.ConsoleTypeSerial,
+		ServiceEnabled:       true,
+		MaxConcurrentSession: 1,
+		ConnectTypes:         `["Oem"]`,
+	}
+	if err := db.UpsertConsoleCapability(ctx, capability); err != nil {
+		t.Fatalf("Failed to create console capability: %v", err)
+	}
+
+	// Create an active console session to reach the limit
+	activeSession := &models.ConsoleSession{
+		SessionID:          "existing-session",
+		ConnectionMethodID: cm.ID,
+		ManagerID:          cm.ID,
+		ConsoleType:        models.ConsoleTypeSerial,
+		ConnectType:        "Oem",
+		State:              models.ConsoleSessionStateActive,
+		CreatedBy:          user.Username,
+		CreatedAt:          time.Now(),
+		LastActivity:       time.Now(),
+		WebSocketURI:       "/ws/console/existing-session",
+	}
+	if err := db.CreateConsoleSession(ctx, activeSession); err != nil {
+		t.Fatalf("Failed to create active session: %v", err)
+	}
+
+	// Try to create another session (should fail)
+	reqBody := map[string]string{"ConnectType": "Oem"}
+	body, _ := json.Marshal(reqBody)
+	req := httptest.NewRequest(http.MethodPost, "/redfish/v1/Managers/test-cm/Actions/Oem/Shoal.ConnectSerialConsole", bytes.NewReader(body))
+	req.Header.Set("X-Auth-Token", session.Token)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Errorf("Expected status 503, got %d", rr.Code)
+	}
+
+	var response map[string]interface{}
+	json.NewDecoder(rr.Body).Decode(&response)
+	errorObj := response["error"].(map[string]interface{})
+	message := errorObj["message"].(string)
+	if !contains(message, "maximum concurrent sessions") {
+		t.Errorf("Expected max sessions error, got: %s", message)
+	}
+}
+
+func TestConnectSerialConsole_ConsoleDisabled(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	handler := NewRouter(db)
+
+	ctx := context.Background()
+	user, session := createTestUserAndSession(t, db, "operator")
+	defer db.DeleteSession(ctx, session.ID)
+	defer db.DeleteUser(ctx, user.ID)
+
+	// Create connection method
+	cm := &models.ConnectionMethod{
+		ID:                   "test-cm",
+		Name:                 "Test CM",
+		ConnectionMethodType: "Redfish",
+		Address:              "https://bmc.example.com",
+		Username:             "admin",
+		Password:             "password",
+		Enabled:              true,
+	}
+	if err := db.CreateConnectionMethod(ctx, cm); err != nil {
+		t.Fatalf("Failed to create connection method: %v", err)
+	}
+	defer db.DeleteConnectionMethod(ctx, cm.ID)
+
+	// Create console capability with service disabled
+	capability := &models.ConsoleCapability{
+		ConnectionMethodID:   cm.ID,
+		ManagerID:            "",
+		ConsoleType:          models.ConsoleTypeSerial,
+		ServiceEnabled:       false,
+		MaxConcurrentSession: 1,
+		ConnectTypes:         `["Oem"]`,
+	}
+	if err := db.UpsertConsoleCapability(ctx, capability); err != nil {
+		t.Fatalf("Failed to create console capability: %v", err)
+	}
+
+	// Try to create a session (should fail)
+	reqBody := map[string]string{"ConnectType": "Oem"}
+	body, _ := json.Marshal(reqBody)
+	req := httptest.NewRequest(http.MethodPost, "/redfish/v1/Managers/test-cm/Actions/Oem/Shoal.ConnectSerialConsole", bytes.NewReader(body))
+	req.Header.Set("X-Auth-Token", session.Token)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Errorf("Expected status 503, got %d", rr.Code)
+	}
+
+	var response map[string]interface{}
+	json.NewDecoder(rr.Body).Decode(&response)
+	errorObj := response["error"].(map[string]interface{})
+	message := errorObj["message"].(string)
+	if !contains(message, "not enabled") {
+		t.Errorf("Expected 'not enabled' error, got: %s", message)
+	}
+}
+
+func TestDisconnectConsole_Success(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	handler := NewRouter(db)
+
+	ctx := context.Background()
+	user, session := createTestUserAndSession(t, db, "operator")
+	defer db.DeleteSession(ctx, session.ID)
+	defer db.DeleteUser(ctx, user.ID)
+
+	// Create connection method
+	cm := &models.ConnectionMethod{
+		ID:                   "test-cm",
+		Name:                 "Test CM",
+		ConnectionMethodType: "Redfish",
+		Address:              "https://bmc.example.com",
+		Username:             "admin",
+		Password:             "password",
+		Enabled:              true,
+	}
+	if err := db.CreateConnectionMethod(ctx, cm); err != nil {
+		t.Fatalf("Failed to create connection method: %v", err)
+	}
+	defer db.DeleteConnectionMethod(ctx, cm.ID)
+
+	// Create an active console session
+	consoleSession := &models.ConsoleSession{
+		SessionID:          "test-session",
+		ConnectionMethodID: cm.ID,
+		ManagerID:          cm.ID,
+		ConsoleType:        models.ConsoleTypeSerial,
+		ConnectType:        "Oem",
+		State:              models.ConsoleSessionStateActive,
+		CreatedBy:          user.Username,
+		CreatedAt:          time.Now(),
+		LastActivity:       time.Now(),
+		WebSocketURI:       "/ws/console/test-session",
+	}
+	if err := db.CreateConsoleSession(ctx, consoleSession); err != nil {
+		t.Fatalf("Failed to create console session: %v", err)
+	}
+
+	// Disconnect the session
+	req := httptest.NewRequest(http.MethodPost, "/redfish/v1/Managers/test-cm/Oem/Shoal/ConsoleSessions/test-session/Actions/Disconnect", nil)
+	req.Header.Set("X-Auth-Token", session.Token)
+	rr := httptest.NewRecorder()
+
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Errorf("Expected status 204, got %d", rr.Code)
+	}
+
+	// Verify session is marked as disconnected
+	updatedSession, err := db.GetConsoleSession(ctx, "test-session")
+	if err != nil {
+		t.Fatalf("Failed to get updated session: %v", err)
+	}
+	if updatedSession.State != models.ConsoleSessionStateDisconnected {
+		t.Errorf("Expected session state to be disconnected, got %s", updatedSession.State)
+	}
+}
+
+func TestConsoleSessionResource_Success(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	handler := NewRouter(db)
+
+	ctx := context.Background()
+	user, session := createTestUserAndSession(t, db, "operator")
+	defer db.DeleteSession(ctx, session.ID)
+	defer db.DeleteUser(ctx, user.ID)
+
+	// Create connection method
+	cm := &models.ConnectionMethod{
+		ID:                   "test-cm",
+		Name:                 "Test CM",
+		ConnectionMethodType: "Redfish",
+		Address:              "https://bmc.example.com",
+		Username:             "admin",
+		Password:             "password",
+		Enabled:              true,
+	}
+	if err := db.CreateConnectionMethod(ctx, cm); err != nil {
+		t.Fatalf("Failed to create connection method: %v", err)
+	}
+	defer db.DeleteConnectionMethod(ctx, cm.ID)
+
+	// Create a console session
+	consoleSession := &models.ConsoleSession{
+		SessionID:          "test-session",
+		ConnectionMethodID: cm.ID,
+		ManagerID:          cm.ID,
+		ConsoleType:        models.ConsoleTypeSerial,
+		ConnectType:        "Oem",
+		State:              models.ConsoleSessionStateActive,
+		CreatedBy:          user.Username,
+		CreatedAt:          time.Now(),
+		LastActivity:       time.Now(),
+		WebSocketURI:       "/ws/console/test-session",
+	}
+	if err := db.CreateConsoleSession(ctx, consoleSession); err != nil {
+		t.Fatalf("Failed to create console session: %v", err)
+	}
+
+	// Get the session resource
+	req := httptest.NewRequest(http.MethodGet, "/redfish/v1/Managers/test-cm/Oem/Shoal/ConsoleSessions/test-session", nil)
+	req.Header.Set("X-Auth-Token", session.Token)
+	rr := httptest.NewRecorder()
+
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", rr.Code)
+	}
+
+	var response map[string]interface{}
+	json.NewDecoder(rr.Body).Decode(&response)
+
+	if response["Id"] != "test-session" {
+		t.Errorf("Expected session ID 'test-session', got %v", response["Id"])
+	}
+	if response["ConsoleType"] != "SerialConsole" {
+		t.Errorf("Expected ConsoleType 'SerialConsole', got %v", response["ConsoleType"])
+	}
+	if response["State"] != "active" {
+		t.Errorf("Expected State 'active', got %v", response["State"])
+	}
+}
+
+// Helper function to check if string contains substring
+func contains(s, substr string) bool {
+	return strings.Contains(s, substr)
+}
+

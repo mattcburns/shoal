@@ -82,8 +82,10 @@ func (h *Handler) handleBMCProxy(w http.ResponseWriter, r *http.Request, path st
 		}
 
 		if len(parts) == 3 {
-			// Request for the manager root
+			// Request for the manager root - handle specially to add console properties
 			bmcPath = fmt.Sprintf("/redfish/v1/Managers/%s", managerID)
+			h.handleManagerResource(w, r, bmcName, bmcPath)
+			return
 		} else {
 			// Sub-resource request
 			bmcPath = fmt.Sprintf("/redfish/v1/Managers/%s/%s", managerID, strings.Join(parts[3:], "/"))
