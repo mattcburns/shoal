@@ -1574,12 +1574,13 @@ func (db *DB) CreateConsoleSession(ctx context.Context, session *models.ConsoleS
 	query := `
 		INSERT INTO console_sessions (
 			session_id, connection_method_id, manager_id, console_type, connect_type,
-			state, created_by, websocket_uri, bmc_websocket_uri, metadata
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			state, created_by, created_at, last_activity, websocket_uri, bmc_websocket_uri, metadata
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`
 	result, err := db.conn.ExecContext(ctx, query,
 		session.SessionID, session.ConnectionMethodID, session.ManagerID,
 		session.ConsoleType, session.ConnectType, session.State, session.CreatedBy,
+		session.CreatedAt, session.LastActivity,
 		session.WebSocketURI, session.BMCWebSocketURI, session.Metadata)
 	if err != nil {
 		return fmt.Errorf("failed to create console session: %w", err)

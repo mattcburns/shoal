@@ -61,58 +61,82 @@ func (h *Handler) consoleSessionCleanupLoop(ctx context.Context) {
 
 // cleanupIdleAndExpiredSessions disconnects and cleans up idle or expired console sessions
 func (h *Handler) cleanupIdleAndExpiredSessions(ctx context.Context) {
-	// Get all active sessions
-	sessions, err := h.db.GetConsoleSessions(ctx, "", models.ConsoleSessionStateActive)
+	if h == nil || h.db == nil {
+		slog.Error("Handler or database is nil in cleanupIdleAndExpiredSessions")
+		return
+	}
+
+	// Get all active sessions across all connection methods
+	// We need to query all connection methods first
+	connectionMethods, err := h.db.GetConnectionMethods(ctx)
 	if err != nil {
-		slog.Error("Failed to get active console sessions for cleanup", "error", err)
+		slog.Error("Failed to get connection methods for session cleanup", "error", err)
 		return
 	}
 
 	now := time.Now()
 	cleanedCount := 0
 
-	for _, session := range sessions {
-		shouldCleanup := false
-		reason := ""
-
-		// Check idle timeout
-		if now.Sub(session.LastActivity) > ConsoleSessionIdleTimeout {
-			shouldCleanup = true
-			reason = "idle_timeout"
+	// Check sessions for each connection method
+	for _, cm := range connectionMethods {
+		sessions, err := h.db.GetConsoleSessions(ctx, cm.ID, models.ConsoleSessionStateActive)
+		if err != nil {
+			slog.Error("Failed to get active console sessions for cleanup",
+				"connection_method", cm.ID,
+				"error", err)
+			continue
 		}
 
-		// Check max duration
-		if now.Sub(session.CreatedAt) > ConsoleSessionMaxDuration {
-			shouldCleanup = true
-			reason = "max_duration_exceeded"
-		}
+		for _, session := range sessions {
+			shouldCleanup := false
+			reason := ""
 
-		if shouldCleanup {
-			// Disconnect BMC session if exists
-			bmcSession := h.getBMCSession(session.SessionID)
-			if bmcSession != nil {
-				bmcSession.Disconnect()
-				h.removeBMCSession(session.SessionID)
+			idleDuration := now.Sub(session.LastActivity)
+			totalDuration := now.Sub(session.CreatedAt)
+
+			// Check idle timeout
+			if idleDuration > ConsoleSessionIdleTimeout {
+				shouldCleanup = true
+				reason = "idle_timeout"
 			}
 
-			// Update database
-			h.db.UpdateConsoleSessionState(ctx, session.SessionID, models.ConsoleSessionStateDisconnected, "Automatically disconnected: "+reason)
+			// Check max duration
+			if totalDuration > ConsoleSessionMaxDuration {
+				shouldCleanup = true
+				reason = "max_duration_exceeded"
+			}
 
-			slog.Info("Console session automatically disconnected",
-				"session_id", session.SessionID,
-				"manager", session.ManagerID,
-				"user", session.CreatedBy,
-				"reason", reason,
-				"idle_duration", now.Sub(session.LastActivity),
-				"total_duration", now.Sub(session.CreatedAt))
+			if shouldCleanup {
+				// Disconnect BMC session if exists
+				bmcSession := h.getBMCSession(session.SessionID)
+				if bmcSession != nil {
+					bmcSession.Disconnect()
+					h.removeBMCSession(session.SessionID)
+				}
 
-			cleanedCount++
+				// Update database
+				updateErr := h.db.UpdateConsoleSessionState(ctx, session.SessionID, models.ConsoleSessionStateDisconnected, "Automatically disconnected: "+reason)
+				if updateErr != nil {
+					slog.Error("Failed to update console session state during cleanup",
+						"session_id", session.SessionID,
+						"error", updateErr)
+					continue
+				}
+
+				slog.Info("Console session automatically disconnected",
+					"session_id", session.SessionID,
+					"manager", session.ManagerID,
+					"user", session.CreatedBy,
+					"reason", reason,
+					"idle_duration", idleDuration,
+					"total_duration", totalDuration)
+
+				cleanedCount++
+			}
 		}
 	}
 
 	if cleanedCount > 0 {
-		slog.Debug("Console session cleanup completed",
-			"cleaned_count", cleanedCount,
-			"total_active", len(sessions))
+		slog.Info("Console session cleanup completed", "cleaned_count", cleanedCount)
 	}
 }

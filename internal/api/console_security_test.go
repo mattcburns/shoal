@@ -384,3 +384,158 @@ func TestConsoleSessionConcurrencyLimit(t *testing.T) {
 		t.Errorf("Expected status 503 for exceeding concurrent session limit, got %d", rr.Code)
 	}
 }
+
+// TestConsoleSessionIdleTimeout tests that idle sessions are automatically cleaned up
+func TestConsoleSessionIdleTimeout(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	h := &Handler{db: db}
+	ctx := context.Background()
+
+	// Create connection method
+	cm := &models.ConnectionMethod{
+		ID:                   "test-cm",
+		Name:                 "Test CM",
+		ConnectionMethodType: "Redfish",
+		Address:              "https://bmc.example.com",
+		Username:             "admin",
+		Password:             "password",
+		Enabled:              true,
+	}
+	if err := db.CreateConnectionMethod(ctx, cm); err != nil {
+		t.Fatalf("Failed to create connection method: %v", err)
+	}
+	defer db.DeleteConnectionMethod(ctx, cm.ID)
+
+	// Create an active console session with old LastActivity timestamp
+	oldSession := &models.ConsoleSession{
+		SessionID:          "old-session",
+		ConnectionMethodID: cm.ID,
+		ManagerID:          cm.ID,
+		ConsoleType:        models.ConsoleTypeSerial,
+		ConnectType:        "Oem",
+		State:              models.ConsoleSessionStateActive,
+		CreatedBy:          "testuser",
+		CreatedAt:          time.Now().Add(-2 * time.Hour),
+		LastActivity:       time.Now().Add(-35 * time.Minute), // Idle for 35 minutes (exceeds 30 min timeout)
+		WebSocketURI:       "/ws/console/old-session",
+	}
+	if err := db.CreateConsoleSession(ctx, oldSession); err != nil {
+		t.Fatalf("Failed to create old console session: %v", err)
+	}
+
+	// Create a recent console session that should NOT be cleaned up
+	recentSession := &models.ConsoleSession{
+		SessionID:          "recent-session",
+		ConnectionMethodID: cm.ID,
+		ManagerID:          cm.ID,
+		ConsoleType:        models.ConsoleTypeSerial,
+		ConnectType:        "Oem",
+		State:              models.ConsoleSessionStateActive,
+		CreatedBy:          "testuser",
+		CreatedAt:          time.Now().Add(-10 * time.Minute),
+		LastActivity:       time.Now().Add(-5 * time.Minute), // Active recently
+		WebSocketURI:       "/ws/console/recent-session",
+	}
+	if err := db.CreateConsoleSession(ctx, recentSession); err != nil {
+		t.Fatalf("Failed to create recent console session: %v", err)
+	}
+
+	// Run cleanup
+	t.Logf("Running cleanup with idle timeout: %v, max duration: %v", ConsoleSessionIdleTimeout, ConsoleSessionMaxDuration)
+	t.Logf("Handler: %v, DB: %v", h != nil, h.db != nil)
+	
+	// Get connection methods to verify they exist
+	cms, err := db.GetConnectionMethods(ctx)
+	if err != nil {
+		t.Fatalf("Failed to get connection methods: %v", err)
+	}
+	t.Logf("Connection methods: %d", len(cms))
+	
+	// Check if sessions exist before cleanup
+	for _, cm := range cms {
+		sessions, err := db.GetConsoleSessions(ctx, cm.ID, models.ConsoleSessionStateActive)
+		if err != nil {
+			t.Fatalf("Failed to get sessions: %v", err)
+		}
+		t.Logf("Active sessions for CM %s: %d", cm.ID, len(sessions))
+		for _, s := range sessions {
+			t.Logf("  Session %s: idle=%v, total=%v", s.SessionID, time.Now().Sub(s.LastActivity), time.Now().Sub(s.CreatedAt))
+		}
+	}
+	
+	h.cleanupIdleAndExpiredSessions(ctx)
+	t.Logf("Cleanup complete")
+
+	// Verify old session was disconnected
+	updatedOld, err := db.GetConsoleSession(ctx, "old-session")
+	if err != nil {
+		t.Fatalf("Failed to get updated old session: %v", err)
+	}
+	if updatedOld.State != models.ConsoleSessionStateDisconnected {
+		t.Errorf("Old session should be disconnected due to idle timeout, got %s (idle: %v)", updatedOld.State, time.Now().Sub(oldSession.LastActivity))
+	}
+
+	// Verify recent session is still active
+	updatedRecent, err := db.GetConsoleSession(ctx, "recent-session")
+	if err != nil {
+		t.Fatalf("Failed to get updated recent session: %v", err)
+	}
+	if updatedRecent.State != models.ConsoleSessionStateActive {
+		t.Errorf("Recent session should still be active, got %s", updatedRecent.State)
+	}
+}
+
+// TestConsoleSessionMaxDuration tests that sessions are automatically disconnected after max duration
+func TestConsoleSessionMaxDuration(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	h := &Handler{db: db}
+	ctx := context.Background()
+
+	// Create connection method
+	cm := &models.ConnectionMethod{
+		ID:                   "test-cm",
+		Name:                 "Test CM",
+		ConnectionMethodType: "Redfish",
+		Address:              "https://bmc.example.com",
+		Username:             "admin",
+		Password:             "password",
+		Enabled:              true,
+	}
+	if err := db.CreateConnectionMethod(ctx, cm); err != nil {
+		t.Fatalf("Failed to create connection method: %v", err)
+	}
+	defer db.DeleteConnectionMethod(ctx, cm.ID)
+
+	// Create a console session that exceeds max duration
+	longSession := &models.ConsoleSession{
+		SessionID:          "long-session",
+		ConnectionMethodID: cm.ID,
+		ManagerID:          cm.ID,
+		ConsoleType:        models.ConsoleTypeSerial,
+		ConnectType:        "Oem",
+		State:              models.ConsoleSessionStateActive,
+		CreatedBy:          "testuser",
+		CreatedAt:          time.Now().Add(-13 * time.Hour), // Exceeds 12 hour max
+		LastActivity:       time.Now().Add(-1 * time.Minute), // Still active
+		WebSocketURI:       "/ws/console/long-session",
+	}
+	if err := db.CreateConsoleSession(ctx, longSession); err != nil {
+		t.Fatalf("Failed to create long console session: %v", err)
+	}
+
+	// Run cleanup
+	h.cleanupIdleAndExpiredSessions(ctx)
+
+	// Verify long session was disconnected
+	updatedLong, err := db.GetConsoleSession(ctx, "long-session")
+	if err != nil {
+		t.Fatalf("Failed to get updated long session: %v", err)
+	}
+	if updatedLong.State != models.ConsoleSessionStateDisconnected {
+		t.Errorf("Long session should be disconnected, got %s", updatedLong.State)
+	}
+}
