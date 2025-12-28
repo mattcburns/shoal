@@ -252,6 +252,35 @@ func createTestUserAndSession(t *testing.T, db *database.DB, role string) (*mode
 	return user, session
 }
 
+func createTestUserWithRole(t *testing.T, db *database.DB, username, role string) (*models.User, *models.Session) {
+	t.Helper()
+	ctx := context.Background()
+
+	passwordHash, _ := hashPassword("password")
+	user := &models.User{
+		ID:           username + "-id",
+		Username:     username,
+		PasswordHash: passwordHash,
+		Role:         role,
+		Enabled:      true,
+	}
+	if err := db.CreateUser(ctx, user); err != nil {
+		t.Fatalf("Failed to create user: %v", err)
+	}
+
+	session := &models.Session{
+		ID:        username + "-session",
+		UserID:    user.ID,
+		Token:     username + "-token",
+		ExpiresAt: time.Now().Add(24 * time.Hour),
+	}
+	if err := db.CreateSession(ctx, session); err != nil {
+		t.Fatalf("Failed to create session: %v", err)
+	}
+
+	return user, session
+}
+
 func hashPassword(password string) (string, error) {
 	// Use a simple hash for testing
 	return "hashed:" + password, nil

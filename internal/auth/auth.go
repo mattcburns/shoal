@@ -66,6 +66,11 @@ func (a *Authenticator) AuthenticateToken(ctx context.Context, token string) (*m
 		return nil, fmt.Errorf("invalid session token")
 	}
 
+	// Check session expiration
+	if time.Now().After(session.ExpiresAt) {
+		return nil, fmt.Errorf("session has expired")
+	}
+
 	// Get the user associated with this session
 	user, err := a.db.GetUser(ctx, session.UserID)
 	if err != nil {
