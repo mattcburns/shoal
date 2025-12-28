@@ -343,6 +343,61 @@ func getUserFromContext(ctx context.Context) *models.User {
 	return nil
 }
 
+// isConsoleRequest checks if the request is for a console endpoint
+func (h *Handler) isConsoleRequest(path string) bool {
+	// Check for console-related paths:
+	// /v1/Managers/{id}/Actions/Oem/Shoal.ConnectSerialConsole
+	// /v1/Managers/{id}/Oem/Shoal/ConsoleSessions
+	// /v1/Managers/{id}/Oem/Shoal/ConsoleSessions/{sessionId}
+	// /v1/Managers/{id}/Oem/Shoal/ConsoleSessions/{sessionId}/Actions/Disconnect
+	
+	if !strings.HasPrefix(path, "/v1/Managers/") {
+		return false
+	}
+	
+	// Check for console action or OEM console paths
+	return strings.Contains(path, "/Actions/Oem/Shoal.ConnectSerialConsole") ||
+		strings.Contains(path, "/Oem/Shoal/ConsoleSessions")
+}
+
+// handleConsoleRequest routes console-related requests
+func (h *Handler) handleConsoleRequest(w http.ResponseWriter, r *http.Request, path string, user *models.User) {
+	// Add user to context for handlers
+	ctx := context.WithValue(r.Context(), ctxkeys.User, user)
+	r = r.WithContext(ctx)
+	
+	managerID, sessionID, action := parseConsolePath("/redfish" + path)
+
+	switch action {
+	case "connect":
+		if r.Method != http.MethodPost {
+			h.writeErrorResponse(w, http.StatusMethodNotAllowed, "Base.1.0.MethodNotAllowed", "method not allowed")
+			return
+		}
+		h.handleConnectSerialConsole(w, r, managerID)
+	case "collection":
+		if r.Method != http.MethodGet {
+			h.writeErrorResponse(w, http.StatusMethodNotAllowed, "Base.1.0.MethodNotAllowed", "method not allowed")
+			return
+		}
+		h.handleConsoleSessionCollection(w, r, managerID)
+	case "session":
+		if r.Method != http.MethodGet {
+			h.writeErrorResponse(w, http.StatusMethodNotAllowed, "Base.1.0.MethodNotAllowed", "method not allowed")
+			return
+		}
+		h.handleConsoleSession(w, r, managerID, sessionID)
+	case "disconnect":
+		if r.Method != http.MethodPost {
+			h.writeErrorResponse(w, http.StatusMethodNotAllowed, "Base.1.0.MethodNotAllowed", "method not allowed")
+			return
+		}
+		h.handleDisconnectConsole(w, r, managerID, sessionID)
+	default:
+		h.writeErrorResponse(w, http.StatusNotFound, "Base.1.0.ResourceNotFound", "resource not found")
+	}
+}
+
 // In-memory storage for active BMC sessions (temporary approach)
 // In production, consider using a distributed cache like Redis
 var (
@@ -369,43 +424,9 @@ func (h *Handler) removeBMCSession(sessionID string) {
 }
 
 // handleConsoleRoutes routes console-related requests
-func (h *Handler) handleConsoleRoutes(w http.ResponseWriter, r *http.Request) {
-	managerID, sessionID, action := parseConsolePath(r.URL.Path)
-
-	switch action {
-	case "connect":
-		if r.Method != http.MethodPost {
-			h.writeErrorResponse(w, http.StatusMethodNotAllowed, "Base.1.0.GeneralError", "method not allowed")
-			return
-		}
-		h.handleConnectSerialConsole(w, r, managerID)
-	case "collection":
-		if r.Method != http.MethodGet {
-			h.writeErrorResponse(w, http.StatusMethodNotAllowed, "Base.1.0.GeneralError", "method not allowed")
-			return
-		}
-		h.handleConsoleSessionCollection(w, r, managerID)
-	case "session":
-		if r.Method != http.MethodGet {
-			h.writeErrorResponse(w, http.StatusMethodNotAllowed, "Base.1.0.GeneralError", "method not allowed")
-			return
-		}
-		h.handleConsoleSession(w, r, managerID, sessionID)
-	case "disconnect":
-		if r.Method != http.MethodPost {
-			h.writeErrorResponse(w, http.StatusMethodNotAllowed, "Base.1.0.GeneralError", "method not allowed")
-			return
-		}
-		h.handleDisconnectConsole(w, r, managerID, sessionID)
-	default:
-		// Not a console route, pass through to regular Manager handler
-		// This is needed because we registered /redfish/v1/Managers/ broadly
-		h.writeErrorResponse(w, http.StatusNotFound, "Base.1.0.ResourceNotFound", "resource not found")
-	}
-}
 
 // handleWebSocketRoutes routes WebSocket console connections
-func (h *Handler) handleWebSocketRoutes(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) handleWebSocketConsole(w http.ResponseWriter, r *http.Request) {
 	// Parse session ID from path: /ws/console/{sessionID}
 	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
 	if len(parts) != 3 || parts[0] != "ws" || parts[1] != "console" {

@@ -74,11 +74,8 @@ func newMux(h *Handler) *http.ServeMux {
 	// Aggregator-specific BMC management endpoints
 	mux.HandleFunc("/redfish/v1/AggregationService/ManagedNodes/", h.auth.RequireAuth(http.HandlerFunc(h.handleManagedNodes)).ServeHTTP)
 
-	// Console endpoints
-	mux.HandleFunc("/redfish/v1/Managers/", h.auth.RequireAuth(http.HandlerFunc(h.handleConsoleRoutes)).ServeHTTP)
-
-	// WebSocket console endpoint (special handling, authenticated separately)
-	mux.HandleFunc("/ws/console/", h.auth.RequireAuth(http.HandlerFunc(h.handleWebSocketRoutes)).ServeHTTP)
+	// WebSocket console endpoint
+	mux.HandleFunc("/ws/console/", h.auth.RequireAuth(http.HandlerFunc(h.handleWebSocketConsole)).ServeHTTP)
 
 	return mux
 }
