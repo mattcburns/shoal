@@ -217,17 +217,17 @@ func TestEnhanceManagerWithConsole_PreservesExistingOEM(t *testing.T) {
 	if !ok {
 		t.Fatal("Oem property removed")
 	}
-	
+
 	dellOEM, ok := oem["Dell"].(map[string]interface{})
 	if !ok {
 		t.Fatal("Dell OEM property removed")
 	}
-	
+
 	dellAttrs, ok := dellOEM["DellAttributes"].(map[string]string)
 	if !ok {
 		t.Fatal("DellAttributes removed")
 	}
-	
+
 	if dellAttrs["FirmwareVersion"] != "1.2.3" {
 		t.Errorf("Expected FirmwareVersion=1.2.3, got %v", dellAttrs["FirmwareVersion"])
 	}
@@ -237,7 +237,7 @@ func TestEnhanceManagerWithConsole_PreservesExistingOEM(t *testing.T) {
 	if !ok {
 		t.Fatal("Shoal OEM property not added")
 	}
-	
+
 	if shoalOEM["@odata.type"] != "#ShoalManager.v1_0_0.ShoalManager" {
 		t.Error("Shoal OEM @odata.type not set correctly")
 	}
@@ -245,11 +245,11 @@ func TestEnhanceManagerWithConsole_PreservesExistingOEM(t *testing.T) {
 
 func TestParseConsolePath(t *testing.T) {
 	testCases := []struct {
-		name              string
-		path              string
-		expectedManager   string
-		expectedSession   string
-		expectedAction    string
+		name            string
+		path            string
+		expectedManager string
+		expectedSession string
+		expectedAction  string
 	}{
 		{
 			name:            "ConnectSerialConsole action",
@@ -291,7 +291,7 @@ func TestParseConsolePath(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			manager, session, action := parseConsolePath(tc.path)
-			
+
 			if manager != tc.expectedManager {
 				t.Errorf("Expected manager %q, got %q", tc.expectedManager, manager)
 			}

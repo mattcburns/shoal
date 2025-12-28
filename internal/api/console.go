@@ -121,7 +121,7 @@ func (h *Handler) handleConnectSerialConsole(w http.ResponseWriter, r *http.Requ
 			}
 
 			if capability.MaxConcurrentSession > 0 && activeSerialSessions >= capability.MaxConcurrentSession {
-				h.writeErrorResponse(w, http.StatusServiceUnavailable, "Base.1.0.GeneralError", 
+				h.writeErrorResponse(w, http.StatusServiceUnavailable, "Base.1.0.GeneralError",
 					fmt.Sprintf("maximum concurrent sessions (%d) exceeded", capability.MaxConcurrentSession))
 				return
 			}

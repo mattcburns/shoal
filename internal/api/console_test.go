@@ -534,4 +534,3 @@ func TestConsoleSessionResource_Success(t *testing.T) {
 func contains(s, substr string) bool {
 	return strings.Contains(s, substr)
 }
-

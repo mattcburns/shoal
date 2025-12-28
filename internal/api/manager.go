@@ -128,16 +128,16 @@ func (h *Handler) enhanceManagerWithConsole(managerData map[string]interface{}, 
 	// If no capabilities were found, set defaults for discovery
 	if serialConsole == nil {
 		serialConsole = map[string]interface{}{
-			"ServiceEnabled":           false,
-			"MaxConcurrentSessions":    0,
-			"ConnectTypesSupported":    []string{},
+			"ServiceEnabled":        false,
+			"MaxConcurrentSessions": 0,
+			"ConnectTypesSupported": []string{},
 		}
 	}
 	if graphicalConsole == nil {
 		graphicalConsole = map[string]interface{}{
-			"ServiceEnabled":           false,
-			"MaxConcurrentSessions":    0,
-			"ConnectTypesSupported":    []string{},
+			"ServiceEnabled":        false,
+			"MaxConcurrentSessions": 0,
+			"ConnectTypesSupported": []string{},
 		}
 	}
 
