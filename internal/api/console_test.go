@@ -225,12 +225,17 @@ func setupTestDB(t *testing.T) (*database.DB, func()) {
 
 func createTestUserAndSession(t *testing.T, db *database.DB, role string) (*models.User, *models.Session) {
 	t.Helper()
+	return createTestUserWithRole(t, db, role, role)
+}
+
+func createTestUserWithRole(t *testing.T, db *database.DB, username, role string) (*models.User, *models.Session) {
+	t.Helper()
 	ctx := context.Background()
 
 	passwordHash, _ := hashPassword("password")
 	user := &models.User{
-		ID:           role + "-user",
-		Username:     role,
+		ID:           username + "-id",
+		Username:     username,
 		PasswordHash: passwordHash,
 		Role:         role,
 		Enabled:      true,
@@ -240,9 +245,9 @@ func createTestUserAndSession(t *testing.T, db *database.DB, role string) (*mode
 	}
 
 	session := &models.Session{
-		ID:        role + "-session",
+		ID:        username + "-session",
 		UserID:    user.ID,
-		Token:     role + "-token",
+		Token:     username + "-token",
 		ExpiresAt: time.Now().Add(24 * time.Hour),
 	}
 	if err := db.CreateSession(ctx, session); err != nil {

@@ -78,7 +78,7 @@ func TestInsertMediaWithCloudInit(t *testing.T) {
 		BaseURL:                "http://localhost:8082",
 		CloudInitGeneratorFunc: mockGenerator,
 	}
-	ciHandler := NewRouterWithImageProxy(db, proxyConfig)
+	ciHandler := newMux(NewRouterWithImageProxy(db, proxyConfig))
 
 	// Get new token for this handler
 	ciToken := loginAndGetToken(t, ciHandler, "admin", "admin")
@@ -209,7 +209,7 @@ func TestInsertMediaWithCloudInitMissingUserData(t *testing.T) {
 		BaseURL:                "http://localhost:8082",
 		CloudInitGeneratorFunc: mockGenerator,
 	}
-	ciHandler := NewRouterWithImageProxy(db, proxyConfig)
+	ciHandler := newMux(NewRouterWithImageProxy(db, proxyConfig))
 
 	// Get new token for this handler
 	ciToken := loginAndGetToken(t, ciHandler, "admin", "admin")

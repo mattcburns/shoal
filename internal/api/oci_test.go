@@ -72,7 +72,7 @@ func TestInsertMediaWithOCIConversion(t *testing.T) {
 		OCIConverterFunc: mockOCIConverter,
 	}
 
-	handlerWithOCI := NewRouterWithImageProxy(db, proxyConfig)
+	handlerWithOCI := newMux(NewRouterWithImageProxy(db, proxyConfig))
 
 	// Create InsertMedia request with OCI image
 	reqBody := redfish.InsertMediaRequest{
