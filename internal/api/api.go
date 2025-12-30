@@ -93,11 +93,11 @@ func NewWithImageProxy(db *database.DB, proxyConfig *ImageProxyConfig) http.Hand
 // NewWithImageProxyAndCleanup creates a new API handler with image proxy configuration and console cleanup
 func NewWithImageProxyAndCleanup(db *database.DB, proxyConfig *ImageProxyConfig) (http.Handler, context.Context, context.CancelFunc) {
 	h := NewRouterWithImageProxy(db, proxyConfig)
-
+	
 	// Start console session cleanup task
 	ctx, cancel := context.WithCancel(context.Background())
 	h.StartConsoleSessionCleanup(ctx)
-
+	
 	return newMux(h), ctx, cancel
 }
 
