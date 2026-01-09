@@ -256,7 +256,14 @@ func TestParseConsolePath(t *testing.T) {
 			path:            "/redfish/v1/Managers/test-mgr/Actions/Oem/Shoal.ConnectSerialConsole",
 			expectedManager: "test-mgr",
 			expectedSession: "",
-			expectedAction:  "connect",
+			expectedAction:  "connect_serial",
+		},
+		{
+			name:            "ConnectGraphicalConsole action",
+			path:            "/redfish/v1/Managers/test-mgr/Actions/Oem/Shoal.ConnectGraphicalConsole",
+			expectedManager: "test-mgr",
+			expectedSession: "",
+			expectedAction:  "connect_graphical",
 		},
 		{
 			name:            "ConsoleSessions collection",

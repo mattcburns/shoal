@@ -193,6 +193,140 @@ func (h *Handler) handleConnectSerialConsole(w http.ResponseWriter, r *http.Requ
 	json.NewEncoder(w).Encode(sessionResource)
 }
 
+// handleConnectGraphicalConsole handles POST requests to create a graphical console session
+func (h *Handler) handleConnectGraphicalConsole(w http.ResponseWriter, r *http.Request, managerID string) {
+	// Check permissions - require operator or admin role
+	user := getUserFromContext(r.Context())
+	if !auth.IsOperator(user) {
+		h.writeErrorResponse(w, http.StatusForbidden, "Base.1.0.GeneralError", "operator privileges required for console access")
+		return
+	}
+
+	// Parse request body
+	var req struct {
+		ConnectType string `json:"ConnectType"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.writeErrorResponse(w, http.StatusBadRequest, "Base.1.0.GeneralError", "invalid request body")
+		return
+	}
+
+	// Validate ConnectType
+	if req.ConnectType != "Oem" && req.ConnectType != "KVMIP" {
+		h.writeErrorResponse(w, http.StatusBadRequest, "Base.1.0.GeneralError", "only ConnectType 'Oem' or 'KVMIP' is supported")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+	defer cancel()
+
+	// Get connection method for this manager ID
+	cm, err := h.db.GetConnectionMethod(ctx, managerID)
+	if err != nil || cm == nil {
+		// Try to find by name in the BMC table (fallback for backward compatibility)
+		bmcs, err := h.db.GetBMCs(ctx)
+		if err != nil {
+			h.writeErrorResponse(w, http.StatusNotFound, "Base.1.0.GeneralError", "manager not found")
+			return
+		}
+		for _, bmc := range bmcs {
+			if bmc.Name == managerID {
+				h.writeErrorResponse(w, http.StatusNotImplemented, "Base.1.0.GeneralError", "console access requires connection method")
+				return
+			}
+		}
+		h.writeErrorResponse(w, http.StatusNotFound, "Base.1.0.GeneralError", "manager not found")
+		return
+	}
+
+	// Check console capability and max sessions
+	capability, err := h.db.GetConsoleCapability(ctx, cm.ID, "", models.ConsoleTypeGraphical)
+	if err != nil || capability == nil {
+		// Console capability not found - may not be synced yet
+		slog.Warn("Console capability not found", "connection_method", cm.ID, "manager", managerID)
+		// Allow connection attempt anyway - capability may be synced later
+	} else {
+		// Check if console is enabled
+		if !capability.ServiceEnabled {
+			h.writeErrorResponse(w, http.StatusServiceUnavailable, "Base.1.0.GeneralError", "graphical console is not enabled on this manager")
+			return
+		}
+
+		// Check max concurrent sessions
+		activeSessions, err := h.db.GetConsoleSessions(ctx, cm.ID, models.ConsoleSessionStateActive)
+		if err != nil {
+			slog.Error("Failed to get active console sessions", "error", err)
+		} else {
+			// Count active graphical console sessions
+			activeGraphicalSessions := 0
+			for _, session := range activeSessions {
+				if session.ConsoleType == models.ConsoleTypeGraphical {
+					activeGraphicalSessions++
+				}
+			}
+
+			if capability.MaxConcurrentSession > 0 && activeGraphicalSessions >= capability.MaxConcurrentSession {
+				h.writeErrorResponse(w, http.StatusServiceUnavailable, "Base.1.0.GeneralError",
+					fmt.Sprintf("maximum concurrent sessions (%d) exceeded", capability.MaxConcurrentSession))
+				return
+			}
+		}
+	}
+
+	// Create session ID
+	sessionID := uuid.New().String()
+
+	// Create console session record in database
+	consoleSession := &models.ConsoleSession{
+		SessionID:          sessionID,
+		ConnectionMethodID: cm.ID,
+		ManagerID:          managerID,
+		ConsoleType:        models.ConsoleTypeGraphical,
+		ConnectType:        req.ConnectType,
+		State:              models.ConsoleSessionStateConnecting,
+		CreatedBy:          user.Username,
+		CreatedAt:          time.Now(),
+		LastActivity:       time.Now(),
+		WebSocketURI:       fmt.Sprintf("/ws/console/%s", sessionID),
+	}
+
+	if err := h.db.CreateConsoleSession(ctx, consoleSession); err != nil {
+		slog.Error("Failed to create console session",
+			"error", err,
+			"user", user.Username,
+			"manager", managerID,
+			"console_type", models.ConsoleTypeGraphical)
+		h.writeErrorResponse(w, http.StatusInternalServerError, "Base.1.0.GeneralError", "failed to create console session")
+		return
+	}
+
+	// Audit log: Console session created
+	slog.Info("Console session created",
+		"session_id", sessionID,
+		"manager", managerID,
+		"user", user.Username,
+		"console_type", models.ConsoleTypeGraphical,
+		"connection_method", cm.ID)
+
+	// Start console session handler in background
+	go h.startGraphicalConsoleSession(consoleSession, cm)
+
+	// Return session resource
+	sessionResource := map[string]interface{}{
+		"@odata.type":  "#ShoalConsoleSession.v1_0_0.ConsoleSession",
+		"@odata.id":    fmt.Sprintf("/redfish/v1/Managers/%s/Oem/Shoal/ConsoleSessions/%s", managerID, sessionID),
+		"Id":           sessionID,
+		"ConsoleType":  string(consoleSession.ConsoleType),
+		"ConnectType":  consoleSession.ConnectType,
+		"State":        string(consoleSession.State),
+		"WebSocketURI": consoleSession.WebSocketURI,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(sessionResource)
+}
+
 // startConsoleSession initiates the BMC console connection in background
 func (h *Handler) startConsoleSession(session *models.ConsoleSession, cm *models.ConnectionMethod) {
 	ctx := context.Background()
@@ -238,6 +372,53 @@ func (h *Handler) startConsoleSession(session *models.ConsoleSession, cm *models
 		"manager", session.ManagerID,
 		"user", session.CreatedBy,
 		"console_type", models.ConsoleTypeSerial)
+}
+
+// startGraphicalConsoleSession initiates the BMC graphical console connection in background
+func (h *Handler) startGraphicalConsoleSession(session *models.ConsoleSession, cm *models.ConnectionMethod) {
+	ctx := context.Background()
+
+	// Password should already be decrypted when retrieved from DB
+	password := cm.Password
+
+	// Create graphical console session handler
+	bmcSession := &bmc.GraphicalConsoleSession{
+		SessionID:          session.SessionID,
+		ConnectionMethodID: cm.ID,
+		ManagerID:          session.ManagerID,
+		BMCAddress:         cm.Address,
+		BMCUsername:        cm.Username,
+		BMCPassword:        password,
+		BMCWebSocketURL:    "", // Will be queried by Connect()
+		State:              models.ConsoleSessionStateConnecting,
+		CreatedBy:          session.CreatedBy,
+	}
+
+	// Attempt to connect to BMC
+	connectCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+
+	if err := bmcSession.Connect(connectCtx); err != nil {
+		slog.Error("Failed to connect to BMC graphical console",
+			"session_id", session.SessionID,
+			"manager", session.ManagerID,
+			"user", session.CreatedBy,
+			"error", err)
+		h.db.UpdateConsoleSessionState(ctx, session.SessionID, models.ConsoleSessionStateError, err.Error())
+		return
+	}
+
+	// Update session state to active
+	h.db.UpdateConsoleSessionState(ctx, session.SessionID, models.ConsoleSessionStateActive, "")
+
+	// Store session in memory for WebSocket attachment
+	h.storeGraphicalBMCSession(session.SessionID, bmcSession)
+
+	slog.Info("Console session connected to BMC",
+		"session_id", session.SessionID,
+		"manager", session.ManagerID,
+		"user", session.CreatedBy,
+		"console_type", models.ConsoleTypeGraphical)
 }
 
 // handleConsoleSessionCollection returns the collection of console sessions
@@ -362,6 +543,13 @@ func (h *Handler) handleDisconnectConsole(w http.ResponseWriter, r *http.Request
 	if bmcSession != nil {
 		bmcSession.Disconnect()
 		h.removeBMCSession(sessionID)
+	} else {
+		// Try graphical console session
+		graphicalSession := h.getGraphicalBMCSession(sessionID)
+		if graphicalSession != nil {
+			graphicalSession.Disconnect()
+			h.removeGraphicalBMCSession(sessionID)
+		}
 	}
 
 	// Update database
@@ -414,9 +602,11 @@ func (h *Handler) handleConsoleWebSocket(w http.ResponseWriter, r *http.Request,
 		return
 	}
 
-	// Get BMC session
+	// Get BMC session (try serial first, then graphical)
 	bmcSession := h.getBMCSession(sessionID)
-	if bmcSession == nil {
+	graphicalSession := h.getGraphicalBMCSession(sessionID)
+	
+	if bmcSession == nil && graphicalSession == nil {
 		slog.Warn("Console session not ready for WebSocket connection",
 			"session_id", sessionID,
 			"user", user.Username,
@@ -436,13 +626,24 @@ func (h *Handler) handleConsoleWebSocket(w http.ResponseWriter, r *http.Request,
 	}
 
 	// Attach user WebSocket to BMC session
-	if err := bmcSession.AttachUserWebSocket(userConn); err != nil {
-		slog.Error("Failed to attach user WebSocket",
-			"error", err,
-			"session_id", sessionID,
-			"user", user.Username)
-		userConn.Close()
-		return
+	if bmcSession != nil {
+		if err := bmcSession.AttachUserWebSocket(userConn); err != nil {
+			slog.Error("Failed to attach user WebSocket",
+				"error", err,
+				"session_id", sessionID,
+				"user", user.Username)
+			userConn.Close()
+			return
+		}
+	} else if graphicalSession != nil {
+		if err := graphicalSession.AttachUserWebSocket(userConn); err != nil {
+			slog.Error("Failed to attach user WebSocket",
+				"error", err,
+				"session_id", sessionID,
+				"user", user.Username)
+			userConn.Close()
+			return
+		}
 	}
 
 	// Audit log: WebSocket connected
@@ -465,6 +666,7 @@ func getUserFromContext(ctx context.Context) *models.User {
 func (h *Handler) isConsoleRequest(path string) bool {
 	// Check for console-related paths:
 	// /v1/Managers/{id}/Actions/Oem/Shoal.ConnectSerialConsole
+	// /v1/Managers/{id}/Actions/Oem/Shoal.ConnectGraphicalConsole
 	// /v1/Managers/{id}/Oem/Shoal/ConsoleSessions
 	// /v1/Managers/{id}/Oem/Shoal/ConsoleSessions/{sessionId}
 	// /v1/Managers/{id}/Oem/Shoal/ConsoleSessions/{sessionId}/Actions/Disconnect
@@ -475,6 +677,7 @@ func (h *Handler) isConsoleRequest(path string) bool {
 
 	// Check for console action or OEM console paths
 	return strings.Contains(path, "/Actions/Oem/Shoal.ConnectSerialConsole") ||
+		strings.Contains(path, "/Actions/Oem/Shoal.ConnectGraphicalConsole") ||
 		strings.Contains(path, "/Oem/Shoal/ConsoleSessions")
 }
 
@@ -487,12 +690,18 @@ func (h *Handler) handleConsoleRequest(w http.ResponseWriter, r *http.Request, p
 	managerID, sessionID, action := parseConsolePath("/redfish" + path)
 
 	switch action {
-	case "connect":
+	case "connect_serial":
 		if r.Method != http.MethodPost {
 			h.writeErrorResponse(w, http.StatusMethodNotAllowed, "Base.1.0.MethodNotAllowed", "method not allowed")
 			return
 		}
 		h.handleConnectSerialConsole(w, r, managerID)
+	case "connect_graphical":
+		if r.Method != http.MethodPost {
+			h.writeErrorResponse(w, http.StatusMethodNotAllowed, "Base.1.0.MethodNotAllowed", "method not allowed")
+			return
+		}
+		h.handleConnectGraphicalConsole(w, r, managerID)
 	case "collection":
 		if r.Method != http.MethodGet {
 			h.writeErrorResponse(w, http.StatusMethodNotAllowed, "Base.1.0.MethodNotAllowed", "method not allowed")
@@ -519,8 +728,10 @@ func (h *Handler) handleConsoleRequest(w http.ResponseWriter, r *http.Request, p
 // In-memory storage for active BMC sessions (temporary approach)
 // In production, consider using a distributed cache like Redis
 var (
-	bmcSessions      = make(map[string]*bmc.SerialConsoleSession)
-	bmcSessionsMutex sync.RWMutex
+	bmcSessions             = make(map[string]*bmc.SerialConsoleSession)
+	graphicalBMCSessions    = make(map[string]*bmc.GraphicalConsoleSession)
+	bmcSessionsMutex        sync.RWMutex
+	graphicalSessionsMutex  sync.RWMutex
 )
 
 func (h *Handler) storeBMCSession(sessionID string, session *bmc.SerialConsoleSession) {
@@ -539,6 +750,24 @@ func (h *Handler) removeBMCSession(sessionID string) {
 	bmcSessionsMutex.Lock()
 	defer bmcSessionsMutex.Unlock()
 	delete(bmcSessions, sessionID)
+}
+
+func (h *Handler) storeGraphicalBMCSession(sessionID string, session *bmc.GraphicalConsoleSession) {
+	graphicalSessionsMutex.Lock()
+	defer graphicalSessionsMutex.Unlock()
+	graphicalBMCSessions[sessionID] = session
+}
+
+func (h *Handler) getGraphicalBMCSession(sessionID string) *bmc.GraphicalConsoleSession {
+	graphicalSessionsMutex.RLock()
+	defer graphicalSessionsMutex.RUnlock()
+	return graphicalBMCSessions[sessionID]
+}
+
+func (h *Handler) removeGraphicalBMCSession(sessionID string) {
+	graphicalSessionsMutex.Lock()
+	defer graphicalSessionsMutex.Unlock()
+	delete(graphicalBMCSessions, sessionID)
 }
 
 // handleConsoleRoutes routes console-related requests
@@ -561,6 +790,7 @@ func (h *Handler) handleWebSocketConsole(w http.ResponseWriter, r *http.Request)
 func parseConsolePath(path string) (string, string, string) {
 	// Expected patterns:
 	// /redfish/v1/Managers/{managerID}/Actions/Oem/Shoal.ConnectSerialConsole
+	// /redfish/v1/Managers/{managerID}/Actions/Oem/Shoal.ConnectGraphicalConsole
 	// /redfish/v1/Managers/{managerID}/Oem/Shoal/ConsoleSessions
 	// /redfish/v1/Managers/{managerID}/Oem/Shoal/ConsoleSessions/{sessionID}
 	// /redfish/v1/Managers/{managerID}/Oem/Shoal/ConsoleSessions/{sessionID}/Actions/Disconnect
@@ -575,7 +805,12 @@ func parseConsolePath(path string) (string, string, string) {
 
 	// Check for ConnectSerialConsole action
 	if len(parts) >= 7 && parts[4] == "Actions" && parts[5] == "Oem" && parts[6] == "Shoal.ConnectSerialConsole" {
-		return managerID, "", "connect"
+		return managerID, "", "connect_serial"
+	}
+
+	// Check for ConnectGraphicalConsole action
+	if len(parts) >= 7 && parts[4] == "Actions" && parts[5] == "Oem" && parts[6] == "Shoal.ConnectGraphicalConsole" {
+		return managerID, "", "connect_graphical"
 	}
 
 	// Check for ConsoleSessions

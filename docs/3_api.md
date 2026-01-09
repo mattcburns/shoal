@@ -336,7 +336,7 @@ curl -H "X-Auth-Token: <token>" \
 
 **Console Properties:**
 - `SerialConsole`: Indicates availability and limits for text-based serial console access
-- `GraphicalConsole`: Indicates availability and limits for graphical KVM console access (future)
+- `GraphicalConsole`: Indicates availability and limits for graphical KVM console access (Dell iDRAC vKVM, Supermicro iKVM, HPE iLO IRC)
 - `ServiceEnabled`: Whether the console service is available on this BMC
 - `MaxConcurrentSessions`: Maximum number of simultaneous console sessions allowed
 - `ConnectTypesSupported`: Supported connection methods (typically includes "Oem" for Shoal's WebSocket-based implementation)
@@ -551,6 +551,132 @@ curl -X POST \
 - `503 Service Unavailable`: Console session not ready for WebSocket connection
 
 All console operations require authentication and appropriate role permissions.
+
+## Graphical Console Pass-Through (OEM Extension)
+
+Shoal provides secure WebSocket proxying for graphical console access (KVM, HTML5 consoles) to managed BMCs, supporting vendor-specific Redfish OEM endpoints.
+
+### Supported Vendors
+
+- **Dell iDRAC**: Virtual KVM (vKVM) via `/redfish/v1/Dell/Managers/{id}/DellvKVM`
+- **Supermicro**: HTML5 iKVM via `/redfish/v1/Oem/Supermicro/iKVM`
+- **HPE iLO**: Integrated Remote Console (IRC) via `/redfish/v1/Managers/{id}/RemoteConsole`
+
+### Create Graphical Console Session
+
+Initiate a new graphical console session to a BMC.
+
+**Request:**
+```bash
+curl -X POST \
+  http://localhost:8080/redfish/v1/Managers/bmc1/Actions/Oem/Shoal.ConnectGraphicalConsole \
+  -H "X-Auth-Token: <token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "ConnectType": "Oem"
+  }'
+```
+
+**Response:** `201 Created`
+```json
+{
+  "@odata.type": "#ShoalConsoleSession.v1_0_0.ConsoleSession",
+  "@odata.id": "/redfish/v1/Managers/bmc1/Oem/Shoal/ConsoleSessions/xyz-789",
+  "Id": "xyz-789",
+  "ConsoleType": "GraphicalConsole",
+  "ConnectType": "Oem",
+  "State": "connecting",
+  "WebSocketURI": "/ws/console/xyz-789"
+}
+```
+
+**Validation:**
+- Checks if graphical console is enabled on the target BMC
+- Enforces maximum concurrent session limits
+- Verifies user has Operator or Administrator role
+- Accepts "Oem" or "KVMIP" as ConnectType
+
+**Error Responses:**
+
+- `400 Bad Request`: Invalid ConnectType
+```json
+{
+  "error": {
+    "code": "Base.1.0.GeneralError",
+    "message": "only ConnectType 'Oem' or 'KVMIP' is supported"
+  }
+}
+```
+
+- `403 Forbidden`: Insufficient privileges
+```json
+{
+  "error": {
+    "code": "Base.1.0.GeneralError",
+    "message": "operator privileges required for console access"
+  }
+}
+```
+
+- `503 Service Unavailable`: Console service disabled or max sessions exceeded
+```json
+{
+  "error": {
+    "code": "Base.1.0.GeneralError",
+    "message": "graphical console is not enabled on this manager"
+  }
+}
+```
+
+### WebSocket Connection for Graphical Console
+
+Connect to the graphical console session using the WebSocket URI. The WebSocket proxies video, keyboard, and mouse data between the user's browser and the BMC's graphical console endpoint.
+
+**JavaScript Example:**
+```javascript
+const ws = new WebSocket('ws://localhost:8080/ws/console/xyz-789');
+
+// Receive video/keyboard/mouse data (binary or text)
+ws.onmessage = (event) => {
+  // Handle graphical console data
+  if (event.data instanceof Blob) {
+    // Binary data (e.g., video frames)
+    handleVideoData(event.data);
+  } else {
+    // Text data
+    console.log('Console data:', event.data);
+  }
+};
+
+// Send keyboard/mouse events
+ws.send(JSON.stringify({
+  type: 'keyboard',
+  key: 'Enter'
+}));
+
+// Close connection
+ws.close();
+```
+
+**Authentication:** WebSocket connections require authentication via session token.
+
+### Session Management
+
+Both serial and graphical console sessions are managed through the same collection endpoints:
+
+- `GET /redfish/v1/Managers/{manager-id}/Oem/Shoal/ConsoleSessions`: Lists all sessions (serial and graphical)
+- `GET /redfish/v1/Managers/{manager-id}/Oem/Shoal/ConsoleSessions/{session-id}`: Get session details
+- `POST /redfish/v1/Managers/{manager-id}/Oem/Shoal/ConsoleSessions/{session-id}/Actions/Disconnect`: Disconnect session
+
+Sessions are distinguished by the `ConsoleType` field: `"SerialConsole"` or `"GraphicalConsole"`.
+
+### Security
+
+- BMC WebSocket credentials are managed by Shoal and never exposed to clients
+- All console sessions require Operator or Administrator role
+- Users can only access their own sessions (Administrators can access all)
+- WebSocket connections are isolated per user
+- TLS/WSS recommended for production deployments
 
 ## Provisioning Configuration Endpoints (OEM Extension)
 
