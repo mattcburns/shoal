@@ -22,38 +22,20 @@ Together, these three files account for **38% of the non-test codebase** (6,379 
 
 ## Design Documents
 
-### [022: Extract Embedded Templates from Web Package](022_Extract_Web_Templates.md)
+### [022: Complete API Error Helper Migration](022_Complete_Error_Helper_Migration.md)
 
-**Target:** `internal/web/web.go` (2,722 → ~400 lines)
+**Target:** `internal/api/errors.go`, `respond.go`, `api.go`
 
-Extracts ~2,600 lines of HTML/CSS/JavaScript from Go string literals into:
-- `internal/assets/templates/*.html` - HTML templates
-- `static/js/*.js` - JavaScript files
-- `static/css/main.css` - Stylesheets
+Completes the migration started in Design 019:
+- Removes duplicate `validMessageIDs` definitions
+- Renames `rf*`-prefixed helpers (transition complete)
+- Updates all handlers to use centralized helpers
 
-**Milestones:** 7 | **Estimated effort:** Large
-
----
-
-### [023: Split BMC Service into Focused Modules](023_Split_BMC_Service.md)
-
-**Target:** `internal/bmc/service.go` (1,892 → ~400 lines)
-
-Splits the monolithic service file into domain-focused modules:
-- `http.go` - HTTP request helpers
-- `discovery.go` - ID discovery with caching
-- `settings.go` - Settings discovery (refactored)
-- `registry.go` - Attribute registry enrichment
-- `status.go` - Detailed status retrieval
-- `update.go` - Setting update operations
-
-**Key improvement:** Reduces `DiscoverSettings` complexity from 77 to ~10
-
-**Milestones:** 7 | **Estimated effort:** Large
+**Milestones:** 7 | **Estimated effort:** Small
 
 ---
 
-### [024: Split Database Package by Domain](024_Split_Database_Package.md)
+### [023: Split Database Package by Domain](023_Split_Database_Package.md)
 
 **Target:** `internal/database/database.go` (1,765 → ~120 lines)
 
@@ -72,20 +54,25 @@ Organizes 59 database functions into domain-specific files:
 
 ---
 
-### [025: Complete API Error Helper Migration](025_Complete_Error_Helper_Migration.md)
+### [024: Split BMC Service into Focused Modules](024_Split_BMC_Service.md)
 
-**Target:** `internal/api/errors.go`, `respond.go`, `api.go`
+**Target:** `internal/bmc/service.go` (1,892 → ~400 lines)
 
-Completes the migration started in Design 019:
-- Removes duplicate `validMessageIDs` definitions
-- Renames `rf*`-prefixed helpers (transition complete)
-- Updates all handlers to use centralized helpers
+Splits the monolithic service file into domain-focused modules:
+- `http.go` - HTTP request helpers
+- `discovery.go` - ID discovery with caching
+- `settings.go` - Settings discovery (refactored)
+- `registry.go` - Attribute registry enrichment
+- `status.go` - Detailed status retrieval
+- `update.go` - Setting update operations
 
-**Milestones:** 7 | **Estimated effort:** Small
+**Key improvement:** Reduces `DiscoverSettings` complexity from 77 to ~10
+
+**Milestones:** 7 | **Estimated effort:** Large
 
 ---
 
-### [026: Refactor API Console and Proxy Routing](026_Refactor_Proxy_Routing.md)
+### [025: Refactor API Console and Proxy Routing](025_Refactor_Proxy_Routing.md)
 
 **Target:** `internal/api/proxy.go`, `console.go`
 
@@ -98,41 +85,54 @@ Replaces nested if/else routing with declarative pattern matching:
 
 ---
 
+### [026: Extract Embedded Templates from Web Package](026_Extract_Web_Templates.md)
+
+**Target:** `internal/web/web.go` (2,722 → ~400 lines)
+
+Extracts ~2,600 lines of HTML/CSS/JavaScript from Go string literals into:
+- `internal/assets/templates/*.html` - HTML templates
+- `static/js/*.js` - JavaScript files
+- `static/css/main.css` - Stylesheets
+
+**Milestones:** 7 | **Estimated effort:** Large
+
+---
+
 ## Recommended Implementation Order
 
 The designs are numbered for reference but should be implemented in this order for minimal conflicts:
 
 ### Phase 1: Quick Wins (Low Risk)
 
-1. **[025: Complete API Error Helper Migration](025_Complete_Error_Helper_Migration.md)**
+1. **[022: Complete API Error Helper Migration](022_Complete_Error_Helper_Migration.md)**
    - Small scope, no structural changes
    - Cleans up technical debt from Design 019
    - Good warmup for larger refactors
 
 ### Phase 2: Database Split (Medium Risk)
 
-2. **[024: Split Database Package by Domain](024_Split_Database_Package.md)**
+2. **[023: Split Database Package by Domain](023_Split_Database_Package.md)**
    - All files stay in same package (no import changes)
    - Purely mechanical file moves
    - Sets pattern for other splits
 
 ### Phase 3: BMC Service Split (Medium Risk)
 
-3. **[023: Split BMC Service into Focused Modules](023_Split_BMC_Service.md)**
+3. **[024: Split BMC Service into Focused Modules](024_Split_BMC_Service.md)**
    - Same-package split like database
    - Refactors `DiscoverSettings` (most complex function)
    - Should be done before template extraction
 
 ### Phase 4: Routing Refactor (Medium Risk)
 
-4. **[026: Refactor API Console and Proxy Routing](026_Refactor_Proxy_Routing.md)**
+4. **[025: Refactor API Console and Proxy Routing](025_Refactor_Proxy_Routing.md)**
    - Self-contained within api package
    - Reduces cognitive load for proxy/console code
    - Can be done in parallel with Phase 5
 
 ### Phase 5: Template Extraction (Higher Risk)
 
-5. **[022: Extract Embedded Templates from Web Package](022_Extract_Web_Templates.md)**
+5. **[026: Extract Embedded Templates from Web Package](026_Extract_Web_Templates.md)**
    - Largest structural change
    - Requires manual visual testing
    - Best done last when other code is stable
