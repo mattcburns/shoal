@@ -3,7 +3,7 @@ First-time setup of the Shoal lab. All steps use Ansible directly; there is no M
 
 ## 1) Host prerequisites (L0)
 - [ ] `libvirt` / `virsh` installed and `libvirtd` running
-- [ ] `qemu-kvm`, `qemu-img`, `genisoimage` installed
+- [ ] `qemu-system-x86`, `qemu-img`, `genisoimage` installed
 - [ ] `ansible-playbook` installed
 - [ ] `ssh` / `scp` installed
 - [ ] `/dev/kvm` exists on host

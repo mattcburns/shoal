@@ -12,23 +12,77 @@
 - name: Define libvirt network
   command: virsh net-define /tmp/shoal-lab-net.xml
   register: net_define
-  changed_when: "'defined' in net_define.stdout"
-  failed_when: false
+  changed_when: >
+    'defined' in (((net_define.stdout | default('')) ~ (net_define.stderr | default(''))) | lower)
+  failed_when: >
+    net_define.rc != 0 and
+    'already exists' not in (((net_define.stdout | default('')) ~ (net_define.stderr | default(''))) | lower)
   tags: [network]
 
 - name: Start libvirt network
   command: virsh net-start shoal-lab-net
   register: net_start
-  changed_when: "'started' in net_start.stdout"
-  failed_when: false
+  changed_when: >
+    'started' in (((net_start.stdout | default('')) ~ (net_start.stderr | default(''))) | lower)
+  failed_when: >
+    net_start.rc != 0 and
+    'already active' not in (((net_start.stdout | default('')) ~ (net_start.stderr | default(''))) | lower)
+  tags: [network]
+
+- name: Read libvirt network status
+  command: virsh net-info shoal-lab-net
+  register: net_info
+  changed_when: false
   tags: [network]
 
 - name: Set libvirt network to autostart
   command: virsh net-autostart shoal-lab-net
-  register: net_autostart
-  changed_when: "'marked' in net_autostart.stdout"
-  failed_when: false
+  when: net_info.stdout is search('Autostart:\s+no')
+  changed_when: true
   tags: [network]
+- name: Ensure default libvirt images directory exists
+  file:
+    path: /var/lib/libvirt/images
+    state: directory
+    mode: '0755'
+  tags: [storage]
+
+- name: Check whether default libvirt storage pool exists
+  command: virsh pool-info default
+  register: default_pool_info
+  changed_when: false
+  failed_when:
+    - default_pool_info.rc != 0
+    - "'Storage pool not found' not in (default_pool_info.stderr | default(''))"
+  tags: [storage]
+
+- name: Define default libvirt storage pool when absent
+  command: virsh pool-define-as --name default --type dir --target /var/lib/libvirt/images
+  when: default_pool_info.rc != 0
+  register: default_pool_define
+  changed_when: "'defined' in (default_pool_define.stdout | lower)"
+  tags: [storage]
+
+- name: Start default libvirt storage pool
+  command: virsh pool-start default
+  register: default_pool_start
+  changed_when: default_pool_start.rc == 0
+  failed_when:
+    - default_pool_start.rc != 0
+    - "'already active' not in (((default_pool_start.stdout | default('')) ~ (default_pool_start.stderr | default(''))) | lower)"
+  tags: [storage]
+
+- name: Refresh default libvirt storage pool state
+  command: virsh pool-info default
+  register: default_pool_info_after_start
+  changed_when: false
+  tags: [storage]
+
+- name: Enable default libvirt storage pool autostart
+  command: virsh pool-autostart default
+  when: default_pool_info_after_start.stdout is search('Autostart:\s+no')
+  changed_when: true
+  tags: [storage]
 
 
 - name: Create virtual BMC nodes
@@ -37,11 +91,6 @@
   loop_control:
     loop_var: node
   tags: [nodes]
-
-- name: Wait for virtual nodes to boot
-  pause:
-    seconds: 10
-  tags: [wait]
 
 - name: Verify all nodes are running
   shell: |

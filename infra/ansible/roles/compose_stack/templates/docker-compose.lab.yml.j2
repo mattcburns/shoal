@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   netbox:
     # Pinned to NetBox v4.5.x because v4.6+ (netbox-docker 5.x) switched to v2
@@ -106,13 +104,18 @@ services:
     image: postgres:15
     container_name: shoal-telemetry-db
     environment:
-      - POSTGRES_DB=shoal_telemetry
-      - POSTGRES_USER=shoal
-      - POSTGRES_PASSWORD=shoal_password
+      - POSTGRES_DB={{ shoal_telemetry_db_name }}
+      - POSTGRES_USER={{ shoal_telemetry_db_user }}
+      - POSTGRES_PASSWORD={{ shoal_telemetry_db_password }}
     ports:
       - "{{ shoal_telemetry_db_port }}:5432"
     volumes:
       - telemetry-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "{{ shoal_telemetry_db_user }}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
     restart: unless-stopped
     networks:
       - shoal-lab

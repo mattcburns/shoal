@@ -89,6 +89,9 @@
               Insufficient disk space: {{ available_disk_mb.stdout }}MB
               Minimum required: 51200MB (50GB)
 
+    - name: Gather service facts
+      ansible.builtin.service_facts:
+
     - name: Check libvirt prerequisites
       block:
         - name: Check if libvirtd is installed
@@ -97,16 +100,13 @@
           failed_when: libvirtd_check.rc != 0
           changed_when: false
 
-        - name: Check if libvirtd is running
-          systemd:
-            name: libvirtd
-            state: started
-          register: libvirtd_status
-
-        - name: Fail if libvirtd is not running
-          fail:
-            msg: "libvirtd service is not running"
-          when: libvirtd_status.status.ActiveState != "active"
+        - name: Assert libvirtd is running
+          assert:
+            that:
+              - "'libvirtd.service' in ansible_facts.services"
+              - ansible_facts.services['libvirtd.service'].state == 'running'
+            fail_msg: "libvirtd service is not running"
+            success_msg: "libvirtd service is running"
 
     - name: Check Docker prerequisites
       block:
@@ -116,16 +116,13 @@
           failed_when: docker_check.rc != 0
           changed_when: false
 
-        - name: Check if Docker daemon is running
-          systemd:
-            name: docker
-            state: started
-          register: docker_status
-
-        - name: Fail if Docker is not running
-          fail:
-            msg: "Docker service is not running"
-          when: docker_status.status.ActiveState != "active"
+        - name: Assert Docker daemon is running
+          assert:
+            that:
+              - "'docker.service' in ansible_facts.services"
+              - ansible_facts.services['docker.service'].state == 'running'
+            fail_msg: "Docker service is not running"
+            success_msg: "Docker service is running"
 
         - name: Check if Docker Compose is available
           command: docker compose version

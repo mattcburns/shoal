@@ -77,6 +77,7 @@
         loop_var: node
         label: "{{ node.name }}"
       delegate_to: "{{ shoal_serial_delegate }}"
+      become: true
       environment:
         LIBVIRT_DEFAULT_URI: qemu:///system
       register: smoke_serial

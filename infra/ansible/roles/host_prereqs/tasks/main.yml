@@ -17,7 +17,7 @@
       - python3-venv
       - libvirt-daemon-system
       - libvirt-clients
-      - qemu-kvm
+      - qemu-system-x86
       - qemu-utils
       - bridge-utils
       - virtinst
@@ -26,6 +26,7 @@
       # 'docker-compose-v2' (universe); 'docker-compose-plugin' is Docker's
       # own repo name and has no candidate in Ubuntu's archive.
       - docker-compose-v2
+      - python3-passlib
       - git
       - curl
       - wget
@@ -52,32 +53,25 @@
     state: started
     enabled: yes
   tags: [services]
+- name: Determine the primary non-root lab user
+  set_fact:
+    shoal_primary_user: >-
+      {{ ansible_env.SUDO_USER | default(ansible_user, true) | default(ansible_user_id, true) }}
+  tags: [permissions]
 
 - name: Add user to libvirt group
   user:
-    name: "{{ ansible_user }}"
+    name: "{{ shoal_primary_user }}"
     groups: libvirt
     append: yes
   tags: [permissions]
 
 - name: Add user to docker group
   user:
-    name: "{{ ansible_user }}"
+    name: "{{ shoal_primary_user }}"
     groups: docker
     append: yes
   tags: [permissions]
-
-- name: Install Python packages via pip
-  pip:
-    name:
-      - sushy
-      - pynetbox
-      - pyyaml
-      - requests
-      - passlib
-    state: present
-    executable: pip3
-  tags: [python]
 
 - name: Create Shoal infrastructure directory
   file:
@@ -92,3 +86,21 @@
     state: directory
     mode: "0755"
   tags: [directories]
+
+- name: Ensure Shoal Python virtualenv exists
+  command: "python3 -m venv {{ shoal_infra_dir }}/.venv"
+  args:
+    creates: "{{ shoal_infra_dir }}/.venv/bin/activate"
+  tags: [python]
+
+- name: Install Python packages in Shoal virtualenv
+  pip:
+    name:
+      - sushy
+      - pynetbox
+      - pyyaml
+      - requests
+    state: present
+    virtualenv: "{{ shoal_infra_dir }}/.venv"
+    virtualenv_command: "python3 -m venv"
+  tags: [python]

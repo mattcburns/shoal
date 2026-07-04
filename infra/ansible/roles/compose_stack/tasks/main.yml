@@ -80,7 +80,11 @@
     cd {{ shoal_compose_dir }}
     docker compose -f docker-compose.lab.yml up -d
   register: compose_up
-  changed_when: "'Creating' in compose_up.stdout or 'Starting' in compose_up.stdout"
+  changed_when: >
+    'Creating' in ((compose_up.stdout | default('')) ~ (compose_up.stderr | default('')))
+    or 'Starting' in ((compose_up.stdout | default('')) ~ (compose_up.stderr | default('')))
+    or 'Recreating' in ((compose_up.stdout | default('')) ~ (compose_up.stderr | default('')))
+    or 'Pulling' in ((compose_up.stdout | default('')) ~ (compose_up.stderr | default('')))
   tags: [start]
 
 - name: Wait for PostgreSQL to be healthy

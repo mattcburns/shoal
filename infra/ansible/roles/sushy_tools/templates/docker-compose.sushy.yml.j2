@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   sushy-tools:
     image: quay.io/metal3-io/sushy-tools:latest
@@ -10,7 +8,6 @@ services:
     volumes:
       - {{ shoal_sushy_dir }}/conf.py:/root/sushy/conf.py:ro
       - {{ shoal_sushy_dir }}/auth.htpasswd:/root/sushy/auth.htpasswd:ro
-      - /var/run/libvirt/libvirt-sock:/var/run/libvirt/libvirt-sock:ro
       - /var/run/libvirt:/var/run/libvirt:ro
     ports:
       - "{{ shoal_sushy_port }}:{{ shoal_sushy_port }}"
