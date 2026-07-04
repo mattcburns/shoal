@@ -1,0 +1,15 @@
+<network>
+  <name>{{ shoal_mgmt_network_name }}</name>
+  <bridge name='{{ shoal_mgmt_network_bridge }}' stp='on' delay='0'/>
+  <forward mode='nat'>
+    <nat>
+      <port start='1024' end='65535'/>
+    </nat>
+  </forward>
+  <ip address='{{ shoal_mgmt_network_gateway }}' netmask='255.255.255.0'>
+    <dhcp>
+      <range start='{{ shoal_mgmt_network_dhcp_start }}' end='{{ shoal_mgmt_network_dhcp_end }}'/>
+      <host mac='{{ shoal_lab_vm_mac }}' name='{{ shoal_lab_vm_name }}' ip='{{ shoal_lab_vm_host }}'/>
+    </dhcp>
+  </ip>
+</network>

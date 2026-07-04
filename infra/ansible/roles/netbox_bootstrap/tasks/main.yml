@@ -1,0 +1,260 @@
+---
+# Bootstrap NetBox with initial data
+# This role creates the API token, site, device roles, and registers virtual BMC nodes
+
+- name: Obtain session token (wait for NetBox API readiness)
+  uri:
+    url: "{{ shoal_netbox_url }}/api/users/tokens/provision/"
+    method: POST
+    body_format: json
+    body:
+      username: admin
+      password: admin
+    status_code: [200, 201]
+  register: session_token
+  no_log: true
+  until: session_token.status is defined and session_token.status in [200, 201]
+  retries: 30
+  delay: 5
+  tags: [wait, auth]
+
+- name: Set API token header
+  set_fact:
+    netbox_auth_header:
+      Authorization: >-
+        {{ ('Bearer nbt_' ~ session_token.json.key ~ '.' ~ session_token.json.token)
+           if (session_token.json.version | default(1) | int) == 2
+           else ('Token ' ~ session_token.json.key) }}
+  no_log: true
+  tags: [auth]
+
+- name: Look up admin user ID
+  uri:
+    url: "{{ shoal_netbox_url }}/api/users/users/?username=admin"
+    method: GET
+    headers: "{{ netbox_auth_header }}"
+    status_code: 200
+  register: admin_user_info
+  no_log: true
+  tags: [auth]
+
+- name: Set admin user ID fact
+  set_fact:
+    netbox_admin_user_id: "{{ admin_user_info.json.results[0].id | default(1) }}"
+  tags: [auth]
+
+- name: Validate configured NetBox API token format
+  assert:
+    that:
+      - shoal_netbox_api_token | length == 40
+    fail_msg: "shoal_netbox_api_token must be a 40-character token value for legacy v1 token creation."
+  no_log: true
+  tags: [token]
+
+- name: Create API token
+  uri:
+    url: "{{ shoal_netbox_url }}/api/users/tokens/"
+    method: POST
+    headers: "{{ netbox_auth_header }}"
+    body_format: json
+    body:
+      user: "{{ netbox_admin_user_id }}"
+      version: 1
+      token: "{{ shoal_netbox_api_token }}"
+      write_enabled: true
+      description: "Shoal Lab API Token"
+    status_code: [200, 201, 400]
+  register: token_create
+  no_log: true
+  failed_when: >
+    token_create.status | int not in [200, 201, 400] or
+    (token_create.status | int == 400 and
+     'already exists' not in (token_create.json | default({}) | to_json | lower) and
+     'unique' not in (token_create.json | default({}) | to_json | lower))
+  tags: [token]
+
+- name: Create Shoal Lab site
+  uri:
+    url: "{{ shoal_netbox_url }}/api/dcim/sites/"
+    method: POST
+    headers: "{{ netbox_auth_header }}"
+    body_format: json
+    body:
+      name: "Shoal Lab"
+      slug: "shoal-lab"
+      status: "active"
+    status_code: [200, 201, 400]
+  register: site_create
+  no_log: true
+  failed_when: >
+    site_create.status | int not in [200, 201, 400] or
+    (site_create.status | int == 400 and
+     'already exists' not in (site_create.json | default({}) | to_json | lower) and
+     'unique' not in (site_create.json | default({}) | to_json | lower))
+  tags: [site]
+
+- name: Get site ID
+  uri:
+    url: "{{ shoal_netbox_url }}/api/dcim/sites/?slug=shoal-lab"
+    method: GET
+    headers: "{{ netbox_auth_header }}"
+    status_code: 200
+  register: site_info
+  no_log: true
+  tags: [site]
+
+- name: Set site ID fact
+  set_fact:
+    shoal_site_id: "{{ site_info.json.results[0].id }}"
+  when: site_info.json.results | length > 0
+  tags: [site]
+
+- name: Create Virtual BMC Node device role
+  uri:
+    url: "{{ shoal_netbox_url }}/api/dcim/device-roles/"
+    method: POST
+    headers: "{{ netbox_auth_header }}"
+    body_format: json
+    body:
+      name: "Virtual BMC Node"
+      slug: "virtual-bmc-node"
+      color: "00ff00"
+      vm_role: false
+    status_code: [200, 201, 400]
+  register: role_create
+  no_log: true
+  failed_when: >
+    role_create.status | int not in [200, 201, 400] or
+    (role_create.status | int == 400 and
+     'already exists' not in (role_create.json | default({}) | to_json | lower) and
+     'unique' not in (role_create.json | default({}) | to_json | lower))
+  tags: [role]
+
+- name: Get device role ID
+  uri:
+    url: "{{ shoal_netbox_url }}/api/dcim/device-roles/?slug=virtual-bmc-node"
+    method: GET
+    headers: "{{ netbox_auth_header }}"
+    status_code: 200
+  register: role_info
+  no_log: true
+  tags: [role]
+
+- name: Set device role ID fact
+  set_fact:
+    shoal_device_role_id: "{{ role_info.json.results[0].id }}"
+  when: role_info.json.results | length > 0
+  tags: [role]
+
+- name: Create Shoal Virtual manufacturer
+  uri:
+    url: "{{ shoal_netbox_url }}/api/dcim/manufacturers/"
+    method: POST
+    headers: "{{ netbox_auth_header }}"
+    body_format: json
+    body:
+      name: "Shoal Virtual"
+      slug: "shoal-virtual"
+    status_code: [200, 201, 400]
+  register: manufacturer_create
+  no_log: true
+  failed_when: >
+    manufacturer_create.status | int not in [200, 201, 400] or
+    (manufacturer_create.status | int == 400 and
+     'already exists' not in (manufacturer_create.json | default({}) | to_json | lower) and
+     'unique' not in (manufacturer_create.json | default({}) | to_json | lower))
+  tags: [manufacturer]
+
+- name: Get manufacturer ID
+  uri:
+    url: "{{ shoal_netbox_url }}/api/dcim/manufacturers/?slug=shoal-virtual"
+    method: GET
+    headers: "{{ netbox_auth_header }}"
+    status_code: 200
+  register: manufacturer_info
+  no_log: true
+  tags: [manufacturer]
+
+- name: Set manufacturer ID fact
+  set_fact:
+    shoal_manufacturer_id: "{{ manufacturer_info.json.results[0].id }}"
+  when: manufacturer_info.json.results | length > 0
+  tags: [manufacturer]
+
+- name: Create Virtual Server device type
+  uri:
+    url: "{{ shoal_netbox_url }}/api/dcim/device-types/"
+    method: POST
+    headers: "{{ netbox_auth_header }}"
+    body_format: json
+    body:
+      manufacturer: "{{ shoal_manufacturer_id }}"
+      model: "Virtual Server"
+      slug: "virtual-server"
+      u_height: 1
+      is_full_depth: false
+    status_code: [200, 201, 400]
+  register: device_type_create
+  no_log: true
+  failed_when: >
+    device_type_create.status | int not in [200, 201, 400] or
+    (device_type_create.status | int == 400 and
+     'already exists' not in (device_type_create.json | default({}) | to_json | lower) and
+     'unique' not in (device_type_create.json | default({}) | to_json | lower))
+  tags: [device_type]
+
+- name: Get device type ID
+  uri:
+    url: "{{ shoal_netbox_url }}/api/dcim/device-types/?slug=virtual-server"
+    method: GET
+    headers: "{{ netbox_auth_header }}"
+    status_code: 200
+  register: device_type_info
+  no_log: true
+  tags: [device_type]
+
+- name: Set device type ID fact
+  set_fact:
+    shoal_device_type_id: "{{ device_type_info.json.results[0].id }}"
+  when: device_type_info.json.results | length > 0
+  tags: [device_type]
+
+- name: Register virtual BMC nodes in NetBox
+  uri:
+    url: "{{ shoal_netbox_url }}/api/dcim/devices/"
+    method: POST
+    headers: "{{ netbox_auth_header }}"
+    body_format: json
+    body:
+      name: "{{ item.name }}"
+      role: "{{ shoal_device_role_id }}"
+      device_type: "{{ shoal_device_type_id }}"
+      site: "{{ shoal_site_id }}"
+      status: "active"
+    status_code: [200, 201, 400]
+  loop: "{{ shoal_bmc_nodes }}"
+  register: device_create
+  no_log: true
+  failed_when: >
+    device_create.status | int not in [200, 201, 400] or
+    (device_create.status | int == 400 and
+     'already exists' not in (device_create.json | default({}) | to_json | lower) and
+     'unique' not in (device_create.json | default({}) | to_json | lower))
+  tags: [devices]
+
+- name: Display NetBox bootstrap status
+  debug:
+    msg: |
+      NetBox has been bootstrapped successfully.
+      
+      Created resources:
+      - Site: Shoal Lab (ID: {{ shoal_site_id }})
+      - Device Role: Virtual BMC Node (ID: {{ shoal_device_role_id }})
+      - Manufacturer: Shoal Virtual (ID: {{ shoal_manufacturer_id }})
+      - Device Type: Virtual Server (ID: {{ shoal_device_type_id }})
+      
+      Registered devices:
+      {% for node in shoal_bmc_nodes %}
+      - {{ node.name }} ({{ node.ip }})
+      {% endfor %}
+  tags: [status]

@@ -1,0 +1,13 @@
+---
+# Set up the Shoal lab services to a running state.
+# Provisions the L1 VM (VM-hosted mode only), runs preflight checks, converges
+# the lab stack, and bootstraps NetBox. The inventory you pass selects the mode:
+#   VM-hosted: ansible-playbook -i infra/ansible/inventory/lab-vm.yml infra/ansible/playbooks/up.yml --ask-become-pass
+#   Direct:    ansible-playbook -i infra/ansible/inventory/lab.yml    infra/ansible/playbooks/up.yml
+# In direct mode the VM-provisioning play is skipped automatically (the lab-vm
+# inventory's vm_l0 group has no counterpart in the direct inventory).
+
+- import_playbook: vm_provision.yml
+- import_playbook: preflight.yml
+- import_playbook: lab_up.yml
+- import_playbook: bootstrap_netbox.yml

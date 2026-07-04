@@ -1,0 +1,13 @@
+version: 2
+ethernets:
+  all:
+    match:
+      name: "e*"
+    dhcp4: false
+    addresses:
+      - {{ shoal_lab_vm_host }}/24
+    routes:
+      - to: default
+        via: {{ shoal_mgmt_network_gateway }}
+    nameservers:
+      addresses: [8.8.8.8, 1.1.1.1]

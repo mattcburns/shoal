@@ -1,0 +1,26 @@
+---
+# Shoal lab secrets. Copy to vault.yml and fill in real values:
+#   cp infra/ansible/inventory/group_vars/all/vault.yml.example \
+#      infra/ansible/inventory/group_vars/all/vault.yml
+# Optionally encrypt with Ansible Vault:
+#   ansible-vault encrypt infra/ansible/inventory/group_vars/all/vault.yml
+# vault.yml is git-ignored. If encrypted, run playbooks with
+#   --ask-vault-pass  (or --vault-password-file <file>).
+
+# NetBox
+shoal_netbox_api_token: "0123456789abcdef0123456789abcdef01234567"
+shoal_netbox_postgres_password: netbox_password
+
+# Redis
+shoal_redis_password: redis_password
+
+# sushy-tools virtual BMC credentials
+shoal_bmc_username: admin
+shoal_bmc_password: password
+
+# Telemetry store
+shoal_telemetry_db_password: shoal_password
+
+# Cloud AI provider (only used when shoal_ai_provider == "cloud"; leave empty for
+# local Ollama). This is a secret — never commit a real key.
+shoal_cloud_ai_api_key: ""

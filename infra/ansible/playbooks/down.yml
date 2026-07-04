@@ -1,0 +1,12 @@
+---
+# Tear the Shoal lab down to a clean slate.
+# Stops the lab stack, then (VM-hosted mode only) destroys the L1 VM, its overlay
+# and cached base image, the L0 management network, and the work dir. The
+# inventory you pass selects the mode:
+#   VM-hosted: ansible-playbook -i infra/ansible/inventory/lab-vm.yml infra/ansible/playbooks/down.yml --ask-become-pass
+#   Direct:    ansible-playbook -i infra/ansible/inventory/lab.yml    infra/ansible/playbooks/down.yml
+# In direct mode the VM-destroy play is skipped automatically (no vm_l0 host).
+# To also discard the lab VM SSH keypair, add: -e shoal_remove_ssh_key=true
+
+- import_playbook: lab_down.yml
+- import_playbook: vm_destroy.yml

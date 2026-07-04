@@ -1,0 +1,33 @@
+---
+# Bootstrap NetBox with initial data on the selected target host
+# This playbook seeds NetBox with the API token and minimal data needed for integration tests
+
+- name: Bootstrap NetBox
+  hosts: shoal-lab-vm
+  gather_facts: false
+  become: true
+
+  roles:
+    - role: netbox_bootstrap
+      tags: [bootstrap]
+
+  post_tasks:
+    - name: Display bootstrap status
+      debug:
+        msg: |
+          NetBox has been bootstrapped with initial data.
+          
+          Created:
+          - Site: Shoal Lab
+          - Device Role: Virtual BMC Node
+          - Manufacturer: Shoal Virtual
+          - Device Type: Virtual Server
+          
+          Virtual BMC nodes registered:
+          {% for node in shoal_bmc_nodes %}
+          - {{ node.name }} ({{ node.ip }})
+          {% endfor %}
+          
+          NetBox URL: {{ shoal_netbox_url }}
+          
+          You can now proceed with Phase 1 implementation.

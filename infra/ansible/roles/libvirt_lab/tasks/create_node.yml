@@ -1,0 +1,55 @@
+---
+# Create a single virtual BMC node
+
+- name: Check if node already exists
+  command: virsh dominfo {{ node.name }}
+  register: node_info
+  failed_when: false
+  changed_when: false
+- name: Check if node disk exists
+  stat:
+    path: /var/lib/libvirt/images/{{ node.name }}.qcow2
+  register: node_disk
+
+- name: Create disk image for node
+  command: qemu-img create -f qcow2 /var/lib/libvirt/images/{{ node.name }}.qcow2 20G
+  when: not node_disk.stat.exists
+  changed_when: true
+
+- name: Render node domain XML
+  template:
+    src: vm-node.xml.j2
+    dest: /tmp/vm-node-{{ node.name }}.xml
+    mode: "0644"
+
+- name: Define node from rendered template
+  command: virsh define /tmp/vm-node-{{ node.name }}.xml
+  when: node_info.rc != 0
+  register: node_define
+  changed_when: "'defined' in node_define.stdout"
+
+- name: Ensure node autostarts
+  command: virsh autostart {{ node.name }}
+  register: node_autostart
+  changed_when: "'marked as autostarted' in node_autostart.stdout"
+  failed_when: false
+
+- name: Start node
+  command: virsh start {{ node.name }}
+  when: node_info.rc != 0
+  register: node_start
+  changed_when: "'started' in node_start.stdout"
+- name: Check current node state
+  command: virsh domstate {{ node.name }}
+  register: node_state
+  changed_when: false
+  failed_when: false
+
+- name: Ensure node is running
+  command: virsh start {{ node.name }}
+  when:
+    - node_info.rc == 0
+    - "'running' not in node_state.stdout"
+  register: node_restart
+  changed_when: "'started' in node_restart.stdout"
+  failed_when: false

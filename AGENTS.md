@@ -53,11 +53,17 @@ shoal/
   observe/    # SEL/sensor polling, SOL session + marker parsing, telemetry, OCR
   deploy/     # ISO build/serve, sushy Virtual Media orchestration, job state machine
   common/     # shoal_common: shared Pydantic models, secret backend, utilities
+infra/ansible/            # lab automation: inventories, group_vars, roles, playbooks
+ansible.cfg               # project-local Ansible config
 prompts/                  # versioned prompt files (also referenced as shoal_core/prompts/)
 tests/                    # unit / integration / e2e
 SHOAL_COMPREHENSIVE_DESIGN_AND_IMPLEMENTATION_PLAN.md
 AGENTS.md
 ```
+
+The lab is driven entirely by Ansible (there is **no Makefile**). Lab config
+lives in `infra/ansible/inventory/group_vars/` as YAML vars, with secrets in
+`group_vars/all/vault.yml` (git-ignored; see `vault.yml.example`). See §3.
 
 **Dependency direction:** `discover`, `observe`, `deploy` may import `core` and
 `common`. `core` may import `common` only. `common` imports nothing internal.
@@ -67,22 +73,35 @@ Never create a cycle.
 
 ## 3. Commands
 
-The lab and app are driven through `make` targets (see design doc §8). Phase 0
-wires the lab; Phase 1 wires the app.
+The lab is driven through **Ansible playbooks** (see design doc §8). There is
+no Makefile. Phase 0 wires the lab; Phase 1 wires the app. Two Phase 0 lab
+modes are supported: direct host mode and VM-hosted mode with nested
+virtualization.
 
+One-time setup:
 ```bash
-make lab-up          # start infra: sushy-tools + NetBox + HTTP ISO server + Ollama
-make lab-down        # tear the lab down
-make dev-up          # run the Shoal app (single process)
-make demo-provision  # end-to-end demo against virtual nodes
-make test            # full test suite
-make lint            # ruff check
-make fmt             # ruff format
-make typecheck       # static type checking
+ansible-galaxy collection install -r infra/ansible/requirements.yml
+cp infra/ansible/inventory/group_vars/all/vault.yml.example \
+   infra/ansible/inventory/group_vars/all/vault.yml   # then edit; optionally ansible-vault encrypt
 ```
+Lab lifecycle (add `--ask-vault-pass` if your vault is encrypted). The same two
+playbooks serve both modes — the inventory you pass selects the mode:
+```bash
+# VM-hosted mode
+ansible-playbook -i infra/ansible/inventory/lab-vm.yml infra/ansible/playbooks/up.yml      # provision VM + converge stack + bootstrap NetBox
+ansible-playbook -i infra/ansible/inventory/lab-vm.yml infra/ansible/playbooks/smoke.yml    # validate Redfish/NetBox/AI/HTTP/serial dependencies
+ansible-playbook -i infra/ansible/inventory/lab-vm.yml infra/ansible/playbooks/down.yml     # clean slate: tear down stack + VM, disk, network, cached base image
+# Direct host mode
+ansible-playbook -i infra/ansible/inventory/lab.yml     infra/ansible/playbooks/up.yml      # converge stack on localhost + bootstrap NetBox
+ansible-playbook -i infra/ansible/inventory/lab.yml     infra/ansible/playbooks/smoke.yml    # validate dependencies
+ansible-playbook -i infra/ansible/inventory/lab.yml     infra/ansible/playbooks/down.yml     # tear down lab stack
+```
+`up.yml` and `down.yml` are the only entrypoints you normally run. They import
+the phase playbooks (`vm_provision`, `preflight`, `lab_up`, `bootstrap_netbox`,
+`lab_down`, `vm_destroy`), which can also be run individually; see
+`docs/lab-runbook.md`.
 
-Direct invocations (when not using make):
-
+Python quality commands (no make):
 ```bash
 ruff check . && ruff format --check .
 pytest                                  # all tests
@@ -92,16 +111,21 @@ pytest tests/core/test_normalize.py -k spec_deviant
 
 - **Python 3.11+.** Use the project virtualenv; dependencies are declared in
   `pyproject.toml`.
-- Always run `make lint` and `make test` before declaring a task done.
+- Always run `ruff check`, type checking, and `pytest` before declaring a task done.
+- Lab config is YAML under `infra/ansible/inventory/group_vars/` (shared
+  defaults in `all/defaults.yml`, mode overrides in `vm_mode.yml` /
+  `direct_mode.yml`, secrets in `all/vault.yml`). Do **not** introduce a
+  repo-level `.env` for lab config.
 
 ---
 
 ## 4. Coding Style
 
-- **Formatting/linting:** `ruff` (format + lint). Run `make fmt` before committing;
-  CI runs `ruff check` and will fail on violations. Don't hand-format around it.
+- **Formatting/linting:** `ruff` (format + lint). Run `ruff format` before
+  committing; CI runs `ruff check` and will fail on violations. Don't hand-format
+  around it.
 - **Typing:** full type hints on all public functions. Prefer modern syntax
-  (`str | None`, `list[X]`). Code should pass `make typecheck`.
+  (`str | None`, `list[X]`). Code should pass the project type checker.
 - **Async:** I/O (Redfish, NetBox, LLM, HTTP) is `async`. Don't block the event
   loop; wrap unavoidable blocking calls (e.g. subprocess for `dracut`/`xorriso`)
   appropriately.
@@ -111,8 +135,10 @@ pytest tests/core/test_normalize.py -k spec_deviant
   exceptions silently; never log secrets in the message.
 - **Docstrings:** one-line summary for every public function; document the contract
   (inputs, outputs, side effects), not the obvious.
-- **Config:** read configuration from environment (`.env`), never hard-code
-  endpoints, tokens, or model names. Keep `.env.example` current.
+- **Config:** lab config lives in Ansible YAML vars under
+  `infra/ansible/inventory/group_vars/` (secrets in `group_vars/all/vault.yml`);
+  app config is read from environment (`.env`). Never hard-code endpoints,
+  tokens, or model names. Keep `group_vars/all/vault.yml.example` current.
 
 ---
 
@@ -139,8 +165,14 @@ pytest tests/core/test_normalize.py -k spec_deviant
 - **Redact secrets** from every payload before the call.
 - Log every AI call: prompt hash, model, token counts, latency, and output. These
   logs must contain no secrets.
-- Local vs cloud is selected via env (`SHOAL_AI_PROVIDER`, `SHOAL_AI_MODEL`).
-  Don't assume a GPU: vision is cloud-preferred (the reference GPU has 2 GB VRAM).
+- Local vs cloud is selected via env: `SHOAL_AI_PROVIDER` (`ollama` | `cloud`),
+  `SHOAL_AI_MODEL`, `SHOAL_OLLAMA_URL` (base URL of the local Ollama container,
+  mode-specific), and `SHOAL_CLOUD_AI_BASE_URL` / `SHOAL_CLOUD_AI_API_KEY`
+  (used only when `SHOAL_AI_PROVIDER=cloud`; the API key lives in vault).
+  These are rendered to the app's `.env` by the `compose_stack` role. The
+  cloud API key is a secret — keep it in `group_vars/all/vault.yml`, never in
+  `defaults.yml` or a log. Don't assume a GPU: vision is cloud-preferred (the
+  reference GPU has 2 GB VRAM).
 
 ---
 
@@ -166,7 +198,8 @@ pytest tests/core/test_normalize.py -k spec_deviant
   `@pytest.mark.integration` (needs the lab) and `@pytest.mark.e2e`.
 - **Unit:** every public Core function, especially the hybrid normalizer and the
   deterministic/AI conflict policy.
-- **Integration:** against `sushy-tools` lab nodes (`make lab-up` first).
+- **Integration:** against `sushy-tools` lab nodes (run `up.yml` first, with the
+  direct or VM-hosted inventory).
 - **E2E:** full Discover → Observe → Deploy against the lab.
 - **Prompt regression:** golden inputs/outputs for normalization; update
   deliberately when a prompt changes.
@@ -181,8 +214,10 @@ pytest tests/core/test_normalize.py -k spec_deviant
 
 ## 9. Security & Secrets
 
-- Never commit secrets. `.env` is git-ignored; keep `.env.example` as the
-  documented template (placeholders only).
+- Never commit secrets. Lab secrets live in
+  `infra/ansible/inventory/group_vars/all/vault.yml` (git-ignored; see
+  `vault.yml.example` for the documented template with placeholders only).
+  Optionally encrypt it with `ansible-vault`.
 - BMC credentials go to the secret backend keyed by device/`bmc_ip`; code holds a
   `credential_ref`, never the password.
 - Don't log credentials, tokens, or full raw payloads that may contain them.

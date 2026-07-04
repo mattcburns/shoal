@@ -1,0 +1,38 @@
+---
+# Provision the L1 lab VM on the L0 host, then wait for it to become reachable.
+# Imported by up.yml; can also be run directly.
+
+- name: Provision L1 lab VM on L0 host
+  hosts: vm_l0
+  become: true
+  gather_facts: true
+  roles:
+    - role: lab_vm
+  tags: [provision]
+
+- name: Wait for lab VM to become reachable over SSH
+  hosts: shoal-lab-vm
+  gather_facts: false
+  tasks:
+    - name: Wait for SSH on lab VM
+      ansible.builtin.wait_for_connection:
+        timeout: 600
+        delay: 5
+
+    # sshd comes up long before cloud-init finishes installing packages
+    # (qemu-kvm, libvirt, docker, ...) and running runcmd. Without this gate the
+    # preflight/lab_up phases race a half-provisioned VM and fail (e.g.
+    # `which libvirtd` returns rc=1 because libvirt isn't installed yet).
+    # `cloud-init status --wait` blocks until first boot completes: rc 0 = done,
+    # rc 2 = done but degraded (recoverable errors); both mean packages/runcmd
+    # have run, so let the preflight checks be the real gate.
+    - name: Wait for cloud-init to finish (package install + runcmd)
+      ansible.builtin.command: cloud-init status --wait
+      register: lab_vm_cloud_init
+      changed_when: false
+      failed_when: lab_vm_cloud_init.rc not in [0, 2]
+      become: true
+
+    - name: Gather facts from lab VM
+      ansible.builtin.setup:
+  tags: [provision]

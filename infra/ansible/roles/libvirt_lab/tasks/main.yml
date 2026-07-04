@@ -1,0 +1,58 @@
+---
+# Configure libvirt for Shoal lab
+# This role sets up the libvirt network and creates virtual BMC nodes
+
+- name: Copy libvirt network definition
+  template:
+    src: lab-network.xml.j2
+    dest: /tmp/shoal-lab-net.xml
+    mode: '0644'
+  tags: [network]
+
+- name: Define libvirt network
+  command: virsh net-define /tmp/shoal-lab-net.xml
+  register: net_define
+  changed_when: "'defined' in net_define.stdout"
+  failed_when: false
+  tags: [network]
+
+- name: Start libvirt network
+  command: virsh net-start shoal-lab-net
+  register: net_start
+  changed_when: "'started' in net_start.stdout"
+  failed_when: false
+  tags: [network]
+
+- name: Set libvirt network to autostart
+  command: virsh net-autostart shoal-lab-net
+  register: net_autostart
+  changed_when: "'marked' in net_autostart.stdout"
+  failed_when: false
+  tags: [network]
+
+
+- name: Create virtual BMC nodes
+  include_tasks: create_node.yml
+  loop: "{{ shoal_bmc_nodes }}"
+  loop_control:
+    loop_var: node
+  tags: [nodes]
+
+- name: Wait for virtual nodes to boot
+  pause:
+    seconds: 10
+  tags: [wait]
+
+- name: Verify all nodes are running
+  shell: |
+    for node in {{ shoal_bmc_nodes | map(attribute='name') | join(' ') }}; do
+      virsh domstate $node
+    done
+  register: node_states
+  changed_when: false
+  tags: [verify]
+
+- name: Display node states
+  debug:
+    msg: "Virtual BMC nodes status:\n{{ node_states.stdout }}"
+  tags: [verify]

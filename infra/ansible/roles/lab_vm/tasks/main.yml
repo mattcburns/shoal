@@ -1,0 +1,244 @@
+---
+# Provision the L1 lab VM and its L0 management network.
+# Runs on the L0 host (l0 group, connection local). libvirt and disk operations
+# run with become:true (root) so bridge/interface creation succeeds -- this is
+# what fixes the "Operation not permitted" bridge-creation failure. User-scoped
+# artifacts (SSH key, downloads, rendered cloud-init, seed ISO) run become:false
+# so they stay owned by the operator.
+
+# ----- Prerequisites -----
+- name: Verify /dev/kvm present
+  ansible.builtin.stat:
+    path: /dev/kvm
+  register: lab_vm_kvm
+  become: false
+
+- name: Fail if /dev/kvm is missing on L0
+  ansible.builtin.fail:
+    msg: "/dev/kvm not found on the L0 host. Ensure CPU virtualization is enabled in firmware and the kvm module is loaded."
+  when: not lab_vm_kvm.stat.exists
+
+# Nested virtualization must be enabled on L0 so the L1 lab VM (host-passthrough)
+# can run the nested sushy-tools BMC node VMs with KVM acceleration. Check it
+# here -- before the VM is created -- so a misconfigured host fails fast with
+# actionable guidance instead of dying later inside the VM's preflight.
+- name: Read KVM nested virtualization state on L0
+  ansible.builtin.shell: >-
+    cat /sys/module/kvm_intel/parameters/nested 2>/dev/null
+    || cat /sys/module/kvm_amd/parameters/nested 2>/dev/null
+    || echo MISSING
+  register: lab_vm_nested
+  changed_when: false
+  failed_when: false
+  become: false
+
+- name: Fail if nested virtualization is not enabled on L0
+  ansible.builtin.assert:
+    that:
+      - "lab_vm_nested.stdout | trim in ['Y', '1']"
+    fail_msg: |
+      Nested virtualization is not enabled on the L0 host
+      (kvm_intel/kvm_amd 'nested' = '{{ lab_vm_nested.stdout | trim }}').
+      The lab VM cannot run the nested sushy-tools BMC nodes without it.
+
+      Enable it on the L0 host, then reload the KVM module or reboot:
+        Intel: echo 'options kvm_intel nested=1' | sudo tee /etc/modprobe.d/kvm-intel.conf
+        AMD:   echo 'options kvm_amd nested=1'   | sudo tee /etc/modprobe.d/kvm-amd.conf
+        sudo modprobe -r kvm_intel kvm_amd; sudo modprobe -a kvm_intel kvm_amd   # or reboot
+      Verify with: cat /sys/module/kvm_intel/parameters/nested
+    success_msg: "Nested virtualization is enabled on L0 (nested={{ lab_vm_nested.stdout | trim }})."
+  become: false
+
+- name: Verify required commands present
+  # 'command' is a shell builtin, not an executable, so it must run via the
+  # shell module -- ansible.builtin.command would try to exec a binary named
+  # 'command' and fail with "[Errno 2] No such file or directory: b'command'".
+  ansible.builtin.shell: "command -v {{ item }}"
+  loop: [virsh, qemu-img, genisoimage, curl]
+  changed_when: false
+  become: false
+
+# ----- SSH keypair (operator-owned) -----
+- name: Ensure SSH key directory exists
+  ansible.builtin.file:
+    path: "{{ shoal_lab_vm_ssh_key | dirname }}"
+    state: directory
+    mode: "0700"
+  become: false
+
+- name: Create or reuse SSH keypair for lab VM
+  community.crypto.openssh_keypair:
+    path: "{{ shoal_lab_vm_ssh_key }}"
+    type: ed25519
+    comment: shoal-lab-vm
+  register: lab_vm_keypair
+  become: false
+
+# ----- Work + images directories -----
+- name: Ensure work directory exists
+  ansible.builtin.file:
+    path: "{{ shoal_lab_vm_work_dir }}"
+    state: directory
+    mode: "0755"
+  become: false
+
+- name: Ensure images directory exists
+  ansible.builtin.file:
+    path: "{{ shoal_lab_vm_base_image | dirname }}"
+    state: directory
+  become: true
+
+# ----- L0 management network -----
+- name: Render management network XML
+  ansible.builtin.template:
+    src: mgmt-network.xml.j2
+    dest: "{{ shoal_lab_vm_work_dir }}/mgmt-network.xml"
+    mode: "0644"
+  become: false
+  register: lab_vm_mgmt_net_xml
+
+- name: Define management network
+  community.libvirt.virt_net:
+    command: define
+    name: "{{ shoal_mgmt_network_name }}"
+    uri: "{{ shoal_libvirt_uri }}"
+    xml: "{{ lookup('ansible.builtin.file', lab_vm_mgmt_net_xml.dest) }}"
+
+- name: Ensure management network is active
+  community.libvirt.virt_net:
+    state: active
+    name: "{{ shoal_mgmt_network_name }}"
+    uri: "{{ shoal_libvirt_uri }}"
+
+- name: Enable management network autostart
+  community.libvirt.virt_net:
+    autostart: true
+    name: "{{ shoal_mgmt_network_name }}"
+    uri: "{{ shoal_libvirt_uri }}"
+
+# ----- Host firewall (ufw) -----
+# A libvirt NAT network only works if the host allows the VM's forwarded TCP/UDP
+# and its DNS/DHCP queries to the host's dnsmasq. ufw ships default-deny FORWARD
+# and INPUT policies and only whitelists ICMP echo, so an active ufw lets the VM
+# ping out but silently blocks DNS and package downloads -- cloud-init then fails
+# in its apt/snap phase. When ufw is active, open the management bridge.
+- name: Check host ufw status
+  ansible.builtin.command: ufw status
+  register: lab_vm_ufw_status
+  changed_when: false
+  failed_when: false
+
+- name: Open management bridge in ufw (input to host dnsmasq for DNS/DHCP)
+  community.general.ufw:
+    rule: allow
+    direction: in
+    interface: "{{ shoal_mgmt_network_bridge }}"
+  when:
+    - shoal_lab_vm_manage_ufw | bool
+    - lab_vm_ufw_status.rc == 0
+    - "'Status: active' in lab_vm_ufw_status.stdout"
+
+- name: Allow routed egress from the management bridge in ufw (VM -> internet via NAT)
+  community.general.ufw:
+    rule: allow
+    route: true
+    interface_in: "{{ shoal_mgmt_network_bridge }}"
+  when:
+    - shoal_lab_vm_manage_ufw | bool
+    - lab_vm_ufw_status.rc == 0
+    - "'Status: active' in lab_vm_ufw_status.stdout"
+
+# ----- Base image + overlay disk -----
+- name: Download base cloud image (skip if already present)
+  ansible.builtin.get_url:
+    url: "{{ shoal_lab_vm_base_image_url }}"
+    dest: "{{ shoal_lab_vm_base_image }}"
+    mode: "0644"
+    timeout: 600
+  become: true
+
+- name: Stat VM overlay disk
+  ansible.builtin.stat:
+    path: "{{ shoal_lab_vm_overlay }}"
+  register: lab_vm_overlay_stat
+
+- name: Create VM overlay disk
+  ansible.builtin.command:
+    argv:
+      - qemu-img
+      - create
+      - -f
+      - qcow2
+      - -F
+      - qcow2
+      - -b
+      - "{{ shoal_lab_vm_base_image }}"
+      - "{{ shoal_lab_vm_overlay }}"
+      - "{{ shoal_lab_vm_disk_size }}"
+  when: not lab_vm_overlay_stat.stat.exists
+  changed_when: true
+
+# ----- cloud-init -----
+- name: Render cloud-init user-data
+  ansible.builtin.template:
+    src: user-data.j2
+    dest: "{{ shoal_lab_vm_work_dir }}/user-data"
+    mode: "0644"
+  become: false
+
+- name: Render cloud-init meta-data
+  ansible.builtin.template:
+    src: meta-data.j2
+    dest: "{{ shoal_lab_vm_work_dir }}/meta-data"
+    mode: "0644"
+  become: false
+
+- name: Render cloud-init network-config
+  ansible.builtin.template:
+    src: network-config.j2
+    dest: "{{ shoal_lab_vm_work_dir }}/network-config"
+    mode: "0644"
+  become: false
+
+- name: Build cloud-init seed ISO
+  ansible.builtin.command:
+    argv:
+      - genisoimage
+      - -output
+      - "{{ shoal_lab_vm_seed_iso }}"
+      - -volid
+      - cidata
+      - -joliet
+      - -rock
+      - "{{ shoal_lab_vm_work_dir }}/user-data"
+      - "{{ shoal_lab_vm_work_dir }}/meta-data"
+      - "{{ shoal_lab_vm_work_dir }}/network-config"
+  become: true
+  changed_when: true
+
+# ----- VM domain -----
+- name: Render VM domain XML
+  ansible.builtin.template:
+    src: vm-domain.xml.j2
+    dest: "{{ shoal_lab_vm_work_dir }}/vm-domain.xml"
+    mode: "0644"
+  become: false
+  register: lab_vm_domain_xml
+
+- name: Define lab VM
+  community.libvirt.virt:
+    command: define
+    uri: "{{ shoal_libvirt_uri }}"
+    xml: "{{ lookup('ansible.builtin.file', lab_vm_domain_xml.dest) }}"
+
+- name: Ensure lab VM is running
+  community.libvirt.virt:
+    state: running
+    name: "{{ shoal_lab_vm_name }}"
+    uri: "{{ shoal_libvirt_uri }}"
+
+- name: Enable lab VM autostart
+  community.libvirt.virt:
+    autostart: true
+    name: "{{ shoal_lab_vm_name }}"
+    uri: "{{ shoal_libvirt_uri }}"

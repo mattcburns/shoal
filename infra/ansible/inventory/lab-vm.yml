@@ -1,0 +1,24 @@
+---
+# VM-hosted lab inventory.
+# - l0:        the operator host (connection local).
+# - vm_l0:     l0 subgroup that runs VM provisioning/teardown (VM mode only).
+# - lab_vms:   the L1 lab VM, reached over SSH on the management network.
+# All sit under the `vm_mode` parent group so vm_mode.yml vars apply.
+all:
+  children:
+    vm_mode:
+      children:
+        l0:
+          children:
+            vm_l0:
+              hosts:
+                localhost:
+                  ansible_connection: local
+                  ansible_python_interpreter: "{{ ansible_playbook_python }}"
+        lab_vms:
+          hosts:
+            shoal-lab-vm:
+              ansible_host: 192.168.122.100
+              ansible_user: lab
+              ansible_ssh_private_key_file: "{{ lookup('env', 'HOME') }}/.ssh/shoal_lab_vm"
+              ansible_python_interpreter: /usr/bin/python3

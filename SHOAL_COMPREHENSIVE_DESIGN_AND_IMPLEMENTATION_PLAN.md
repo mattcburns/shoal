@@ -349,15 +349,22 @@ Also defined: `ProvisioningProfile`, `DeviceStatus` (current observed state), `W
 - Text (local): `llama3.2:3b` (Q4_K_M) fits modest VRAM; `qwen2.5:7b` (Q4) needs a larger GPU
 - Vision: **prefer a cloud provider**; local `*-vision:11b` will not fit a P600 and runs CPU-bound (slow). The hybrid pipeline keeps most inputs off the vision path entirely.
 
-**LiteLLM Configuration** (centralized in `shoal_core/ai.py`):
+**LiteLLM Configuration** (centralized in `shoal_core/ai.py`). The env vars
+below are rendered to the app's `.env` by the `compose_stack` role from Ansible
+vars (`defaults.yml`, `vm_mode.yml` / `direct_mode.yml`, `vault.yml`):
 ```python
 import os
 import litellm
 
 def get_llm_client():
-    provider = os.getenv("SHOAL_AI_PROVIDER", "ollama")
+    provider = os.getenv("SHOAL_AI_PROVIDER", "ollama")   # "ollama" | "cloud"
     model = os.getenv("SHOAL_AI_MODEL", "llama3.2:3b")
-    # ... configure base_url, api_key, etc.
+    ollama_url = os.getenv("SHOAL_OLLAMA_URL", "http://localhost:11434")
+    cloud_base_url = os.getenv("SHOAL_CLOUD_AI_BASE_URL", "")
+    cloud_api_key = os.getenv("SHOAL_CLOUD_AI_API_KEY", "")
+    # For ollama: point LiteLLM at ollama_url (e.g. ollama/<model>).
+    # For cloud: use cloud_base_url + cloud_api_key (key is a vault secret).
+    # Redact secrets from any payload before the call (Golden Rule §1.3).
 ```
 
 ---
@@ -385,25 +392,45 @@ def get_llm_client():
 
 ## 8. Lab & Development Environment
 
-**Recommended Local Setup**:
-- One powerful laptop/desktop (32+ GB RAM ideal)
-- `sushy-tools` + libvirt/KVM creating 3–5 virtual Redfish nodes
-- Docker Compose running:
-  - Shoal app (single FastAPI process for MVP)
-  - NetBox + PostgreSQL + Redis
-  - Lightweight **HTTP** server for ISOs (no TLS in lab — see Section 11)
-  - Ollama (or cloud keys)
-- **SOL test harness**: the libvirt guests expose a real serial console, so the SOL marker protocol (Section 4.3) can be exercised locally even though sushy-tools does not proxy Redfish `SerialConsole`.
+**Recommended Lab Setup (two supported modes)**:
+- **Mode A: Direct host mode**
+  - One powerful laptop/desktop (32+ GB RAM ideal)
+  - `sushy-tools` + libvirt/KVM creating 3–5 virtual Redfish nodes
+  - Docker Compose running:
+    - Shoal app (single FastAPI process for MVP)
+    - NetBox + PostgreSQL + Redis
+    - Lightweight **HTTP** server for ISOs (no TLS in lab — see Section 11)
+    - Ollama (or cloud keys)
+- **Mode B: VM-hosted mode (preferred for host isolation)**
+  - L0: developer machine runs the hypervisor
+  - L1: dedicated lab VM runs Ansible target host, Docker Compose, libvirt/KVM, and `sushy-tools`
+  - L2: virtual Redfish nodes run inside the lab VM via nested virtualization
+  - Nested virtualization must expose CPU virtualization extensions and provide `/dev/kvm` in the lab VM for acceptable performance
+- **SOL test harness**: the libvirt guests expose a real serial console, so the SOL marker protocol (Section 4.3) can be exercised in either mode even though sushy-tools does not proxy Redfish `SerialConsole`.
 
-**Quick Start Command Goals**:
+**Quick Start Command Goals** (Ansible; there is no Makefile):
 ```bash
 git clone ...
 cd shoal
-make lab-up          # infra: sushy-tools + NetBox + HTTP ISO server + Ollama
-make dev-up          # the Shoal app (single process)
-make demo-provision  # end-to-end demo against virtual nodes
-make lab-down        # tear the lab down
+# one-time: install collections + configure secrets
+ansible-galaxy collection install -r infra/ansible/requirements.yml
+cp infra/ansible/inventory/group_vars/all/vault.yml.example \
+   infra/ansible/inventory/group_vars/all/vault.yml   # edit; optionally ansible-vault encrypt
+# VM-hosted mode (add --ask-vault-pass if encrypted)
+ansible-playbook -i infra/ansible/inventory/lab-vm.yml infra/ansible/playbooks/up.yml     # provision VM + sushy-tools + NetBox + HTTP ISO server + Ollama
+ansible-playbook -i infra/ansible/inventory/lab-vm.yml infra/ansible/playbooks/smoke.yml  # validates Redfish/NetBox/AI/HTTP/serial dependencies
+ansible-playbook -i infra/ansible/inventory/lab-vm.yml infra/ansible/playbooks/down.yml   # clean slate: tear down stack + VM
+# Direct host mode (same playbooks; the inventory selects the mode)
+ansible-playbook -i infra/ansible/inventory/lab.yml     infra/ansible/playbooks/up.yml     # infra on localhost
+ansible-playbook -i infra/ansible/inventory/lab.yml     infra/ansible/playbooks/smoke.yml  # validates dependencies
+ansible-playbook -i infra/ansible/inventory/lab.yml     infra/ansible/playbooks/down.yml   # tear the lab down
+make dev-up          # the Shoal app (single process)   [Phase 1]
+make demo-provision  # end-to-end demo against virtual nodes [Phase 2+]
 ```
+Lab config is YAML under `infra/ansible/inventory/group_vars/` (shared defaults
+in `all/defaults.yml`, mode overrides in `vm_mode.yml` / `direct_mode.yml`,
+secrets in `all/vault.yml`). The `make dev-up` / `make demo-provision` targets
+are introduced in Phase 1 / Phase 2 respectively.
 
 ---
 
@@ -418,18 +445,21 @@ Each phase is designed so multiple AI agents can work in parallel on different m
 **Rationale**: Every subsequent phase depends on a working lab. Discover needs real Redfish data, Observe needs SEL/sensor + serial sources, and Deploy needs Virtual Media targets — all provided by virtual Redfish nodes. See Section 8 for the recommended setup.
 
 **Tasks**:
-1. Provision the host: install libvirt/KVM, Docker, and Docker Compose; verify hardware virtualization is enabled
-2. Stand up `sushy-tools` (libvirt backend) emulating 3–5 virtual Redfish/BMC nodes
-3. Bring up the supporting stack via Docker Compose:
+1. Choose and prepare a lab execution mode:
+   - Direct host mode: install libvirt/KVM, Docker, and Docker Compose on the developer host
+   - VM-hosted mode: provision a dedicated lab VM and enable nested virtualization (`/dev/kvm` available in the VM)
+2. Verify virtualization prerequisites for the selected mode (hardware virtualization enabled, KVM usable where the lab actually runs)
+3. Stand up `sushy-tools` (libvirt backend) emulating 3–5 virtual Redfish/BMC nodes
+4. Bring up the supporting stack via Docker Compose:
    - NetBox + PostgreSQL + Redis
    - Lightweight HTTP server for serving ISOs
    - Ollama (local) and/or configured cloud AI provider keys
-4. Configure a dedicated, isolated lab network so virtual BMC endpoints are reachable from Shoal
-5. Verify you can read each virtual node's **libvirt serial console** (the SOL test harness for Phase 2)
-6. Seed NetBox with an API token and minimal bootstrap data (site, device role) for integration tests
-7. Create `.env.example` documenting all required endpoints/credentials (BMC IPs, NetBox URL/token, AI provider)
-8. Add `make lab-up` / `make lab-down` targets (or scripts) to start/stop the lab reproducibly
-9. Write a connectivity smoke-test script that validates every dependency
+5. Configure a dedicated, isolated lab network so virtual BMC endpoints are reachable from Shoal (two libvirt networks on different subnets: an L0 management network for the lab VM and a nested BMC network for the virtual nodes)
+6. Verify you can read each virtual node's **libvirt serial console** (the SOL test harness for Phase 2)
+7. Seed NetBox with an API token and minimal bootstrap data (site, device role) for integration tests
+8. Document all required endpoints/credentials as Ansible YAML vars: non-secret defaults in `infra/ansible/inventory/group_vars/all/defaults.yml`, mode overrides in `vm_mode.yml` / `direct_mode.yml`, and secrets in `group_vars/all/vault.yml` (git-ignored; documented via `vault.yml.example`)
+9. Drive the lab lifecycle entirely from Ansible playbooks (no Makefile): `up.yml` / `smoke.yml` / `down.yml` for both modes (the inventory you pass selects VM-hosted vs direct mode)
+10. Write a connectivity smoke-test playbook (`smoke.yml`) that validates every dependency (Redfish, NetBox, AI, HTTP ISO server, serial consoles)
 
 **Acceptance Criteria**:
 - A Redfish client (`sushy`) can reach each virtual node at `/redfish/v1/Systems/...` and read system info
@@ -437,7 +467,8 @@ Each phase is designed so multiple AI agents can work in parallel on different m
 - Ollama (or the chosen cloud provider) answers a trivial completion through the planned config
 - The ISO HTTP server serves a test file reachable from a virtual node's network
 - Each node's serial console is readable
-- `make lab-up` brings the full lab up and the smoke-test passes end-to-end
+- In VM-hosted mode, nested virtualization is confirmed usable (`/dev/kvm` in the lab VM) before node bring-up
+- `up.yml` + `smoke.yml` passes end-to-end as `ansible-playbook` commands (in either mode, selected by the inventory)
 
 ### Phase 1: Foundation & Scaffolding (1–3 days)
 

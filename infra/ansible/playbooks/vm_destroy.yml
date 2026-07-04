@@ -1,0 +1,19 @@
+---
+# Tear down the L1 lab VM and all L0 resources. Also removes the cached base
+# image so a re-provision downloads a fresh copy.
+
+- name: Destroy L1 lab VM and L0 management network
+  hosts: vm_l0
+  become: true
+  gather_facts: false
+  tasks:
+    # Run the role's teardown tasks (tasks/destroy.yml). `tasks_from` is only
+    # honored by import_role/include_role -- the play-level `roles:` keyword
+    # always runs tasks/main.yml (provisioning), which during teardown would
+    # wrongly redefine and try to START the VM off the stale overlay and fail
+    # on the backing-file permission check.
+    - name: Run lab_vm teardown tasks
+      ansible.builtin.import_role:
+        name: lab_vm
+        tasks_from: destroy
+  tags: [destroy]

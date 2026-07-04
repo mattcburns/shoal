@@ -1,0 +1,132 @@
+version: '3.8'
+
+services:
+  netbox:
+    # Pinned to NetBox v4.5.x because v4.6+ (netbox-docker 5.x) switched to v2
+    # API tokens that require API_TOKEN_PEPPERS and a key+token pair, breaking
+    # the bootstrap playbook's fixed-key token creation. Verify the tag before
+    # upgrading.
+    image: docker.io/netboxcommunity/netbox:v4.5.10-4.0.2
+    container_name: shoal-netbox
+    environment:
+      - SUPERUSER_NAME=admin
+      - SUPERUSER_EMAIL=admin@example.com
+      - SUPERUSER_PASSWORD=admin
+      - DB_NAME=netbox
+      - DB_USER=netbox
+      - DB_PASSWORD={{ shoal_netbox_postgres_password }}
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD={{ shoal_redis_password }}
+      - ALLOWED_HOSTS=*
+    ports:
+      # NetBox serves on container port 8080 via nginx-unit; host port is the lab
+      # value from shoal_netbox_port (default 8000).
+      - "{{ shoal_netbox_port }}:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      # Match the upstream netbox-docker healthcheck endpoint (port 8080).
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/login/ || exit 1"]
+      interval: 15s
+      timeout: 3s
+      retries: 40
+      start_period: 120s
+    volumes:
+      - netbox-media:/opt/netbox/netbox/media
+      - netbox-reports:/opt/netbox/netbox/reports
+      - netbox-scripts:/opt/netbox/netbox/scripts
+      - {{ shoal_compose_dir }}/netbox-config/secret_key.py:/etc/netbox/config/secret_key.py:ro
+      - {{ shoal_compose_dir }}/netbox-config/api_token_pepper_1:/run/secrets/api_token_pepper_1:ro
+    restart: unless-stopped
+    networks:
+      - shoal-lab
+
+  postgres:
+    image: postgres:15
+    container_name: shoal-postgres
+    environment:
+      - POSTGRES_DB=netbox
+      - POSTGRES_USER=netbox
+      - POSTGRES_PASSWORD={{ shoal_netbox_postgres_password }}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "netbox"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks:
+      - shoal-lab
+
+  redis:
+    image: redis:7-alpine
+    container_name: shoal-redis
+    command: redis-server --requirepass {{ shoal_redis_password }}
+    volumes:
+      - redis-data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "{{ shoal_redis_password }}", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - shoal-lab
+
+  http-server:
+    image: nginx:alpine
+    container_name: shoal-http-server
+    ports:
+      - "{{ shoal_iso_server_port }}:80"
+    volumes:
+      - {{ shoal_iso_server_dir }}:/usr/share/nginx/html:ro
+    restart: unless-stopped
+    networks:
+      - shoal-lab
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: shoal-ollama
+    ports:
+      - "{{ shoal_ollama_port }}:11434"
+    volumes:
+      - ollama-data:/root/.ollama
+    restart: unless-stopped
+    networks:
+      - shoal-lab
+
+  telemetry-db:
+    image: postgres:15
+    container_name: shoal-telemetry-db
+    environment:
+      - POSTGRES_DB=shoal_telemetry
+      - POSTGRES_USER=shoal
+      - POSTGRES_PASSWORD=shoal_password
+    ports:
+      - "{{ shoal_telemetry_db_port }}:5432"
+    volumes:
+      - telemetry-data:/var/lib/postgresql/data
+    restart: unless-stopped
+    networks:
+      - shoal-lab
+
+volumes:
+  netbox-media:
+  netbox-reports:
+  netbox-scripts:
+  postgres-data:
+  redis-data:
+  ollama-data:
+  telemetry-data:
+
+networks:
+  shoal-lab:
+    name: shoal-lab
+    driver: bridge

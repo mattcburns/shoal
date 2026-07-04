@@ -1,0 +1,78 @@
+---
+# Deploy and configure sushy-tools
+# This role sets up the sushy-tools container to emulate Redfish/BMC endpoints
+- name: Ensure sushy-tools directory exists
+  file:
+    path: "{{ shoal_sushy_dir }}"
+    state: directory
+    mode: "0755"
+  tags: [config]
+
+- name: Generate sushy-tools basic-auth password file
+  community.general.htpasswd:
+    path: "{{ shoal_sushy_dir }}/auth.htpasswd"
+    name: "{{ shoal_bmc_username }}"
+    password: "{{ shoal_bmc_password }}"
+    crypt_scheme: bcrypt
+    state: present
+  tags: [config]
+
+- name: Copy sushy-tools config file
+  template:
+    src: sushy-conf.py.j2
+    dest: "{{ shoal_sushy_dir }}/conf.py"
+    mode: '0644'
+  tags: [config]
+
+- name: Copy sushy-tools Docker Compose file
+  template:
+    src: docker-compose.sushy.yml.j2
+    dest: "{{ shoal_sushy_dir }}/docker-compose.sushy.yml"
+    mode: '0644'
+  tags: [compose]
+
+- name: Start sushy-tools container
+  shell: |
+    cd {{ shoal_sushy_dir }}
+    docker compose -f docker-compose.sushy.yml up -d --force-recreate
+  register: sushy_start
+  changed_when: "'Creating' in sushy_start.stdout or 'Starting' in sushy_start.stdout or 'Recreating' in sushy_start.stdout"
+  tags: [start]
+
+- name: Wait for sushy-tools to be ready
+  uri:
+    url: "http://localhost:{{ shoal_sushy_port }}/redfish/v1/"
+    url_username: "{{ shoal_bmc_username }}"
+    url_password: "{{ shoal_bmc_password }}"
+    force_basic_auth: true
+    method: GET
+    status_code: 200
+  register: sushy_health
+  until: sushy_health.status == 200
+  retries: 30
+  delay: 2
+  tags: [wait]
+
+- name: Verify Redfish Systems collection is reachable
+  uri:
+    url: "http://localhost:{{ shoal_sushy_port }}/redfish/v1/Systems"
+    url_username: "{{ shoal_bmc_username }}"
+    url_password: "{{ shoal_bmc_password }}"
+    force_basic_auth: true
+    method: GET
+    status_code: 200
+  register: systems_collection
+  tags: [verify]
+
+- name: Display sushy-tools status
+  debug:
+    msg: |
+      sushy-tools is running and all Redfish endpoints are accessible.
+      
+      Redfish API: http://{{ ansible_host }}:{{ shoal_sushy_port }}/redfish/v1/
+      
+      Virtual BMC nodes:
+      {% for node in shoal_bmc_nodes %}
+      - {{ node.name }}: http://{{ ansible_host }}:{{ shoal_sushy_port }}/redfish/v1/Systems
+      {% endfor %}
+  tags: [status]

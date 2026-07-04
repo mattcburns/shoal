@@ -1,0 +1,120 @@
+---
+# Tear down the L1 lab VM and all L0 resources created by provisioning.
+# Runs on l0 with become:true. Removes: VM, overlay disk, cached base image,
+# L0 management network, generated work directory, and (optionally) the SSH key.
+
+- name: List libvirt domains
+  community.libvirt.virt:
+    command: list_vms
+    uri: "{{ shoal_libvirt_uri }}"
+  register: lab_vm_domains
+  failed_when: false
+
+- name: Destroy lab VM (power off)
+  community.libvirt.virt:
+    command: destroy
+    name: "{{ shoal_lab_vm_name }}"
+    uri: "{{ shoal_libvirt_uri }}"
+  when: shoal_lab_vm_name in (lab_vm_domains.list_vms | default([]))
+  failed_when: false
+
+- name: Undefine lab VM
+  community.libvirt.virt:
+    command: undefine
+    name: "{{ shoal_lab_vm_name }}"
+    uri: "{{ shoal_libvirt_uri }}"
+  when: shoal_lab_vm_name in (lab_vm_domains.list_vms | default([]))
+  failed_when: false
+
+- name: Remove VM overlay disk
+  ansible.builtin.file:
+    path: "{{ shoal_lab_vm_overlay }}"
+    state: absent
+  failed_when: false
+
+- name: Remove cached base image
+  ansible.builtin.file:
+    path: "{{ shoal_lab_vm_base_image }}"
+    state: absent
+  failed_when: false
+
+- name: List libvirt networks
+  community.libvirt.virt_net:
+    command: list_nets
+    uri: "{{ shoal_libvirt_uri }}"
+  register: lab_vm_networks
+  failed_when: false
+
+- name: Deactivate management network
+  community.libvirt.virt_net:
+    state: inactive
+    name: "{{ shoal_mgmt_network_name }}"
+    uri: "{{ shoal_libvirt_uri }}"
+  when: shoal_mgmt_network_name in (lab_vm_networks.list_nets | default([]))
+  failed_when: false
+
+- name: Undefine management network
+  community.libvirt.virt_net:
+    command: undefine
+    name: "{{ shoal_mgmt_network_name }}"
+    uri: "{{ shoal_libvirt_uri }}"
+  when: shoal_mgmt_network_name in (lab_vm_networks.list_nets | default([]))
+  failed_when: false
+
+- name: Check host ufw status
+  ansible.builtin.command: ufw status
+  register: lab_vm_ufw_status
+  changed_when: false
+  failed_when: false
+
+- name: Remove ufw input rule for the management bridge
+  community.general.ufw:
+    rule: allow
+    direction: in
+    interface: "{{ shoal_mgmt_network_bridge }}"
+    delete: true
+  when:
+    - lab_vm_ufw_status.rc == 0
+    - "'Status: active' in lab_vm_ufw_status.stdout"
+  failed_when: false
+
+- name: Remove ufw routed rule for the management bridge
+  community.general.ufw:
+    rule: allow
+    route: true
+    interface_in: "{{ shoal_mgmt_network_bridge }}"
+    delete: true
+  when:
+    - lab_vm_ufw_status.rc == 0
+    - "'Status: active' in lab_vm_ufw_status.stdout"
+  failed_when: false
+
+- name: Remove generated work directory
+  ansible.builtin.file:
+    path: "{{ shoal_lab_vm_work_dir }}"
+    state: absent
+  become: false
+  failed_when: false
+
+- name: Remove stale lab VM host key from the operator's known_hosts
+  # The VM gets a fresh SSH host key every time it is recreated, so a leftover
+  # entry for its IP makes the next `up` fail host-key verification (and breaks
+  # manual ssh). Drop it as part of a clean teardown. Runs as the operator (not
+  # root) so it targets ~/.ssh/known_hosts; ssh-keygen -R handles plain and
+  # hashed entries and is a no-op when none exist.
+  ansible.builtin.command:
+    cmd: "ssh-keygen -R {{ shoal_lab_vm_host }}"
+  become: false
+  changed_when: false
+  failed_when: false
+
+- name: Remove lab VM SSH keypair (optional)
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - "{{ shoal_lab_vm_ssh_key }}"
+    - "{{ shoal_lab_vm_ssh_key }}.pub"
+  when: shoal_remove_ssh_key | bool
+  become: false
+  failed_when: false

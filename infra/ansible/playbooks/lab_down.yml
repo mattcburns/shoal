@@ -1,0 +1,76 @@
+---
+# Tear down the Shoal lab stack on the selected target host
+# This playbook stops all lab services and cleans up resources
+
+- name: Tear down Shoal lab stack
+  hosts: shoal-lab-vm
+  gather_facts: true
+  become: true
+  # In VM-hosted mode this play targets the lab VM; tolerate it being already
+  # gone/off so down.yml stays idempotent (vm_destroy does the real cleanup).
+  ignore_unreachable: true
+  environment:
+    # Match lab_up.yml: libvirt cleanup must target the system daemon, not the
+    # per-user session that a non-root SSH user would otherwise default to.
+    LIBVIRT_DEFAULT_URI: qemu:///system
+
+  tasks:
+    - name: Stop Docker Compose stack
+      shell: |
+        cd {{ shoal_compose_dir }}
+        docker compose -f docker-compose.lab.yml down -v
+      register: compose_down
+      changed_when: "'Stopping' in compose_down.stdout or 'Removing' in compose_down.stdout"
+      failed_when: false
+      tags: [compose]
+
+    - name: Stop sushy-tools container
+      shell: |
+        docker stop shoal-sushy-tools || true
+        docker rm shoal-sushy-tools || true
+      register: sushy_stop
+      changed_when: "'shoal-sushy-tools' in sushy_stop.stdout"
+      failed_when: false
+      tags: [sushy]
+
+    - name: Stop virtual BMC nodes
+      shell: |
+        for node in {{ shoal_bmc_nodes | map(attribute='name') | join(' ') }}; do
+          virsh destroy $node || true
+          virsh undefine $node --remove-all-storage || true
+        done
+      register: nodes_stop
+      changed_when: "'Destroying' in nodes_stop.stdout or 'Undefining' in nodes_stop.stdout"
+      failed_when: false
+      tags: [libvirt]
+
+    - name: Stop libvirt network
+      shell: |
+        virsh net-destroy shoal-lab-net || true
+        virsh net-undefine shoal-lab-net || true
+      register: net_stop
+      changed_when: "'Destroyed' in net_stop.stdout or 'Undefine' in net_stop.stdout"
+      failed_when: false
+      tags: [libvirt]
+
+    - name: Clean up ISO server directory
+      file:
+        path: "{{ shoal_iso_server_dir }}"
+        state: absent
+      tags: [cleanup]
+
+    - name: Display teardown status
+      debug:
+        msg: |
+          Shoal lab stack has been torn down.
+          
+          Cleaned up:
+          - Docker Compose stack (NetBox, PostgreSQL, Redis, Ollama, HTTP server)
+          - sushy-tools container
+          - Virtual BMC nodes
+          - Libvirt network
+          - ISO server directory
+          
+          To bring the lab back up, run up.yml with the matching inventory:
+          - direct mode:    ansible-playbook -i infra/ansible/inventory/lab.yml     infra/ansible/playbooks/up.yml
+          - VM-hosted mode: ansible-playbook -i infra/ansible/inventory/lab-vm.yml infra/ansible/playbooks/up.yml

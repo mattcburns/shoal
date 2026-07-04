@@ -1,0 +1,10 @@
+---
+# Direct host mode: lab services run on the L0 host itself (127.0.0.1) and the
+# virtual BMC nodes live in the L0 host's libvirt.
+
+shoal_service_host: 127.0.0.1
+shoal_serial_delegate: localhost
+
+shoal_netbox_url: "http://127.0.0.1:{{ shoal_netbox_port }}"
+shoal_ollama_url: "http://127.0.0.1:{{ shoal_ollama_port }}"
+shoal_telemetry_db_url: "postgresql://{{ shoal_telemetry_db_user }}:{{ shoal_telemetry_db_password }}@127.0.0.1:{{ shoal_telemetry_db_port }}/{{ shoal_telemetry_db_name }}"

@@ -1,0 +1,12 @@
+---
+# Ansible collections required by the Shoal lab automation.
+# One-time install: ansible-galaxy collection install -r infra/ansible/requirements.yml
+collections:
+  - name: community.libvirt
+    version: ">=2.2.0"
+  - name: community.general
+    version: ">=13.0.0"
+  - name: community.crypto
+    version: ">=3.0.0"
+  - name: ansible.posix
+    version: ">=2.0.0"

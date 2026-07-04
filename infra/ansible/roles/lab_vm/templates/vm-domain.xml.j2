@@ -1,0 +1,49 @@
+<domain type='kvm'>
+  <name>{{ shoal_lab_vm_name }}</name>
+  <memory unit='MiB'>{{ shoal_lab_vm_memory }}</memory>
+  <vcpu placement='static'>{{ shoal_lab_vm_cpus }}</vcpu>
+  <os>
+    <type arch='x86_64' machine='pc-q35-6.2'>hvm</type>
+    <boot dev='hd'/>
+  </os>
+  <features>
+    <acpi/>
+    <apic/>
+    <pae/>
+  </features>
+  <cpu mode='host-passthrough' check='none'/>
+  <clock offset='utc'>
+    <timer name='rtc' tickpolicy='catchup'/>
+    <timer name='pit' tickpolicy='delay'/>
+    <timer name='hpet' present='no'/>
+  </clock>
+  <on_poweroff>destroy</on_poweroff>
+  <on_reboot>restart</on_reboot>
+  <on_crash>destroy</on_crash>
+  <devices>
+    <emulator>/usr/bin/qemu-system-x86_64</emulator>
+    <disk type='file' device='disk'>
+      <driver name='qemu' type='qcow2'/>
+      <source file='{{ shoal_lab_vm_overlay }}'/>
+      <target dev='vda' bus='virtio'/>
+    </disk>
+    <disk type='file' device='cdrom'>
+      <driver name='qemu' type='raw'/>
+      <source file='{{ shoal_lab_vm_seed_iso }}'/>
+      <target dev='sda' bus='sata'/>
+      <readonly/>
+    </disk>
+    <interface type='network'>
+      <mac address='{{ shoal_lab_vm_mac }}'/>
+      <source network='{{ shoal_mgmt_network_name }}'/>
+      <model type='virtio'/>
+    </interface>
+    <serial type='pty'>
+      <target port='0'/>
+    </serial>
+    <console type='pty'>
+      <target type='serial' port='0'/>
+    </console>
+    <memballoon model='virtio'/>
+  </devices>
+</domain>

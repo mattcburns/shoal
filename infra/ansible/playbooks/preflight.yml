@@ -1,0 +1,164 @@
+---
+# Preflight checks for Shoal lab target hosts
+# Verifies that the target host has prerequisites for running the Shoal lab stack
+
+- name: Preflight checks for Shoal lab host
+  hosts: shoal-lab-vm
+  gather_facts: true
+  become: true
+
+  tasks:
+    - name: Check nested virtualization support
+      block:
+        - name: Check if /dev/kvm exists
+          stat:
+            path: /dev/kvm
+          register: kvm_device
+
+        - name: Fail if /dev/kvm is not available
+          fail:
+            msg: |
+              KVM acceleration is not available on this host.
+              /dev/kvm device not found.
+              
+              To enable virtualization support:
+              1. Ensure the host CPU supports virtualization (vmx/svm)
+              2. If using VM-hosted mode, enable nested virtualization on the outer host:
+                 - Intel: echo 'options kvm-intel nested=1' > /etc/modprobe.d/kvm-intel.conf
+                 - AMD: echo 'options kvm-amd nested=1' > /etc/modprobe.d/kvm-amd.conf
+              3. Reload KVM modules or reboot the host
+              4. In VM-hosted mode, ensure the lab VM uses CPU model 'host-passthrough'
+          when: not kvm_device.stat.exists
+
+        - name: Verify KVM device is readable/writable
+          shell: test -r /dev/kvm -a -w /dev/kvm
+          register: kvm_access
+          changed_when: false
+          failed_when: kvm_access.rc != 0
+
+    - name: Check CPU virtualization extensions
+      block:
+        - name: Check for vmx (Intel) or svm (AMD) flags
+          shell: |
+            grep -E '(vmx|svm)' /proc/cpuinfo || true
+          register: cpu_virt_flags
+          changed_when: false
+
+        - name: Fail if no virtualization extensions found
+          fail:
+            msg: |
+              CPU virtualization extensions not found in /proc/cpuinfo.
+              Expected 'vmx' (Intel) or 'svm' (AMD) flags.
+              
+              Ensure the target host exposes virtualization extensions.
+              In VM-hosted mode, also ensure:
+              - CPU model: host-passthrough
+              - Nested virtualization enabled on the outer host
+          when: cpu_virt_flags.stdout == ""
+
+    - name: Check memory availability
+      block:
+        - name: Get total memory
+          shell: |
+            free -m | awk '/^Mem:/{print $2}'
+          register: total_memory_mb
+          changed_when: false
+
+        - name: Verify minimum memory (8GB)
+          assert:
+            that:
+              - total_memory_mb.stdout | int >= 8192
+            fail_msg: |
+              Insufficient memory: {{ total_memory_mb.stdout }}MB
+              Minimum required: 8192MB (8GB)
+              Recommended: 16384MB (16GB)
+
+    - name: Check disk space
+      block:
+        - name: Get available disk space on /
+          shell: |
+            df -m / | awk 'NR==2{print $4}'
+          register: available_disk_mb
+          changed_when: false
+
+        - name: Verify minimum disk space (50GB)
+          assert:
+            that:
+              - available_disk_mb.stdout | int >= 51200
+            fail_msg: |
+              Insufficient disk space: {{ available_disk_mb.stdout }}MB
+              Minimum required: 51200MB (50GB)
+
+    - name: Check libvirt prerequisites
+      block:
+        - name: Check if libvirtd is installed
+          command: which libvirtd
+          register: libvirtd_check
+          failed_when: libvirtd_check.rc != 0
+          changed_when: false
+
+        - name: Check if libvirtd is running
+          systemd:
+            name: libvirtd
+            state: started
+          register: libvirtd_status
+
+        - name: Fail if libvirtd is not running
+          fail:
+            msg: "libvirtd service is not running"
+          when: libvirtd_status.status.ActiveState != "active"
+
+    - name: Check Docker prerequisites
+      block:
+        - name: Check if Docker is installed
+          command: which docker
+          register: docker_check
+          failed_when: docker_check.rc != 0
+          changed_when: false
+
+        - name: Check if Docker daemon is running
+          systemd:
+            name: docker
+            state: started
+          register: docker_status
+
+        - name: Fail if Docker is not running
+          fail:
+            msg: "Docker service is not running"
+          when: docker_status.status.ActiveState != "active"
+
+        - name: Check if Docker Compose is available
+          command: docker compose version
+          register: compose_check
+          failed_when: compose_check.rc != 0
+          changed_when: false
+
+    - name: Check network prerequisites
+      block:
+        # Lab networks are managed explicitly: the L0 host management network is
+        # created by the lab_vm role (vm_provision.yml / up.yml), and the
+        # nested BMC network (shoal-lab-net) is created later by the libvirt_lab
+        # role. We do NOT rely on libvirt's 'default' network here, so just
+        # surface the current network state.
+        - name: List libvirt networks
+          command: virsh net-list --all
+          register: libvirt_networks
+          changed_when: false
+
+        - name: Show libvirt networks
+          debug:
+            msg: "{{ libvirt_networks.stdout_lines }}"
+
+    - name: Display preflight summary
+      debug:
+        msg: |
+          Preflight checks passed successfully!
+          
+          System information:
+          - Total memory: {{ total_memory_mb.stdout }}MB
+          - Available disk: {{ available_disk_mb.stdout }}MB
+          - CPU virtualization: {{ 'vmx' if 'vmx' in cpu_virt_flags.stdout else 'svm' if 'svm' in cpu_virt_flags.stdout else 'unknown' }}
+          - Nested KVM: Available
+          - libvirtd: Running
+          - Docker: Running
+          - Docker Compose: Available

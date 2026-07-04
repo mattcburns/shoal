@@ -1,0 +1,12 @@
+# Ansible secrets (operator-managed; never commit)
+infra/ansible/inventory/group_vars/all/vault.yml
+
+# Generated lab VM artifacts rendered by the lab_vm role
+infra/ansible/.work/
+
+# Large binary artifacts
+infra/images/*.img
+infra/cloud-init-seed.iso
+
+# Legacy shell-based config (no longer used by automation)
+.env

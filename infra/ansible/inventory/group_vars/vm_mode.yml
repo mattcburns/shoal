@@ -1,0 +1,11 @@
+---
+# VM-hosted mode: lab services run inside the L1 lab VM and are published on
+# the VM management IP (shoal_lab_vm_host). Smoke checks run from the L0 host
+# against that IP; serial-console checks delegate into the VM.
+
+shoal_service_host: "{{ shoal_lab_vm_host }}"
+shoal_serial_delegate: shoal-lab-vm
+
+shoal_netbox_url: "http://{{ shoal_lab_vm_host }}:{{ shoal_netbox_port }}"
+shoal_ollama_url: "http://{{ shoal_lab_vm_host }}:{{ shoal_ollama_port }}"
+shoal_telemetry_db_url: "postgresql://{{ shoal_telemetry_db_user }}:{{ shoal_telemetry_db_password }}@{{ shoal_lab_vm_host }}:{{ shoal_telemetry_db_port }}/{{ shoal_telemetry_db_name }}"

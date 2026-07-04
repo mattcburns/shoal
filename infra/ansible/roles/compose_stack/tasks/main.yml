@@ -1,0 +1,168 @@
+---
+# Deploy and configure Docker Compose stack
+# This role deploys NetBox, PostgreSQL, Redis, Ollama, and HTTP server
+
+- name: Copy Docker Compose file
+  template:
+    src: docker-compose.lab.yml.j2
+    dest: "{{ shoal_compose_dir }}/docker-compose.lab.yml"
+    mode: '0644'
+  tags: [config]
+
+- name: Copy environment file
+  template:
+    src: env.j2
+    dest: "{{ shoal_compose_dir }}/.env"
+    mode: '0600'
+  tags: [config]
+
+- name: Ensure NetBox configuration directory exists
+  file:
+    path: "{{ shoal_compose_dir }}/netbox-config"
+    state: directory
+    mode: '0755'
+  tags: [config]
+
+- name: Generate NetBox secret key if missing
+  shell:
+    executable: /bin/bash
+    cmd: |
+      if [ -s "{{ shoal_compose_dir }}/netbox-config/secret_key.py" ]; then
+        exit 0
+      fi
+      python3 - <<'PY'
+      import secrets
+      key = ''.join(secrets.choice('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*(-_=+)') for _ in range(64))
+      print(f'SECRET_KEY = {key!r}')
+      PY
+  register: generated_secret
+  no_log: true
+  changed_when: generated_secret.stdout | length > 0
+  tags: [config]
+
+- name: Write NetBox secret key file
+  copy:
+    content: "{{ generated_secret.stdout | default('') }}"
+    dest: "{{ shoal_compose_dir }}/netbox-config/secret_key.py"
+    mode: '0644'
+  when: generated_secret.stdout | default('') | length > 0
+  no_log: true
+  tags: [config]
+
+- name: Generate NetBox API token pepper if missing
+  shell:
+    executable: /bin/bash
+    cmd: |
+      if [ -s "{{ shoal_compose_dir }}/netbox-config/api_token_pepper_1" ]; then
+        exit 0
+      fi
+      python3 - <<'PY'
+      import secrets
+      pepper = ''.join(secrets.choice('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*(-_=+)') for _ in range(64))
+      print(pepper)
+      PY
+  register: generated_api_token_pepper
+  no_log: true
+  changed_when: generated_api_token_pepper.stdout | length > 0
+  tags: [config]
+
+- name: Write NetBox API token pepper file
+  copy:
+    content: "{{ generated_api_token_pepper.stdout | default('') }}"
+    dest: "{{ shoal_compose_dir }}/netbox-config/api_token_pepper_1"
+    mode: '0644'
+  when: generated_api_token_pepper.stdout | default('') | length > 0
+  no_log: true
+  tags: [config]
+
+- name: Start Docker Compose stack
+  shell: |
+    cd {{ shoal_compose_dir }}
+    docker compose -f docker-compose.lab.yml up -d
+  register: compose_up
+  changed_when: "'Creating' in compose_up.stdout or 'Starting' in compose_up.stdout"
+  tags: [start]
+
+- name: Wait for PostgreSQL to be healthy
+  shell:
+    executable: /bin/bash
+    cmd: |
+      for i in {1..30}; do
+        health=$(docker inspect -f '{% raw %}{{.State.Health.Status}}{% endraw %}' shoal-postgres 2>/dev/null || echo "")
+        if [ "$health" = "healthy" ]; then exit 0; fi
+        sleep 2
+      done
+      echo "Timed out waiting for PostgreSQL to become healthy" >&2
+      docker inspect -f '{% raw %}{{json .State.Health}}{% endraw %}' shoal-postgres 2>/dev/null || true
+      docker logs --tail 50 shoal-postgres 2>&1 || true
+      exit 1
+  register: pg_ready
+  changed_when: false
+  tags: [wait]
+
+- name: Wait for Redis to be healthy
+  shell:
+    executable: /bin/bash
+    cmd: |
+      for i in {1..30}; do
+        health=$(docker inspect -f '{% raw %}{{.State.Health.Status}}{% endraw %}' shoal-redis 2>/dev/null || echo "")
+        if [ "$health" = "healthy" ]; then exit 0; fi
+        sleep 2
+      done
+      echo "Timed out waiting for Redis to become healthy" >&2
+      docker inspect -f '{% raw %}{{json .State.Health}}{% endraw %}' shoal-redis 2>/dev/null || true
+      docker logs --tail 50 shoal-redis 2>&1 || true
+      exit 1
+  register: redis_ready
+  changed_when: false
+  tags: [wait]
+
+- name: Wait for NetBox to be healthy
+  shell:
+    executable: /bin/bash
+    cmd: |
+      for i in {1..180}; do
+        health=$(docker inspect -f '{% raw %}{{.State.Health.Status}}{% endraw %}' shoal-netbox 2>/dev/null || echo "")
+        if [ "$health" = "healthy" ]; then exit 0; fi
+        sleep 5
+      done
+      echo "Timed out waiting for NetBox to become healthy" >&2
+      docker inspect -f '{% raw %}{{json .State.Health}}{% endraw %}' shoal-netbox 2>/dev/null || true
+      docker logs --tail 50 shoal-netbox 2>&1 || true
+      exit 1
+  register: netbox_healthy
+  changed_when: false
+  tags: [wait]
+
+- name: Wait for Ollama to be ready
+  uri:
+    url: "{{ shoal_ollama_url }}/api/tags"
+    method: GET
+    status_code: 200
+  register: ollama_ready
+  until: ollama_ready.status == 200
+  retries: 20
+  delay: 3
+  tags: [wait]
+
+- name: Pull Ollama model
+  shell: |
+    docker exec shoal-ollama ollama pull {{ shoal_ai_model }}
+  register: model_pull
+  changed_when: "'already exists' not in model_pull.stdout"
+  failed_when: false
+  tags: [ollama]
+
+- name: Display Compose stack status
+  debug:
+    msg: |
+      Docker Compose stack is running.
+      
+      Services:
+      - NetBox: {{ shoal_netbox_url }}
+      - PostgreSQL: localhost:5432 (netbox)
+      - Redis: localhost:6379
+      - Ollama: {{ shoal_ollama_url }}
+      - HTTP Server: http://{{ ansible_host }}:{{ shoal_iso_server_port }}
+      - Telemetry DB: localhost:5433 (shoal_telemetry)
+  tags: [status]

@@ -1,0 +1,46 @@
+---
+# Bring up the full Shoal lab stack on the selected target host
+# This playbook converges all lab components: libvirt, sushy-tools, compose stack
+
+- name: Bring up Shoal lab stack
+  hosts: shoal-lab-vm
+  gather_facts: true
+  become: true
+  environment:
+    # Ensure all libvirt client commands target the system daemon rather than
+    # the per-user session (the default for non-root SSH users).
+    LIBVIRT_DEFAULT_URI: qemu:///system
+
+  roles:
+    - role: host_prereqs
+      tags: [prereqs]
+    - role: libvirt_lab
+      tags: [libvirt]
+    - role: sushy_tools
+      tags: [sushy]
+    - role: compose_stack
+      tags: [compose]
+
+  post_tasks:
+
+    - name: Display lab status
+      debug:
+        msg: |
+          Shoal lab stack is up and running!
+          
+          Services:
+          - NetBox: {{ shoal_netbox_url }}
+          - Ollama: {{ shoal_ollama_url }}
+          - HTTP ISO Server: http://{{ ansible_host }}:{{ shoal_iso_server_port }}
+          - Telemetry DB: {{ shoal_telemetry_db_url }}
+          
+          Virtual BMC Nodes (via sushy-tools):
+          {% for node in shoal_bmc_nodes %}
+          - {{ node.name }}: Redfish collection at http://{{ ansible_host }}:{{ shoal_sushy_port }}/redfish/v1/Systems
+          {% endfor %}
+          
+          Next steps:
+          1. Run smoke checks:
+             ansible-playbook -i <inventory> infra/ansible/playbooks/smoke.yml
+          2. Bootstrap NetBox (already run by up.yml):
+             ansible-playbook -i <inventory> infra/ansible/playbooks/bootstrap_netbox.yml

@@ -1,0 +1,66 @@
+---
+# Shared, non-secret Shoal lab defaults. Loaded for every host in every
+# inventory. Mode-specific overrides live in vm_mode.yml / direct_mode.yml;
+# secrets live in vault.yml.
+
+# --- Lab VM (L1) provisioning ---
+shoal_lab_vm_name: shoal-lab
+shoal_lab_vm_user: lab
+shoal_lab_vm_host: 192.168.122.100
+shoal_lab_vm_ssh_key: "{{ lookup('env', 'HOME') }}/.ssh/shoal_lab_vm"
+shoal_lab_vm_memory: 16384        # MiB
+shoal_lab_vm_cpus: 8
+shoal_lab_vm_disk_size: 100G
+shoal_lab_vm_mac: "52:54:00:00:00:64"
+shoal_lab_vm_base_image_url: https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64.img
+
+# --- L0 management network (host libvirt net the VM attaches to) ---
+# Must be a different subnet from shoal_lab_network.
+shoal_mgmt_network_name: shoal-mgmt-net
+shoal_mgmt_network: 192.168.122.0/24
+shoal_mgmt_network_gateway: 192.168.122.1
+shoal_mgmt_network_bridge: shoalbr0
+shoal_mgmt_network_dhcp_start: 192.168.122.200
+shoal_mgmt_network_dhcp_end: 192.168.122.254
+
+# --- Lab BMC network (nested NAT net created inside the VM) ---
+# Must differ from shoal_mgmt_network AND from libvirt's default network,
+# which commonly auto-selects 192.168.122.0/24 or 192.168.123.0/24.
+shoal_lab_network: 192.168.124.0/24
+shoal_lab_network_gateway: 192.168.124.1
+shoal_lab_network_bridge: virbr1
+shoal_bmc_nodes:
+  - { name: shoal-node-1, ip: 192.168.124.10, mac: "52:54:00:00:01:01" }
+  - { name: shoal-node-2, ip: 192.168.124.11, mac: "52:54:00:00:01:02" }
+  - { name: shoal-node-3, ip: 192.168.124.12, mac: "52:54:00:00:01:03" }
+  - { name: shoal-node-4, ip: 192.168.124.13, mac: "52:54:00:00:01:04" }
+  - { name: shoal-node-5, ip: 192.168.124.14, mac: "52:54:00:00:01:05" }
+
+# --- Service ports (published on the lab service host) ---
+shoal_netbox_port: 8000
+shoal_sushy_port: 8001
+shoal_iso_server_port: 8080
+shoal_ollama_port: 11434
+shoal_telemetry_db_port: 5433
+shoal_redis_port: 6379
+
+# --- AI provider (see design doc §6) ---
+# Provider is "ollama" (local, served by the shoal-ollama container) or "cloud".
+# The Ollama base URL is mode-specific (see vm_mode.yml / direct_mode.yml).
+# Cloud provider base URL is only used when shoal_ai_provider == "cloud"; leave
+# empty for local Ollama. Common cloud values:
+#   Groq   https://api.groq.com/openai/v1
+#   OpenAI https://api.openai.com/v1
+shoal_ai_provider: ollama
+shoal_ai_model: llama3.2:3b
+shoal_cloud_ai_base_url: ""
+
+# --- Paths on the target host (where the lab stack runs) ---
+shoal_infra_dir: /opt/shoal/infra
+shoal_compose_dir: /opt/shoal/infra
+shoal_sushy_dir: /opt/shoal/infra/sushy-tools
+shoal_iso_server_dir: /srv/iso
+
+# --- Telemetry DB (non-secret parts) ---
+shoal_telemetry_db_name: shoal_telemetry
+shoal_telemetry_db_user: shoal

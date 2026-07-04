@@ -1,0 +1,37 @@
+#cloud-config
+hostname: {{ shoal_lab_vm_name }}
+users:
+  - name: {{ shoal_lab_vm_user }}
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    shell: /bin/bash
+    ssh_authorized_keys:
+      - {{ lab_vm_keypair.public_key }}
+package_update: true
+package_upgrade: true
+packages:
+  # Ubuntu 22.04 (jammy): there is no 'qemu-kvm' package (use qemu-system-x86),
+  # and the Compose v2 plugin from Ubuntu's archive is 'docker-compose-v2'
+  # (Docker's 'docker-compose-plugin' lives only in download.docker.com).
+  - qemu-system-x86
+  - qemu-utils
+  - libvirt-daemon-system
+  - libvirt-clients
+  - bridge-utils
+  - virtinst
+  - docker.io
+  - docker-compose-v2
+  - python3
+  - python3-pip
+  - python3-venv
+  - ansible
+  - git
+  - curl
+  - wget
+runcmd:
+  - systemctl enable --now libvirtd
+  - systemctl enable --now docker
+  - usermod -aG libvirt {{ shoal_lab_vm_user }}
+  - usermod -aG docker {{ shoal_lab_vm_user }}
+  - pip3 install sushy pynetbox pyyaml requests
+  - mkdir -p /opt/shoal
+  - chown {{ shoal_lab_vm_user }}:{{ shoal_lab_vm_user }} /opt/shoal

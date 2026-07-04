@@ -1,0 +1,94 @@
+---
+# Install host prerequisites for Shoal lab
+# This role ensures all required packages and services are installed
+
+- name: Update package cache (Debian family)
+  apt:
+    update_cache: yes
+    cache_valid_time: 3600
+  when: ansible_os_family == "Debian"
+  tags: [packages]
+
+- name: Install required packages (Debian family)
+  apt:
+    name:
+      - python3
+      - python3-pip
+      - python3-venv
+      - libvirt-daemon-system
+      - libvirt-clients
+      - qemu-kvm
+      - qemu-utils
+      - bridge-utils
+      - virtinst
+      - docker.io
+      # Ubuntu 22.04 (jammy) ships the Compose v2 CLI plugin as
+      # 'docker-compose-v2' (universe); 'docker-compose-plugin' is Docker's
+      # own repo name and has no candidate in Ubuntu's archive.
+      - docker-compose-v2
+      - git
+      - curl
+      - wget
+    state: present
+  when: ansible_os_family == "Debian"
+  tags: [packages]
+
+- name: Note manual package setup for non-Debian systems
+  debug:
+    msg: "Automatic package install is defined for Debian-family hosts only; install prerequisites manually for {{ ansible_os_family }}."
+  when: ansible_os_family != "Debian"
+  tags: [packages]
+
+- name: Start and enable libvirtd
+  systemd:
+    name: libvirtd
+    state: started
+    enabled: yes
+  tags: [services]
+
+- name: Start and enable Docker
+  systemd:
+    name: docker
+    state: started
+    enabled: yes
+  tags: [services]
+
+- name: Add user to libvirt group
+  user:
+    name: "{{ ansible_user }}"
+    groups: libvirt
+    append: yes
+  tags: [permissions]
+
+- name: Add user to docker group
+  user:
+    name: "{{ ansible_user }}"
+    groups: docker
+    append: yes
+  tags: [permissions]
+
+- name: Install Python packages via pip
+  pip:
+    name:
+      - sushy
+      - pynetbox
+      - pyyaml
+      - requests
+      - passlib
+    state: present
+    executable: pip3
+  tags: [python]
+
+- name: Create Shoal infrastructure directory
+  file:
+    path: "{{ shoal_infra_dir }}"
+    state: directory
+    mode: "0755"
+  tags: [directories]
+
+- name: Create ISO server directory
+  file:
+    path: "{{ shoal_iso_server_dir }}"
+    state: directory
+    mode: "0755"
+  tags: [directories]

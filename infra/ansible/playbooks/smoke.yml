@@ -1,0 +1,116 @@
+---
+# Validate that every Shoal lab dependency is reachable.
+# Runs on the L0 host (l0); HTTP checks hit shoal_service_host (the VM IP in
+# VM-hosted mode, 127.0.0.1 in direct mode). Serial-console checks delegate to
+# the host that owns the nested libvirt (shoal_serial_delegate).
+# Run with:
+#   ansible-playbook -i infra/ansible/inventory/lab-vm.yml infra/ansible/playbooks/smoke.yml   (VM-hosted)
+#   ansible-playbook -i infra/ansible/inventory/lab.yml     infra/ansible/playbooks/smoke.yml   (direct)
+
+- name: Validate Shoal lab dependencies
+  hosts: l0
+  gather_facts: false
+  tasks:
+    - name: Check NetBox API
+      ansible.builtin.uri:
+        url: "http://{{ shoal_service_host }}:{{ shoal_netbox_port }}/api/"
+        headers:
+          Authorization: "Token {{ shoal_netbox_api_token }}"
+        method: GET
+        status_code: [200]
+        timeout: 10
+      register: smoke_netbox
+      no_log: true
+      failed_when: false
+      changed_when: false
+
+    - name: Check Redfish root
+      ansible.builtin.uri:
+        url: "http://{{ shoal_service_host }}:{{ shoal_sushy_port }}/redfish/v1/"
+        url_username: "{{ shoal_bmc_username }}"
+        url_password: "{{ shoal_bmc_password }}"
+        force_basic_auth: true
+        method: GET
+        status_code: [200]
+        timeout: 10
+      register: smoke_redfish_root
+      failed_when: false
+      changed_when: false
+
+    - name: Check Redfish Systems collection
+      ansible.builtin.uri:
+        url: "http://{{ shoal_service_host }}:{{ shoal_sushy_port }}/redfish/v1/Systems"
+        url_username: "{{ shoal_bmc_username }}"
+        url_password: "{{ shoal_bmc_password }}"
+        force_basic_auth: true
+        method: GET
+        status_code: [200]
+        timeout: 10
+      register: smoke_redfish_systems
+      failed_when: false
+      changed_when: false
+
+    - name: Check Ollama
+      ansible.builtin.uri:
+        url: "http://{{ shoal_service_host }}:{{ shoal_ollama_port }}/api/tags"
+        method: GET
+        status_code: [200]
+        timeout: 10
+      register: smoke_ollama
+      failed_when: false
+      changed_when: false
+
+    - name: Check ISO HTTP server
+      ansible.builtin.uri:
+        url: "http://{{ shoal_service_host }}:{{ shoal_iso_server_port }}/"
+        method: GET
+        status_code: [200, 403, 404]
+        timeout: 10
+      register: smoke_iso
+      failed_when: false
+      changed_when: false
+
+    - name: Check each node serial console
+      ansible.builtin.command: "virsh ttyconsole {{ node.name }}"
+      loop: "{{ shoal_bmc_nodes }}"
+      loop_control:
+        loop_var: node
+        label: "{{ node.name }}"
+      delegate_to: "{{ shoal_serial_delegate }}"
+      environment:
+        LIBVIRT_DEFAULT_URI: qemu:///system
+      register: smoke_serial
+      changed_when: false
+      failed_when: false
+
+    - name: Assert every serial console is attached
+      ansible.builtin.assert:
+        that:
+          - res.rc == 0
+          - res.stdout | trim | length > 0
+        fail_msg: "Serial console check failed for {{ res.node.name }} (rc={{ res.rc }}, stderr={{ res.stderr | default('') | trim }})"
+        success_msg: "Serial console OK for {{ res.node.name }} -> {{ res.stdout | trim }}"
+      loop: "{{ smoke_serial.results }}"
+      loop_control:
+        loop_var: res
+        label: "{{ res.node.name }}"
+
+    - name: Assert HTTP dependency checks
+      ansible.builtin.assert:
+        that:
+          - smoke_netbox.status == 200
+          - smoke_redfish_root.status == 200
+          - smoke_redfish_systems.status == 200
+          - smoke_ollama.status == 200
+          - smoke_iso.status in [200, 403, 404]
+        fail_msg: >-
+          Smoke checks failed --
+          NetBox={{ smoke_netbox.status | default('err') }},
+          Redfish root={{ smoke_redfish_root.status | default('err') }},
+          Redfish Systems={{ smoke_redfish_systems.status | default('err') }},
+          Ollama={{ smoke_ollama.status | default('err') }},
+          ISO HTTP={{ smoke_iso.status | default('err') }}.
+          (200/403/404 are acceptable for the ISO server.)
+        success_msg: >-
+          All HTTP smoke checks passed: NetBox, Redfish root, Redfish Systems,
+          Ollama, and the ISO HTTP server.
