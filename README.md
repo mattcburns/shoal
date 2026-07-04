@@ -13,7 +13,7 @@ The lab topology is:
 - `infra/ansible/inventory/` - file inventories (`lab-vm.yml`, `lab.yml`) and `group_vars/` (YAML config + vault secrets)
 - `infra/ansible/playbooks/` - lab lifecycle playbooks. Primary entrypoints: `up.yml` (set up services) and `down.yml` (tear down to a clean slate), plus `smoke.yml`. These import the phase playbooks (`vm_provision.yml`, `preflight.yml`, `lab_up.yml`, `bootstrap_netbox.yml`, `lab_down.yml`, `vm_destroy.yml`), which can also be run individually.
 - `infra/ansible/roles/` - `lab_vm` (VM + L0 management network), plus `host_prereqs`, `libvirt_lab`, `sushy_tools`, `compose_stack`, `netbox_bootstrap`
-- `infra/docker-compose.lab.yml` - lab service stack definition
+- `infra/ansible/roles/compose_stack/templates/docker-compose.lab.yml.j2` - Ansible template for the lab service stack (rendered on the target host during `lab_up.yml`)
 
 ## Lab docs
 - [Lab Runbook (Quick Ops)](docs/lab-runbook.md)
@@ -23,7 +23,7 @@ The lab topology is:
 Install and verify:
 
 - `libvirt` / `virsh`
-- `qemu-kvm`, `qemu-img`, `genisoimage`
+- `qemu-system-x86`, `qemu-img`, `genisoimage`
 - `ansible-playbook`
 - `ssh`, `scp`
 

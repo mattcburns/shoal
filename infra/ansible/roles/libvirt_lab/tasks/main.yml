@@ -12,22 +12,33 @@
 - name: Define libvirt network
   command: virsh net-define /tmp/shoal-lab-net.xml
   register: net_define
-  changed_when: "'defined' in net_define.stdout"
-  failed_when: false
+  changed_when: >
+    'defined' in (((net_define.stdout | default('')) ~ (net_define.stderr | default(''))) | lower)
+  failed_when: >
+    net_define.rc != 0 and
+    'already exists' not in (((net_define.stdout | default('')) ~ (net_define.stderr | default(''))) | lower)
   tags: [network]
 
 - name: Start libvirt network
   command: virsh net-start shoal-lab-net
   register: net_start
-  changed_when: "'started' in net_start.stdout"
-  failed_when: false
+  changed_when: >
+    'started' in (((net_start.stdout | default('')) ~ (net_start.stderr | default(''))) | lower)
+  failed_when: >
+    net_start.rc != 0 and
+    'already active' not in (((net_start.stdout | default('')) ~ (net_start.stderr | default(''))) | lower)
+  tags: [network]
+
+- name: Read libvirt network status
+  command: virsh net-info shoal-lab-net
+  register: net_info
+  changed_when: false
   tags: [network]
 
 - name: Set libvirt network to autostart
   command: virsh net-autostart shoal-lab-net
-  register: net_autostart
-  changed_when: "'marked' in net_autostart.stdout"
-  failed_when: false
+  when: net_info.stdout is search('Autostart:\s+no')
+  changed_when: true
   tags: [network]
 - name: Ensure default libvirt images directory exists
   file:
@@ -80,11 +91,6 @@
   loop_control:
     loop_var: node
   tags: [nodes]
-
-- name: Wait for virtual nodes to boot
-  pause:
-    seconds: 10
-  tags: [wait]
 
 - name: Verify all nodes are running
   shell: |

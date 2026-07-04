@@ -21,12 +21,15 @@
     src: vm-node.xml.j2
     dest: /tmp/vm-node-{{ node.name }}.xml
     mode: "0644"
+  register: node_xml
 
-- name: Define node from rendered template
+- name: Define or refresh node from rendered template
+  # Refresh persistent domain config when the template changes while keeping
+  # normal runs idempotent when there is no XML drift.
   command: virsh define /tmp/vm-node-{{ node.name }}.xml
-  when: node_info.rc != 0
+  when: node_info.rc != 0 or node_xml.changed
   register: node_define
-  changed_when: "'defined' in node_define.stdout"
+  changed_when: node_info.rc != 0 or node_xml.changed
 
 - name: Ensure node autostarts
   command: virsh autostart {{ node.name }}
