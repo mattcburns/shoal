@@ -20,7 +20,10 @@
         cd {{ shoal_compose_dir }}
         docker compose -f docker-compose.lab.yml down -v
       register: compose_down
-      changed_when: "'Stopping' in compose_down.stdout or 'Removing' in compose_down.stdout"
+      changed_when: >
+        'Stopping' in ((compose_down.stdout | default('')) ~ (compose_down.stderr | default('')))
+        or 'Removing' in ((compose_down.stdout | default('')) ~ (compose_down.stderr | default('')))
+        or 'Deleted' in ((compose_down.stdout | default('')) ~ (compose_down.stderr | default('')))
       failed_when: false
       tags: [compose]
 

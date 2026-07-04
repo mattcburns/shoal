@@ -34,9 +34,13 @@
 - name: Start sushy-tools container
   shell: |
     cd {{ shoal_sushy_dir }}
-    docker compose -f docker-compose.sushy.yml up -d --force-recreate
+    docker compose -f docker-compose.sushy.yml up -d
   register: sushy_start
-  changed_when: "'Creating' in sushy_start.stdout or 'Starting' in sushy_start.stdout or 'Recreating' in sushy_start.stdout"
+  changed_when: >
+    'Creating' in ((sushy_start.stdout | default('')) ~ (sushy_start.stderr | default('')))
+    or 'Starting' in ((sushy_start.stdout | default('')) ~ (sushy_start.stderr | default('')))
+    or 'Recreating' in ((sushy_start.stdout | default('')) ~ (sushy_start.stderr | default('')))
+    or 'Pulling' in ((sushy_start.stdout | default('')) ~ (sushy_start.stderr | default('')))
   tags: [start]
 
 - name: Wait for sushy-tools to be ready
