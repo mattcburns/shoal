@@ -59,7 +59,7 @@ func (f *Fake) GetSystem(_ context.Context, systemID string) (SystemInfo, error)
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for _, s := range f.Systems {
-		if systemID == "" || s.ID == systemID {
+		if systemID == "" || s.ID == systemID || s.Name == systemID {
 			return s, nil
 		}
 	}

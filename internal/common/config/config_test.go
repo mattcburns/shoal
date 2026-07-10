@@ -49,6 +49,9 @@ func TestLoadCustom(t *testing.T) {
 	t.Setenv("SHOAL_TELEMETRY_DATABASE_URL", "postgres://shoal@localhost:5433/shoal_telemetry")
 	t.Setenv("SHOAL_AI_PROVIDER", "ollama")
 	t.Setenv("SHOAL_RECONCILE_FAIL_ORPHANS", "false")
+	t.Setenv("SHOAL_SERIAL_SSH_HOST", "192.168.122.100")
+	t.Setenv("SHOAL_SERIAL_SSH_USER", "lab")
+	t.Setenv("SHOAL_SERIAL_SSH_KEY", "/tmp/key")
 	c, err := config.Load()
 	if err != nil {
 		t.Fatal(err)
@@ -64,6 +67,9 @@ func TestLoadCustom(t *testing.T) {
 	}
 	if c.ReconcileFailOrphans {
 		t.Fatal("expected false")
+	}
+	if c.SerialSSHHost != "192.168.122.100" || c.SerialSSHKey != "/tmp/key" {
+		t.Fatalf("serial ssh: host=%q key=%q", c.SerialSSHHost, c.SerialSSHKey)
 	}
 }
 

@@ -170,6 +170,8 @@ type StartJobRequest struct {
 	SerialTarget  string `json:"serial_target"`          // libvirt domain or SOL target
 	SystemID      string `json:"system_id,omitempty"`
 	CredentialRef string `json:"credential_ref,omitempty"` // alt: pre-seeded secret (skip user/pass)
+	// StallTimeout is the SOL silence window before ReportStall (0 = Orchestrator default).
+	StallTimeout time.Duration `json:"stall_timeout,omitempty"`
 }
 
 // CancelJobRequest cancels an in-flight provisioning job.

@@ -55,13 +55,20 @@ func cmdDeployRun(args []string) int {
 	bmcPass := fs.String("bmc-pass", cfg.BMCPassword, "BMC password (never logged)")
 	serial := fs.String("serial-target", "", "libvirt domain or console path")
 	isoURL := fs.String("iso-url", "", "BMC-reachable ISO URL on lab :8080")
-	systemID := fs.String("system-id", "", "optional Redfish system id")
+	systemID := fs.String("system-id", "", "optional Redfish system id or name")
 	profile := fs.String("profile-ref", "spike", "profile ref")
+	sshHost := fs.String("serial-ssh-host", cfg.SerialSSHHost, "SSH host for nested libvirt serial (VM mode)")
+	sshUser := fs.String("serial-ssh-user", cfg.SerialSSHUser, "SSH user for serial delegate")
+	sshKey := fs.String("serial-ssh-key", cfg.SerialSSHKey, "SSH private key for serial delegate")
 	wait := fs.Bool("wait", true, "wait for terminal job state")
 	waitTimeout := fs.Duration("wait-timeout", 30*time.Minute, "max wait when -wait")
+	stallTimeout := fs.Duration("stall-timeout", 3*time.Minute, "SOL silence before stall failure")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
+	cfg.SerialSSHHost = *sshHost
+	cfg.SerialSSHUser = *sshUser
+	cfg.SerialSSHKey = *sshKey
 
 	dev := *deviceID
 	if dev == "" {
@@ -76,6 +83,7 @@ func cmdDeployRun(args []string) int {
 		BMCPassword:  *bmcPass,
 		SerialTarget: *serial,
 		SystemID:     *systemID,
+		StallTimeout: *stallTimeout,
 	}
 
 	store, dbCloser, err := openJobStore(cfg)
@@ -99,6 +107,12 @@ func cmdDeployRun(args []string) int {
 
 	// Wire Observe watch service with progress from orchestrator (two-step inject).
 	watchSvc := sol.NewWatchService(log, nil)
+	watchSvc.NewTransport = sol.NewTransportFactory(sol.SSHSerialConfig{
+		Host:    cfg.SerialSSHHost,
+		User:    cfg.SerialSSHUser,
+		KeyPath: cfg.SerialSSHKey,
+		UseSudo: cfg.SerialSSHSudo,
+	})
 	orch := job.NewOrchestrator(job.Options{
 		Log:                 log,
 		Store:               store,
@@ -236,6 +250,12 @@ func cmdDeployCancel(args []string) int {
 		}
 	}
 	watchSvc := sol.NewWatchService(log, nil)
+	watchSvc.NewTransport = sol.NewTransportFactory(sol.SSHSerialConfig{
+		Host:    cfg.SerialSSHHost,
+		User:    cfg.SerialSSHUser,
+		KeyPath: cfg.SerialSSHKey,
+		UseSudo: cfg.SerialSSHSudo,
+	})
 	orch := job.NewOrchestrator(job.Options{
 		Log:                 log,
 		Store:               store,

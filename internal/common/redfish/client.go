@@ -155,7 +155,7 @@ func (c *client) ListSystems(_ context.Context) ([]SystemInfo, error) {
 	return out, nil
 }
 
-// GetSystem returns one system by ID (or first if systemID empty and only one exists).
+// GetSystem returns one system by ID or Name (or first if systemID empty and only one exists).
 func (c *client) GetSystem(ctx context.Context, systemID string) (SystemInfo, error) {
 	systems, err := c.ListSystems(ctx)
 	if err != nil {
@@ -166,12 +166,12 @@ func (c *client) GetSystem(ctx context.Context, systemID string) (SystemInfo, er
 			return SystemInfo{}, fmt.Errorf("redfish: no systems")
 		}
 		if len(systems) > 1 {
-			return SystemInfo{}, fmt.Errorf("redfish: multiple systems; specify system id")
+			return SystemInfo{}, fmt.Errorf("redfish: multiple systems; specify system id or name")
 		}
 		return systems[0], nil
 	}
 	for _, s := range systems {
-		if s.ID == systemID || strings.HasSuffix(s.ODataID, "/"+systemID) {
+		if s.ID == systemID || s.Name == systemID || strings.HasSuffix(s.ODataID, "/"+systemID) {
 			return s, nil
 		}
 	}
@@ -204,10 +204,13 @@ func (c *client) computerSystem(systemID string) (*gofishredfish.ComputerSystem,
 		if len(systems) == 0 {
 			return nil, fmt.Errorf("redfish: no systems")
 		}
+		if len(systems) > 1 {
+			return nil, fmt.Errorf("redfish: multiple systems; specify system id or name")
+		}
 		return systems[0], nil
 	}
 	for _, s := range systems {
-		if s.ID == systemID || strings.HasSuffix(s.ODataID, "/"+systemID) {
+		if s.ID == systemID || s.Name == systemID || strings.HasSuffix(s.ODataID, "/"+systemID) {
 			return s, nil
 		}
 	}
@@ -448,6 +451,8 @@ func (c *client) Power(ctx context.Context, systemID, resetType string) error {
 }
 
 // CleanupMediaAndBoot ejects all inserted media and clears boot override.
+// Best-effort: continues after individual step failures (powered-off emulators
+// may reject some actions).
 func (c *client) CleanupMediaAndBoot(ctx context.Context, systemID string) error {
 	var firstErr error
 	vms, err := c.ListVirtualMedia(ctx, systemID)

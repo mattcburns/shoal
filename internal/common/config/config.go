@@ -28,6 +28,12 @@ type Config struct {
 	ISOBaseURL           string
 	ReconcileFailOrphans bool
 	SecretsDir           string
+	// Serial SSH delegate (VM-hosted lab: nest libvirt on L1).
+	SerialSSHHost string
+	SerialSSHUser string
+	SerialSSHKey  string
+	// SerialSSHSudo runs remote virsh/cat with sudo -n (default true when host set).
+	SerialSSHSudo bool
 }
 
 // Load reads SHOAL_* environment variables with Phase 1-friendly defaults.
@@ -52,6 +58,10 @@ func Load() (Config, error) {
 		ISOBaseURL:           os.Getenv("SHOAL_ISO_BASE_URL"),
 		ReconcileFailOrphans: true,
 		SecretsDir:           envOr("SHOAL_SECRETS_DIR", ""),
+		SerialSSHHost:        os.Getenv("SHOAL_SERIAL_SSH_HOST"),
+		SerialSSHUser:        envOr("SHOAL_SERIAL_SSH_USER", "lab"),
+		SerialSSHKey:         envOr("SHOAL_SERIAL_SSH_KEY", ""),
+		SerialSSHSudo:        true,
 	}
 
 	if v := os.Getenv("SHOAL_RECONCILE_FAIL_ORPHANS"); v != "" {
@@ -60,6 +70,19 @@ func Load() (Config, error) {
 			return Config{}, fmt.Errorf("config: SHOAL_RECONCILE_FAIL_ORPHANS: %w", err)
 		}
 		c.ReconcileFailOrphans = b
+	}
+	if v := os.Getenv("SHOAL_SERIAL_SSH_SUDO"); v != "" {
+		b, err := strconv.ParseBool(v)
+		if err != nil {
+			return Config{}, fmt.Errorf("config: SHOAL_SERIAL_SSH_SUDO: %w", err)
+		}
+		c.SerialSSHSudo = b
+	}
+	if c.SerialSSHKey == "" {
+		// Common lab default (not required to exist).
+		if home := os.Getenv("HOME"); home != "" {
+			c.SerialSSHKey = home + "/.ssh/shoal_lab_vm"
+		}
 	}
 
 	if err := c.validateBasics(); err != nil {

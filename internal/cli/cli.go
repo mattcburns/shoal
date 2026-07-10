@@ -55,14 +55,16 @@ Commands:
   serve     Run the HTTP API server
   deploy    Provisioning: run | status | cancel
 
-Phase 2 example:
+Phase 2 example (VM lab):
+  export SHOAL_SERIAL_SSH_HOST=192.168.122.100
+  export SHOAL_SERIAL_SSH_KEY=$HOME/.ssh/shoal_lab_vm
   shoal deploy run \
-    -device-id lab-node-1 \
+    -device-id shoal-node-1 \
     -bmc-url http://192.168.122.100:8001 \
     -bmc-user "$SHOAL_BMC_USERNAME" \
     -bmc-pass "$SHOAL_BMC_PASSWORD" \
     -serial-target shoal-node-1 \
-    -iso-url http://192.168.122.100:8080/shoal-marker.iso
+    -iso-url http://192.168.124.1:8080/shoal-marker.iso
 
 `)
 }

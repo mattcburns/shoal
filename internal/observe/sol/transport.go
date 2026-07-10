@@ -40,10 +40,11 @@ func (t *ReaderTransport) Open(ctx context.Context, _ string) (<-chan string, er
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	t.cancel = cancel
+	r := t.r
 	ch := make(chan string, 32)
 	go func() {
 		defer close(ch)
-		sc := bufio.NewScanner(t.r)
+		sc := bufio.NewScanner(r)
 		// large lines possible on serial
 		buf := make([]byte, 0, 64*1024)
 		sc.Buffer(buf, 1024*1024)
@@ -68,6 +69,8 @@ func (t *ReaderTransport) Close() error {
 	}
 	if t.r != nil {
 		err := t.r.Close()
+		// keep r set until after Close so a racing Open capture is safe;
+		// callers must not Open again after Close without a new transport.
 		t.r = nil
 		return err
 	}
@@ -118,7 +121,7 @@ func (t *LibvirtTransport) Open(ctx context.Context, target string) (<-chan stri
 	ch := make(chan string, 32)
 	go func() {
 		defer close(ch)
-		sc := bufio.NewScanner(f)
+		sc := bufio.NewScanner(f) // local f, not t.file
 		buf := make([]byte, 0, 64*1024)
 		sc.Buffer(buf, 1024*1024)
 		for sc.Scan() {

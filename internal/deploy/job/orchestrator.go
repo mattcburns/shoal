@@ -8,7 +8,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log/slog"
-	"strings"
 	"sync"
 	"time"
 
@@ -253,9 +252,20 @@ func (o *Orchestrator) provision(ctx context.Context, job models.ProvisioningJob
 	}
 	defer func() { _ = bmc.Close(context.Background()) }()
 
-	sys, err := bmc.GetSystem(ctx, req.SystemID)
+	// Prefer explicit SystemID; else match Redfish Name to DeviceID (lab: shoal-node-1).
+	lookup := req.SystemID
+	if lookup == "" {
+		lookup = req.DeviceID
+	}
+	sys, err := bmc.GetSystem(ctx, lookup)
 	if err != nil {
-		return fmt.Errorf("get system: %w", err)
+		// Last resort: if DeviceID lookup failed and SystemID was empty, try empty only when single system.
+		if req.SystemID == "" && req.DeviceID != "" {
+			sys, err = bmc.GetSystem(ctx, "")
+		}
+		if err != nil {
+			return fmt.Errorf("get system: %w", err)
+		}
 	}
 	rs.systemID = sys.ID
 
@@ -279,15 +289,19 @@ func (o *Orchestrator) provision(ctx context.Context, job models.ProvisioningJob
 
 	_ = o.store.UpdateProgress(ctx, job.ID, "WAITING_SOL", nil, 0, "")
 
-	transport := reqSerialTransport(req)
+	stall := req.StallTimeout
+	if stall <= 0 {
+		// Live ISO boot can take well over 90s before the first marker.
+		stall = 3 * time.Minute
+	}
 	session := models.WatchSession{
 		ID:           rs.sessionID,
 		JobID:        job.ID,
 		DeviceID:     req.DeviceID,
-		Transport:    transport,
+		Transport:    "libvirt",
 		Target:       req.SerialTarget,
 		StartedAt:    time.Now().UTC(),
-		StallTimeout: 90 * time.Second,
+		StallTimeout: stall,
 	}
 	// Persist sol session id via progress soft field isn't ideal; update job through transition is wrong.
 	// Use UpdateProgress for phase only; SOLSessionID stored in runState + optional store field via re-insert not available.
@@ -307,13 +321,6 @@ func (o *Orchestrator) provision(ctx context.Context, job models.ProvisioningJob
 		// never log password
 	)
 	return nil
-}
-
-func reqSerialTransport(req models.StartJobRequest) string {
-	if strings.HasPrefix(req.SerialTarget, "/") {
-		return "libvirt" // still file path via libvirt transport
-	}
-	return "libvirt"
 }
 
 func pickCDMedia(vms []redfish.VirtualMedia) string {
@@ -395,9 +402,12 @@ func (o *Orchestrator) handleTerminalOnce(ctx context.Context, jobID string, rea
 		bmcURL = job.BMCEndpoint
 	}
 
-	// Always-run cleanup when we have BMC coordinates.
+	// Always-run cleanup when we have BMC coordinates (hard timeout so we still transition).
 	if bmcURL != "" {
-		if err := o.cleanupBMC(ctx, bmcURL, credRef, systemID); err != nil {
+		cctx, ccancel := context.WithTimeout(context.Background(), 45*time.Second)
+		err := o.cleanupBMC(cctx, bmcURL, credRef, systemID)
+		ccancel()
+		if err != nil {
 			o.log.Error("bmc cleanup failed", "job_id", jobID, "err", err.Error())
 			// still transition
 		}
@@ -452,22 +462,36 @@ func (o *Orchestrator) cleanupBMC(ctx context.Context, bmcURL, credRef, systemID
 			user, pass = c.Username, c.Password
 		}
 	}
-	bmc, err := o.newBMC(redfish.Config{
-		BaseURL:  bmcURL,
-		Username: user,
-		Password: pass,
-		AuthMode: o.authMode,
-		TLSMode:  o.tlsMode,
-		CAFile:   o.caFile,
-	})
-	if err != nil {
+	done := make(chan error, 1)
+	go func() {
+		bmc, err := o.newBMC(redfish.Config{
+			BaseURL:        bmcURL,
+			Username:       user,
+			Password:       pass,
+			AuthMode:       o.authMode,
+			TLSMode:        o.tlsMode,
+			CAFile:         o.caFile,
+			RequestTimeout: 20 * time.Second,
+			MaxConcurrent:  1,
+		})
+		if err != nil {
+			done <- err
+			return
+		}
+		if err := bmc.Open(ctx); err != nil {
+			done <- err
+			return
+		}
+		cerr := bmc.CleanupMediaAndBoot(ctx, systemID)
+		_ = bmc.Close(context.Background())
+		done <- cerr
+	}()
+	select {
+	case err := <-done:
 		return err
+	case <-ctx.Done():
+		return fmt.Errorf("bmc cleanup timed out: %w", ctx.Err())
 	}
-	if err := bmc.Open(ctx); err != nil {
-		return err
-	}
-	defer func() { _ = bmc.Close(context.Background()) }()
-	return bmc.CleanupMediaAndBoot(ctx, systemID)
 }
 
 // ReconcileOrphans fails in-flight PROVISIONING jobs left from a previous process.

@@ -1,0 +1,17 @@
+---
+# Build/publish Phase 2 marker live ISO on the lab service host.
+#
+# VM mode:
+#   ansible-playbook -i infra/ansible/inventory/lab-vm.yml \
+#     infra/ansible/playbooks/build_marker_iso.yml
+#
+# Direct mode:
+#   ansible-playbook -i infra/ansible/inventory/lab.yml \
+#     infra/ansible/playbooks/build_marker_iso.yml
+
+- name: Build Shoal marker ISO
+  hosts: lab_vms:lab
+  gather_facts: true
+  roles:
+    - role: marker_iso
+      tags: [marker_iso, iso]
