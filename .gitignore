@@ -10,3 +10,11 @@ infra/cloud-init-seed.iso
 
 # Legacy shell-based config (no longer used by automation)
 .env
+
+# Go
+/bin/
+/shoal
+*.test
+*.out
+coverage.out
+vendor/
