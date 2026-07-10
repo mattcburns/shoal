@@ -13,7 +13,6 @@ import (
 	"github.com/mattcburns/shoal/internal/common/config"
 	"github.com/mattcburns/shoal/internal/common/models"
 	"github.com/mattcburns/shoal/internal/common/redfish"
-	"github.com/mattcburns/shoal/internal/common/secrets"
 	"github.com/mattcburns/shoal/internal/common/telemetry"
 	"github.com/mattcburns/shoal/internal/deploy/job"
 	"github.com/mattcburns/shoal/internal/deploy/jobstore"
@@ -95,15 +94,7 @@ func cmdDeployRun(args []string) int {
 		defer dbCloser()
 	}
 
-	var secretBackend secrets.Backend = secrets.NewMemory()
-	if cfg.SecretsDir != "" {
-		fb, err := secrets.NewFile(cfg.SecretsDir)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "secrets: %v\n", err)
-			return 1
-		}
-		secretBackend = fb
-	}
+	secretBackend := openSecrets(cfg)
 
 	// Wire Observe watch service with progress from orchestrator (two-step inject).
 	watchSvc := sol.NewWatchService(log, nil)
@@ -243,12 +234,7 @@ func cmdDeployCancel(args []string) int {
 		defer closer()
 	}
 	// Cancel needs a live orchestrator with BMC factory for cleanup.
-	var secretBackend secrets.Backend = secrets.NewMemory()
-	if cfg.SecretsDir != "" {
-		if fb, err := secrets.NewFile(cfg.SecretsDir); err == nil {
-			secretBackend = fb
-		}
-	}
+	secretBackend := openSecrets(cfg)
 	watchSvc := sol.NewWatchService(log, nil)
 	watchSvc.NewTransport = sol.NewTransportFactory(sol.SSHSerialConfig{
 		Host:    cfg.SerialSSHHost,

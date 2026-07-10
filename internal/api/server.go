@@ -13,7 +13,7 @@ import (
 	"github.com/mattcburns/shoal/internal/deploy/jobstore"
 )
 
-// Server is the HTTP API surface (health + job status).
+// Server is the HTTP API surface (health + job status/cancel).
 type Server struct {
 	cfg config.Config
 	log *slog.Logger
@@ -21,6 +21,7 @@ type Server struct {
 	// PingDB may be overridden in tests; defaults to telemetry.PingDB.
 	PingDB func(ctx context.Context, dsn string) error
 	jobs   jobstore.Store
+	cancel JobCanceler
 }
 
 // New constructs a Server with routes registered.
@@ -47,6 +48,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /healthz", s.handleHealthz)
 	s.mux.HandleFunc("GET /readyz", s.handleReadyz)
 	s.mux.HandleFunc("GET /v1/jobs/{id}", s.handleGetJob)
+	s.mux.HandleFunc("POST /v1/jobs/{id}/cancel", s.handleCancelJob)
 }
 
 func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {

@@ -30,6 +30,33 @@ If `vault.yml` is encrypted, add `--ask-vault-pass` (or `--vault-password-file <
 ansible-playbook -i infra/ansible/inventory/lab-vm.yml infra/ansible/playbooks/up.yml
 ansible-playbook -i infra/ansible/inventory/lab-vm.yml infra/ansible/playbooks/smoke.yml
 ```
+`up.yml` ends by building/publishing the Phase 2 marker ISO to `/srv/iso/shoal-marker.iso`
+(via `build_marker_iso.yml`). Rebuild ISO only:
+
+```bash
+ansible-playbook -i infra/ansible/inventory/lab-vm.yml \
+  infra/ansible/playbooks/build_marker_iso.yml
+```
+
+### Phase 2 app smoke (from L0 against VM lab)
+```bash
+export SHOAL_BMC_USERNAME=...   # vault
+export SHOAL_BMC_PASSWORD=...
+export SHOAL_TELEMETRY_DATABASE_URL='postgres://shoal:…@192.168.122.100:5433/shoal_telemetry?sslmode=disable'
+export SHOAL_SERIAL_SSH_HOST=192.168.122.100
+export SHOAL_SERIAL_SSH_KEY=$HOME/.ssh/shoal_lab_vm
+
+go test ./internal/deploy/job ./internal/common/redfish ./internal/deploy/jobstore \
+  -tags=integration -count=1 -v
+
+go run ./cmd/shoal deploy run \
+  -device-id shoal-node-1 \
+  -bmc-url http://192.168.122.100:8001 \
+  -serial-target shoal-node-1 \
+  -iso-url http://192.168.124.1:8080/shoal-marker.iso
+```
+
+See also [phase2-live-image.md](./phase2-live-image.md).
 
 ## 2) Fast stop (teardown / clean slate)
 ```bash

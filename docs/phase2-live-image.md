@@ -80,5 +80,33 @@ is omitted (sushy-tools multi-system).
 ## Spike without a full ISO
 
 Unit tests inject markers via `ReaderTransport`. Lab integration tests
-(`-tags=integration`) use live sushy Virtual Media + injected SOL markers when
-a bootable ISO is not required for that test case.
+(`-tags=integration`) cover:
+
+| Test | Path |
+|------|------|
+| `TestLabDeployRealBMCInjectedSOL` | Live BMC + injected SOL → DONE |
+| `TestLabDeployCancel` | Live BMC + cancel → FAILED + cleanup |
+| `TestLabDeployStall` | Live BMC + SOL silence → stall FAILED + cleanup |
+| `TestLabDeployRealSOLSSH` | Live BMC + SSH serial + bootable ISO → DONE |
+
+```bash
+export SHOAL_BMC_USERNAME=... SHOAL_BMC_PASSWORD=...
+export SHOAL_TELEMETRY_DATABASE_URL='postgres://shoal:…@192.168.122.100:5433/shoal_telemetry?sslmode=disable'
+export SHOAL_SERIAL_SSH_HOST=192.168.122.100   # for RealSOLSSH
+export SHOAL_SERIAL_SSH_KEY=$HOME/.ssh/shoal_lab_vm
+
+go test ./internal/deploy/job -tags=integration -count=1 -v
+```
+
+## API
+
+With `shoal serve` (job store + orchestrator wired):
+
+- `GET /v1/jobs/{id}` — poll status
+- `POST /v1/jobs/{id}/cancel` — request cancel (async cleanup → `failed`)
+
+## Lab quirks (sushy-tools)
+
+- Boot override “Once” may appear as `Continuous` + `Cd`; cleanup sets `Hdd`.
+- Marker ISO powers off when DONE; power state may be `Off` after success.
+- Nested serial PTYs are on L1 only — use SSH serial from L0.

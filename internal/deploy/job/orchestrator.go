@@ -339,7 +339,7 @@ func pickCDMedia(vms []redfish.VirtualMedia) string {
 func (o *Orchestrator) Cancel(ctx context.Context, jobID string) error {
 	job, err := o.store.Get(ctx, jobID)
 	if err != nil {
-		return err
+		return err // includes jobstore.ErrNotFound
 	}
 	if job.State != models.StateProvisioning {
 		return fmt.Errorf("job: cannot cancel job in state %s", job.State)

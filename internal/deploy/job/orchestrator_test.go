@@ -144,6 +144,56 @@ func TestOrchestratorCancelCleansUp(t *testing.T) {
 	t.Fatal("cancel did not fail job in time")
 }
 
+func TestOrchestratorStallFailsAndCleansUp(t *testing.T) {
+	ctx := context.Background()
+	store := jobstore.NewMemory()
+	sec := secrets.NewMemory()
+	fakeBMC := redfish.NewFake()
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	// Open pipe but never write markers → stall.
+	pr, pw := io.Pipe()
+	defer pw.Close()
+	watch := sol.NewWatchService(log, nil)
+	watch.NewTransport = func(session models.WatchSession) sol.Transport {
+		return sol.NewReaderTransport(pr)
+	}
+
+	orch := job.NewOrchestrator(job.Options{
+		Log: log, Store: store, Secrets: sec,
+		NewBMC:              func(cfg redfish.Config) (redfish.BMC, error) { return fakeBMC, nil },
+		Watches:             watch,
+		ReconcileFailOrphan: true,
+	})
+	defer orch.Stop()
+	watch.SetProgress(orch.ProgressPort())
+
+	j, err := orch.Start(ctx, models.StartJobRequest{
+		DeviceID: "n1", BMCEndpoint: "http://bmc", BMCUsername: "u", BMCPassword: "p",
+		SerialTarget: "n1", ISOURL: "http://iso/x.iso",
+		StallTimeout: 80 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		got, _ := store.Get(ctx, j.ID)
+		if got.State == models.StateFailed {
+			if got.Error != "sol stall" {
+				t.Fatalf("error %q", got.Error)
+			}
+			if fakeBMC.MediaInserted() || !fakeBMC.BootCleared() {
+				t.Fatal("cleanup after stall incomplete")
+			}
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("stall did not fail job in time")
+}
+
 func TestOrchestratorOrphanReconcile(t *testing.T) {
 	ctx := context.Background()
 	store := jobstore.NewMemory()
