@@ -1,0 +1,22 @@
+// Package jobstore is pure jobs-table persistence (CRUD / progress / transition).
+// No Redfish, no Observe imports, no cleanup side effects.
+package jobstore
+
+import (
+	"context"
+	"errors"
+
+	"github.com/mattcburns/shoal/internal/common/models"
+)
+
+// ErrNotFound is returned when a job id is unknown.
+var ErrNotFound = errors.New("jobstore: job not found")
+
+// Store is pure durable job repository.
+type Store interface {
+	Insert(ctx context.Context, job models.ProvisioningJob) error
+	Get(ctx context.Context, id string) (models.ProvisioningJob, error)
+	ListByState(ctx context.Context, state models.LifecycleState) ([]models.ProvisioningJob, error)
+	UpdateProgress(ctx context.Context, jobID string, phase string, percent *int, seq int, errSoft string) error
+	Transition(ctx context.Context, jobID string, to models.LifecycleState, errMsg string) error
+}

@@ -10,15 +10,17 @@ import (
 
 	"github.com/mattcburns/shoal/internal/common/config"
 	"github.com/mattcburns/shoal/internal/common/telemetry"
+	"github.com/mattcburns/shoal/internal/deploy/jobstore"
 )
 
-// Server is the HTTP API surface for Phase 1 (health endpoints).
+// Server is the HTTP API surface (health + job status).
 type Server struct {
 	cfg config.Config
 	log *slog.Logger
 	mux *http.ServeMux
 	// PingDB may be overridden in tests; defaults to telemetry.PingDB.
 	PingDB func(ctx context.Context, dsn string) error
+	jobs   jobstore.Store
 }
 
 // New constructs a Server with routes registered.
@@ -44,6 +46,7 @@ func (s *Server) Handler() http.Handler {
 func (s *Server) routes() {
 	s.mux.HandleFunc("GET /healthz", s.handleHealthz)
 	s.mux.HandleFunc("GET /readyz", s.handleReadyz)
+	s.mux.HandleFunc("GET /v1/jobs/{id}", s.handleGetJob)
 }
 
 func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {

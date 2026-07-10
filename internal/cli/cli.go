@@ -19,7 +19,7 @@ import (
 )
 
 // Version is the application version string (overridable via -ldflags).
-var Version = "0.1.0-phase1"
+var Version = "0.2.0-phase2"
 
 // Run dispatches subcommands. args should be os.Args[1:].
 func Run(args []string) int {
@@ -32,6 +32,8 @@ func Run(args []string) int {
 		return cmdVersion(os.Stdout)
 	case "serve":
 		return cmdServe(args[1:])
+	case "deploy":
+		return cmdDeploy(args[1:])
 	case "help", "-h", "--help":
 		printUsage(os.Stdout)
 		return 0
@@ -51,6 +53,16 @@ Usage:
 Commands:
   version   Print version and exit
   serve     Run the HTTP API server
+  deploy    Provisioning: run | status | cancel
+
+Phase 2 example:
+  shoal deploy run \
+    -device-id lab-node-1 \
+    -bmc-url http://192.168.122.100:8001 \
+    -bmc-user "$SHOAL_BMC_USERNAME" \
+    -bmc-pass "$SHOAL_BMC_PASSWORD" \
+    -serial-target shoal-node-1 \
+    -iso-url http://192.168.122.100:8080/shoal-marker.iso
 
 `)
 }
@@ -79,6 +91,14 @@ func cmdServe(args []string) int {
 	slog.SetDefault(log)
 
 	srvAPI := api.New(cfg, log)
+	if store, closer, err := openJobStore(cfg); err == nil {
+		srvAPI.WithJobStore(store)
+		if closer != nil {
+			defer closer()
+		}
+	} else {
+		log.Warn("job store unavailable for API", "err", err.Error())
+	}
 	httpSrv := &http.Server{
 		Addr:              cfg.HTTPAddr,
 		Handler:           srvAPI.Handler(),

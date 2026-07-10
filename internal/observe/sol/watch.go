@@ -1,0 +1,203 @@
+package sol
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"sync"
+	"time"
+
+	"github.com/mattcburns/shoal/internal/common/jobport"
+	"github.com/mattcburns/shoal/internal/common/models"
+	"github.com/mattcburns/shoal/internal/common/watchport"
+)
+
+// DefaultStallTimeout is used when WatchSession.StallTimeout is zero.
+const DefaultStallTimeout = 90 * time.Second
+
+// WatchService implements watchport.WatchRegistrar using a SOL Transport factory.
+type WatchService struct {
+	log      *slog.Logger
+	progress jobport.JobProgress
+	// NewTransport builds a transport for a session (libvirt by default).
+	NewTransport func(session models.WatchSession) Transport
+
+	mu       sync.Mutex
+	active   map[string]*activeWatch // sessionID -> watch
+	byDevice map[string]string       // deviceID -> sessionID (single ownership)
+}
+
+type activeWatch struct {
+	session models.WatchSession
+	cancel  context.CancelFunc
+	trans   Transport
+	done    chan struct{}
+}
+
+// NewWatchService constructs a WatchService. progress must be non-nil before Register.
+func NewWatchService(log *slog.Logger, progress jobport.JobProgress) *WatchService {
+	if log == nil {
+		log = slog.Default()
+	}
+	return &WatchService{
+		log:      log,
+		progress: progress,
+		active:   make(map[string]*activeWatch),
+		byDevice: make(map[string]string),
+		NewTransport: func(session models.WatchSession) Transport {
+			switch session.Transport {
+			case "libvirt", "":
+				return &LibvirtTransport{}
+			default:
+				return &LibvirtTransport{}
+			}
+		},
+	}
+}
+
+// SetProgress injects the job progress port (composition root may wire late).
+func (w *WatchService) SetProgress(p jobport.JobProgress) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.progress = p
+}
+
+// Register starts a SOL tail for the session. Rejects dual ownership of a device.
+func (w *WatchService) Register(ctx context.Context, session models.WatchSession) error {
+	if session.ID == "" || session.JobID == "" || session.DeviceID == "" {
+		return fmt.Errorf("sol: watch session missing id/job/device")
+	}
+	if session.Target == "" {
+		return fmt.Errorf("sol: watch session missing target")
+	}
+	if session.StallTimeout <= 0 {
+		session.StallTimeout = DefaultStallTimeout
+	}
+
+	w.mu.Lock()
+	if w.progress == nil {
+		w.mu.Unlock()
+		return fmt.Errorf("sol: progress port not configured")
+	}
+	if _, ok := w.byDevice[session.DeviceID]; ok {
+		w.mu.Unlock()
+		return fmt.Errorf("sol: device %s already has an active SOL watch", session.DeviceID)
+	}
+	if _, ok := w.active[session.ID]; ok {
+		w.mu.Unlock()
+		return fmt.Errorf("sol: session %s already registered", session.ID)
+	}
+
+	trans := w.NewTransport(session)
+	watchCtx, cancel := context.WithCancel(context.Background())
+	aw := &activeWatch{
+		session: session,
+		cancel:  cancel,
+		trans:   trans,
+		done:    make(chan struct{}),
+	}
+	w.active[session.ID] = aw
+	w.byDevice[session.DeviceID] = session.ID
+	progress := w.progress
+	w.mu.Unlock()
+
+	lines, err := trans.Open(watchCtx, session.Target)
+	if err != nil {
+		w.cleanupLocked(session)
+		return fmt.Errorf("sol: open transport: %w", err)
+	}
+
+	go w.run(watchCtx, aw, lines, progress)
+	w.log.Info("sol watch registered",
+		"session_id", session.ID,
+		"job_id", session.JobID,
+		"device_id", session.DeviceID,
+		"target", session.Target,
+	)
+	return nil
+}
+
+func (w *WatchService) cleanupLocked(session models.WatchSession) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if aw, ok := w.active[session.ID]; ok {
+		aw.cancel()
+		_ = aw.trans.Close()
+		delete(w.active, session.ID)
+	}
+	delete(w.byDevice, session.DeviceID)
+}
+
+// Unregister stops the watch for sessionID.
+func (w *WatchService) Unregister(_ context.Context, sessionID string) error {
+	w.mu.Lock()
+	aw, ok := w.active[sessionID]
+	if !ok {
+		w.mu.Unlock()
+		return nil
+	}
+	delete(w.active, sessionID)
+	delete(w.byDevice, aw.session.DeviceID)
+	w.mu.Unlock()
+
+	aw.cancel()
+	_ = aw.trans.Close()
+	select {
+	case <-aw.done:
+	case <-time.After(2 * time.Second):
+	}
+	w.log.Info("sol watch unregistered", "session_id", sessionID)
+	return nil
+}
+
+func (w *WatchService) run(ctx context.Context, aw *activeWatch, lines <-chan string, progress jobport.JobProgress) {
+	defer close(aw.done)
+	stall := aw.session.StallTimeout
+	timer := time.NewTimer(stall)
+	defer timer.Stop()
+
+	resetStall := func() {
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
+		timer.Reset(stall)
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-timer.C:
+			w.log.Warn("sol stall detected", "job_id", aw.session.JobID, "timeout", stall.String())
+			_ = progress.ReportStall(context.Background(), aw.session.JobID, fmt.Sprintf("no SOL marker for %s", stall))
+			return
+		case line, ok := <-lines:
+			if !ok {
+				_ = progress.ReportTransportError(context.Background(), aw.session.JobID, fmt.Errorf("sol stream closed"))
+				return
+			}
+			m, ok := ParseLine(line)
+			if !ok {
+				continue
+			}
+			resetStall()
+			if err := progress.ApplyMarker(context.Background(), aw.session.JobID, m); err != nil {
+				w.log.Error("apply marker failed", "job_id", aw.session.JobID, "err", err.Error())
+			}
+			// Terminal markers: progress port notifies orchestrator; we keep
+			// running until Unregister so cleanup can complete.
+		}
+	}
+}
+
+// ActiveCount returns the number of active watches (test helper).
+func (w *WatchService) ActiveCount() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return len(w.active)
+}
+
+var _ watchport.WatchRegistrar = (*WatchService)(nil)
