@@ -10,6 +10,13 @@ import (
 	"github.com/mattcburns/shoal/internal/core/reconcile"
 )
 
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
 func TestReconcileAssetWithFake(t *testing.T) {
 	fake := &ai.Fake{
 		Content: `{
@@ -55,16 +62,28 @@ func TestReconcileAssetRejectsUnredacted(t *testing.T) {
 	}
 }
 
-func TestReconcileAssetPhoto(t *testing.T) {
+func TestReconcileAssetPhotoTwoStep(t *testing.T) {
+	// Vision returns prose (moondream-style); text Complete structures JSON.
 	fake := &ai.Fake{
-		Content: `{
-  "asset": {"serial":"CAM1","model":"X","vendor":"Y","bmc_ip":"1.2.3.4"},
+		VisionFn: func(req ai.VisionRequest) (ai.CompletionResponse, error) {
+			return ai.CompletionResponse{
+				Content: "Label shows serial CAM1 and vendor Acme. Model X-100.",
+				Model:   "moondream",
+			}, nil
+		},
+		ResponseFn: func(req ai.CompletionRequest) (ai.CompletionResponse, error) {
+			if !strings.Contains(req.User, "CAM1") {
+				t.Fatalf("text prompt missing vision description: %s", req.User[:min(200, len(req.User))])
+			}
+			return ai.CompletionResponse{Content: `{
+  "asset": {"serial":"CAM1","model":"X-100","vendor":"Acme","bmc_ip":"1.2.3.4"},
   "confidences": [
     {"field":"serial","confidence":0.7,"source":"ai","evidence":"label CAM1"},
-    {"field":"bmc_ip","confidence":0.7,"source":"ai","evidence":"hint"}
+    {"field":"bmc_ip","confidence":0.9,"source":"ai","evidence":"hint 1.2.3.4"}
   ],
   "needs_review": true
-}`,
+}`, Model: "llama3.2:3b"}, nil
+		},
 	}
 	svc, err := reconcile.New(fake, nil)
 	if err != nil {
@@ -83,6 +102,9 @@ func TestReconcileAssetPhoto(t *testing.T) {
 	}
 	if len(fake.VisCalls) != 1 {
 		t.Fatal("expected vision call")
+	}
+	if len(fake.Calls) != 1 {
+		t.Fatal("expected text complete call after vision")
 	}
 }
 

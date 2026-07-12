@@ -63,7 +63,7 @@ func (o *Ollama) Complete(ctx context.Context, req CompletionRequest) (Completio
 	if model == "" {
 		return CompletionResponse{}, fmt.Errorf("ai/ollama: no text model configured")
 	}
-	return o.chat(ctx, model, req.System, req.User, nil)
+	return o.chat(ctx, model, req.System, req.User, nil, true)
 }
 
 // CompleteVision implements LLM (vision model preferred).
@@ -86,10 +86,79 @@ func (o *Ollama) CompleteVision(ctx context.Context, req VisionRequest) (Complet
 		return CompletionResponse{}, fmt.Errorf("ai/ollama: photo path requires SHOAL_AI_VISION_MODEL (text model %q cannot accept images)", model)
 	}
 	b64 := base64.StdEncoding.EncodeToString(req.Image)
-	return o.chat(ctx, model, req.System, req.User, []string{b64})
+	// Tiny VLMs (e.g. moondream) often emit broken/truncated JSON under format=json.
+	// Vision calls request free-form text; callers structure with the text model.
+	// Keep prompts short: long image+text prompts can yield empty moondream output.
+	resp, err := o.chat(ctx, model, "", req.User, []string{b64}, false)
+	if err != nil {
+		return resp, err
+	}
+	if strings.TrimSpace(resp.Content) != "" {
+		return resp, nil
+	}
+	// Fallback: /api/generate (some Ollama VLM builds answer more reliably here).
+	return o.generate(ctx, model, req.User, []string{b64})
 }
 
-func (o *Ollama) chat(ctx context.Context, model, system, user string, images []string) (CompletionResponse, error) {
+// generate calls Ollama /api/generate with optional images (vision fallback).
+func (o *Ollama) generate(ctx context.Context, model, prompt string, images []string) (CompletionResponse, error) {
+	if o.BaseURL == "" {
+		return CompletionResponse{}, fmt.Errorf("ai/ollama: empty base URL")
+	}
+	payload := map[string]any{
+		"model":  model,
+		"prompt": prompt,
+		"stream": false,
+	}
+	if len(images) > 0 {
+		payload["images"] = images
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return CompletionResponse{}, err
+	}
+	start := time.Now()
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, o.BaseURL+"/api/generate", bytes.NewReader(body))
+	if err != nil {
+		return CompletionResponse{}, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	client := o.HTTP
+	if client == nil {
+		client = http.DefaultClient
+	}
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		return CompletionResponse{}, fmt.Errorf("ai/ollama: generate: %w", err)
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	if err != nil {
+		return CompletionResponse{}, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return CompletionResponse{}, fmt.Errorf("ai/ollama: generate status %d: %s", resp.StatusCode, truncate(string(raw), 200))
+	}
+	var parsed struct {
+		Response string `json:"response"`
+		Model    string `json:"model"`
+		// token counts when present
+		PromptEvalCount int `json:"prompt_eval_count"`
+		EvalCount       int `json:"eval_count"`
+	}
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		return CompletionResponse{}, fmt.Errorf("ai/ollama: generate decode: %w", err)
+	}
+	return CompletionResponse{
+		Content:      parsed.Response,
+		Model:        firstNonEmpty(parsed.Model, model),
+		PromptTokens: parsed.PromptEvalCount,
+		OutputTokens: parsed.EvalCount,
+		LatencyMS:    time.Since(start).Milliseconds(),
+	}, nil
+}
+
+func (o *Ollama) chat(ctx context.Context, model, system, user string, images []string, wantJSON bool) (CompletionResponse, error) {
 	if o.BaseURL == "" {
 		return CompletionResponse{}, fmt.Errorf("ai/ollama: empty base URL")
 	}
@@ -103,12 +172,15 @@ func (o *Ollama) chat(ctx context.Context, model, system, user string, images []
 	}
 	msgs = append(msgs, um)
 
-	body, err := json.Marshal(ollamaChatRequest{
+	reqBody := ollamaChatRequest{
 		Model:    model,
 		Messages: msgs,
 		Stream:   false,
-		Format:   "json",
-	})
+	}
+	if wantJSON {
+		reqBody.Format = "json"
+	}
+	body, err := json.Marshal(reqBody)
 	if err != nil {
 		return CompletionResponse{}, err
 	}
