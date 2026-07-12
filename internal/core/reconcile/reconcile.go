@@ -118,11 +118,11 @@ func (s *Service) ReconcileAsset(ctx context.Context, in ReconcileAssetInput) (m
 	return result, nil
 }
 
-// ReconcileAssetPhoto uses a two-step path:
-//  1. CompleteVision — free-form description / OCR-ish text (tiny VLMs like moondream)
-//  2. Complete (text model) — structure that description into NormalizationResult
+// ReconcileAssetPhoto runs vision OCR then builds identity from the OCR text.
 //
-// Direct schema JSON from small vision models is unreliable (truncated / looping garbage).
+// Preferred lab model: deepseek-ocr (SHOAL_AI_VISION_MODEL) with prompt "Free OCR.".
+// We parse labeled fields (SERIAL/VENDOR/MODEL) from the OCR output. If serial
+// cannot be extracted, the call fails — we do not invent photo-unknown placeholders.
 func (s *Service) ReconcileAssetPhoto(ctx context.Context, in ReconcilePhotoInput) (models.NormalizationResult, error) {
 	if s.LLM == nil {
 		return models.NormalizationResult{}, fmt.Errorf("reconcile: LLM not configured")
@@ -130,21 +130,19 @@ func (s *Service) ReconcileAssetPhoto(ctx context.Context, in ReconcilePhotoInpu
 	if len(in.Image) == 0 {
 		return models.NormalizationResult{}, fmt.Errorf("reconcile: empty image")
 	}
+	if strings.TrimSpace(in.BMCIP) == "" {
+		return models.NormalizationResult{}, fmt.Errorf("reconcile: photo: bmc_ip is required (-bmc-ip)")
+	}
 	media := in.MediaType
 	if media == "" {
 		media = "image/jpeg"
 	}
 
-	// Keep the vision prompt short and fixed: moondream often returns empty
-	// content for long prompts, system messages, or even small prompt variants.
-	// Do not append operator hints here — pass them to the text structure step.
-	const describeUser = "List all readable text in this image."
-
 	start := time.Now()
 	vision, err := s.LLM.CompleteVision(ctx, ai.VisionRequest{
 		CompletionRequest: ai.CompletionRequest{
-			// System intentionally empty for VLMs that mishandle system+image.
-			User: describeUser,
+			// System empty: OCR VLMs work best with a short user prompt only.
+			User: photoOCRPrompt,
 		},
 		Image:     in.Image,
 		MediaType: media,
@@ -156,141 +154,78 @@ func (s *Service) ReconcileAssetPhoto(ctx context.Context, in ReconcilePhotoInpu
 		"model", vision.Model,
 		"latency_ms", vision.LatencyMS,
 		"elapsed_ms", time.Since(start).Milliseconds(),
-		"kind", "reconcile_asset_photo_describe",
+		"kind", "reconcile_asset_photo_ocr",
 		"image_bytes", len(in.Image),
-		"desc_chars", len(vision.Content),
+		"ocr_chars", len(vision.Content),
 	)
 
 	desc := strings.TrimSpace(vision.Content)
 	if desc == "" {
-		// Last resort: still attempt text structuring from operator hints so the
-		// photo path can complete (always needs_review).
-		if in.BMCIP == "" {
-			return models.NormalizationResult{}, fmt.Errorf("reconcile: vision returned empty description")
-		}
-		desc = "No readable text extracted from photo. Operator BMC IP hint: " + in.BMCIP
-		s.Log.Warn("vision empty description; using bmc_ip hint only")
+		return models.NormalizationResult{}, fmt.Errorf("reconcile: photo: vision OCR returned empty text (model=%s); try deepseek-ocr", vision.Model)
 	}
-	// Cap description size before text reconcile (keep prompt bounded).
 	if len(desc) > 4000 {
 		desc = desc[:4000] + "…"
 	}
 
-	raw := map[string]any{
-		"source":            "photo_description",
-		"photo_description": desc,
-		// Strongly prefer emitting serial/vendor/model when present in the description.
-		"instruction": "If serial is not visible, set serial to photo-unknown and needs_review true. Always set bmc_ip from bmc_ip_hint when provided.",
-	}
-	if in.BMCIP != "" {
-		raw["bmc_ip_hint"] = in.BMCIP
-	}
-	// Prefer structured text-model JSON; photo_description is never secret-bearing.
-	result, err := s.ReconcileAsset(ctx, ReconcileAssetInput{RedactedRaw: raw})
-	if err != nil {
-		// Soft recovery: small models sometimes omit required fields.
-		result, err = s.photoFallbackResult(desc, in.BMCIP)
+	ocr := parseOCRIdentity(desc)
+	// Primary path: structured OCR labels (deepseek-ocr "Free OCR." output).
+	if ocr.Serial != "" {
+		result, err := resultFromOCR(ocr, in.BMCIP)
 		if err != nil {
-			return models.NormalizationResult{}, fmt.Errorf("reconcile: photo structure: %w", err)
+			return models.NormalizationResult{}, err
 		}
-	}
-	result = completePhotoIdentity(result, desc, in.BMCIP)
-	if err := validate.NormalizationResult(result); err != nil {
-		result, err = s.photoFallbackResult(desc, in.BMCIP)
-		if err != nil {
+		if err := validate.NormalizationResult(result); err != nil {
 			return models.NormalizationResult{}, fmt.Errorf("reconcile: photo validate: %w", err)
 		}
+		s.Log.Info("photo ocr identity",
+			"serial", result.Asset.Serial,
+			"vendor", result.Asset.Vendor,
+			"model", result.Asset.Model,
+			"needs_review", result.NeedsReview,
+		)
+		return result, nil
 	}
+
+	// Secondary: text model structures free-form caption (weaker VLMs).
+	// Still require a real serial after structure — no synthetic IDs.
+	raw := map[string]any{
+		"source":            "photo_ocr",
+		"photo_description": desc,
+		"instruction":       "Extract serial, vendor, model from photo_description. bmc_ip must be " + in.BMCIP + ". serial is required.",
+		"bmc_ip_hint":       in.BMCIP,
+	}
+	result, err := s.ReconcileAsset(ctx, ReconcileAssetInput{RedactedRaw: raw})
+	if err != nil {
+		return models.NormalizationResult{}, fmt.Errorf("reconcile: photo structure: %w; ocr_text=%q", err, truncateRunes(desc, 160))
+	}
+	if in.BMCIP != "" {
+		result.Asset.BMCIP = in.BMCIP
+	}
+	// Prefer any OCR-parsed vendor/model if LLM left them empty.
+	if result.Asset.Vendor == "" {
+		result.Asset.Vendor = ocr.Vendor
+	}
+	if result.Asset.Model == "" {
+		result.Asset.Model = ocr.Model
+	}
+	if strings.TrimSpace(result.Asset.Serial) == "" ||
+		strings.EqualFold(result.Asset.Serial, "unknown") ||
+		strings.HasPrefix(strings.ToLower(result.Asset.Serial), "unknown") ||
+		strings.HasPrefix(strings.ToLower(result.Asset.Serial), "photo-unknown") {
+		return models.NormalizationResult{}, errNoSerialFromPhoto(desc)
+	}
+	if err := validate.NormalizationResult(result); err != nil {
+		return models.NormalizationResult{}, fmt.Errorf("reconcile: photo validate: %w", err)
+	}
+	result.NeedsReview = true
 	return result, nil
 }
 
-// completePhotoIdentity fills missing serial/bmc_ip from description/hints.
-func completePhotoIdentity(r models.NormalizationResult, desc, bmcIP string) models.NormalizationResult {
-	// Operator BMC IP is authoritative for photo ingest (model often ignores hints).
-	if bmcIP != "" {
-		r.Asset.BMCIP = bmcIP
+func truncateRunes(s string, n int) string {
+	if len(s) <= n {
+		return s
 	}
-	if strings.TrimSpace(r.Asset.Serial) == "" {
-		if s := extractSerialish(desc); s != "" {
-			r.Asset.Serial = s
-		} else {
-			r.Asset.Serial = "photo-unknown"
-		}
-		r.NeedsReview = true
-	}
-	if strings.EqualFold(r.Asset.Serial, "unknown") || strings.HasPrefix(strings.ToLower(r.Asset.Serial), "unknown") {
-		r.Asset.Serial = "photo-unknown"
-		r.NeedsReview = true
-	}
-	// Ensure minimal confidences for required fields.
-	has := map[string]bool{}
-	for _, fc := range r.Confidences {
-		has[strings.ToLower(fc.Field)] = true
-	}
-	if !has["serial"] {
-		r.Confidences = append(r.Confidences, models.FieldConfidence{
-			Field: "serial", Confidence: 0.3, Source: "ai", Evidence: "photo path",
-		})
-	}
-	if !has["bmc_ip"] && r.Asset.BMCIP != "" {
-		r.Confidences = append(r.Confidences, models.FieldConfidence{
-			Field: "bmc_ip", Confidence: 0.9, Source: "ai", Evidence: "operator hint",
-		})
-	}
-	r.NeedsReview = true // photo ingest always reviewable in MVP
-	return r
-}
-
-func extractSerialish(desc string) string {
-	// Prefer tokens that look like serials (contain digit + letter).
-	fields := strings.Fields(desc)
-	for _, f := range fields {
-		f = strings.Trim(f, ".,;:\"'()[]")
-		if len(f) < 4 || len(f) > 40 {
-			continue
-		}
-		hasDigit, hasLetter := false, false
-		for _, r := range f {
-			if r >= '0' && r <= '9' {
-				hasDigit = true
-			}
-			if (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') {
-				hasLetter = true
-			}
-		}
-		low := strings.ToLower(f)
-		if hasDigit && hasLetter && !strings.Contains(low, "http") {
-			return f
-		}
-	}
-	return ""
-}
-
-func (s *Service) photoFallbackResult(desc, bmcIP string) (models.NormalizationResult, error) {
-	serial := extractSerialish(desc)
-	if serial == "" {
-		serial = "photo-unknown"
-	}
-	if bmcIP == "" {
-		bmcIP = "0.0.0.0"
-	}
-	r := models.NormalizationResult{
-		Asset: models.NormalizedAsset{
-			Serial: serial,
-			BMCIP:  bmcIP,
-			Vendor: "",
-			Model:  "",
-		},
-		Confidences: []models.FieldConfidence{
-			{Field: "serial", Confidence: 0.25, Source: "ai", Evidence: "photo fallback"},
-			{Field: "bmc_ip", Confidence: 0.9, Source: "ai", Evidence: "operator hint or placeholder"},
-		},
-		NeedsReview: true,
-	}
-	if err := validate.NormalizationResult(r); err != nil {
-		return models.NormalizationResult{}, err
-	}
-	return r, nil
+	return s[:n] + "…"
 }
 
 // ReconcileEvent is a minimal text event normalizer for later Observe use.

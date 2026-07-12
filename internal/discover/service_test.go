@@ -86,16 +86,14 @@ func TestIngestAIFallback(t *testing.T) {
 	}
 }
 
-func TestIngestPhotoRedaction(t *testing.T) {
+func TestIngestPhotoOCR(t *testing.T) {
 	fake := &ai.Fake{
-		Content: `{
-  "asset": {"serial":"P1","model":"M","vendor":"V","bmc_ip":"2.2.2.2"},
-  "confidences": [
-    {"field":"serial","confidence":0.7,"source":"ai","evidence":"photo"},
-    {"field":"bmc_ip","confidence":0.7,"source":"ai","evidence":"hint"}
-  ],
-  "needs_review": false
-}`,
+		VisionFn: func(req ai.VisionRequest) (ai.CompletionResponse, error) {
+			return ai.CompletionResponse{
+				Content: "SERIAL: P1\nVENDOR: V\nMODEL: M",
+				Model:   "deepseek-ocr",
+			}, nil
+		},
 	}
 	rec, err := reconcile.New(fake, nil)
 	if err != nil {
@@ -111,8 +109,8 @@ func TestIngestPhotoRedaction(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !got.UsedAI {
-		t.Fatal("photo uses AI")
+	if !got.UsedAI || got.Asset.Serial != "P1" || got.Asset.BMCIP != "2.2.2.2" {
+		t.Fatalf("%+v", got)
 	}
 	if len(fake.VisCalls) != 1 {
 		t.Fatal("expected vision call")

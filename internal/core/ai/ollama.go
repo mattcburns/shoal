@@ -86,18 +86,25 @@ func (o *Ollama) CompleteVision(ctx context.Context, req VisionRequest) (Complet
 		return CompletionResponse{}, fmt.Errorf("ai/ollama: photo path requires SHOAL_AI_VISION_MODEL (text model %q cannot accept images)", model)
 	}
 	b64 := base64.StdEncoding.EncodeToString(req.Image)
-	// Tiny VLMs (e.g. moondream) often emit broken/truncated JSON under format=json.
-	// Vision calls request free-form text; callers structure with the text model.
-	// Keep prompts short: long image+text prompts can yield empty moondream output.
-	resp, err := o.chat(ctx, model, "", req.User, []string{b64}, false)
-	if err != nil {
-		return resp, err
-	}
-	if strings.TrimSpace(resp.Content) != "" {
+	// Prefer /api/generate for vision: OCR models (deepseek-ocr) and several Ollama
+	// VLMs return better image+text results there than via chat.
+	// Never use format=json for vision — small VLMs emit broken/truncated JSON.
+	resp, err := o.generate(ctx, model, req.User, []string{b64})
+	if err == nil && strings.TrimSpace(resp.Content) != "" {
 		return resp, nil
 	}
-	// Fallback: /api/generate (some Ollama VLM builds answer more reliably here).
-	return o.generate(ctx, model, req.User, []string{b64})
+	// Fallback to chat (no system message — some VLMs mishandle system+image).
+	chatResp, chatErr := o.chat(ctx, model, "", req.User, []string{b64}, false)
+	if chatErr != nil {
+		if err != nil {
+			return CompletionResponse{}, fmt.Errorf("ai/ollama: vision generate: %v; chat: %w", err, chatErr)
+		}
+		return CompletionResponse{}, chatErr
+	}
+	if strings.TrimSpace(chatResp.Content) == "" && err != nil {
+		return CompletionResponse{}, fmt.Errorf("ai/ollama: vision empty (generate: %v)", err)
+	}
+	return chatResp, nil
 }
 
 // generate calls Ollama /api/generate with optional images (vision fallback).
