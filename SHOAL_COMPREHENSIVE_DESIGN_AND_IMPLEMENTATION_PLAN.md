@@ -1,6 +1,6 @@
 # Shoal: Comprehensive Design Document & Phased Implementation Plan
 
-**Version:** 2.0.3  
+**Version:** 2.0.4  
 **Date:** July 2026  
 **Status:** Draft (post-review; open questions resolved)  
 **Author:** (architect / AI agent)  
@@ -28,11 +28,11 @@ This is a **language/stack revision** of the v1.1 product design — not a green
 
 ---
 
-## Changes in v2.0 / v2.0.1 / v2.0.2 / v2.0.3
+## Changes in v2.0 / v2.0.1 / v2.0.2 / v2.0.3 / v2.0.4
 
 Full stack rewrite of the **application** from Python to **Go (Golang)**, maximizing the Go standard library **except where Redfish complexity justifies gofish**.
 
-| Area | v1.1 (Python) | v2.0.3 (Go) |
+| Area | v1.1 (Python) | v2.0.4 (Go) |
 |------|---------------|-------------|
 | Language | Python 3.11+ | Go 1.22+ (prefer latest stable) |
 | Module path | n/a | **`github.com/mattcburns/shoal`** |
@@ -57,6 +57,8 @@ Full stack rewrite of the **application** from Python to **Go (Golang)**, maximi
 **v2.0.2 (residual review):** break Observe↔Deploy import cycle — ports/DTOs in neutral `common` packages; composition root wires interfaces; `JobStore` = pure persistence; Orchestrator owns transitions/cleanup via notify channel; Phase 2 device binding via CLI flags (Discover optional); marker-driven state table + explicit cancel; Phase 2 ISO via lab nginx `:8080`; `DeviceID` on `NormalizedEvent`; PR3/Phase 1 naming clarity.
 
 **v2.0.3 (user decisions):** module path `github.com/mattcburns/shoal`; **gofish adopted day one** (no thin-client-first / 5-day exit); app port **`:8088` confirmed**; Phase 6 OCR approach **deferred** (Tesseract vs cloud vision evaluated in Phase 6); live-image build host **both** paths documented (lab VM Ansible **primary**, workstation alternate).
+
+**v2.0.4 (Phase 3 AI contract):** dual-model local AI — text (`SHOAL_AI_MODEL`, lab default `llama3.2:3b`) vs vision (`SHOAL_AI_VISION_MODEL`, lab default `moondream` when pulled); explicit `Complete` / `CompleteVision` routing; nested-lab CPU-friendly ≤3B defaults; Phase 6 OCR candidates named but not selected (`deepseek-ocr`, Tesseract). Lab Ansible pull/smoke lands in a follow-up PR after this design lock.
 
 **Preserved (product decisions, not language):**
 
@@ -1069,25 +1071,57 @@ type CancelJobRequest struct {
 6. **Redact secrets** from any payload before it reaches the model
 7. Run the **decode → unmarshal → validate** pipeline (§4.1); never trust raw `Content`
 
-**Recommended starting models** (2 GB VRAM reference GPU):
-- Text (local): `llama3.2:3b` (Q4_K_M); `qwen2.5:7b` needs larger GPU
-- Vision: prefer cloud; local vision is CPU fallback
+**Lab / host model strategy (v2.0.4):**
+
+Reference operator host may be modest (e.g. older Xeon, ~32 GB RAM, mobile Quadro ~4 GB VRAM). Nested VM lab Ollama is often **CPU-bound** (no GPU passthrough). Prefer **≤3B-class** defaults; do **not** set large VLMs (`llama3.2-vision:11b`, large LLaVA/MiniCPM) as lab defaults.
+
+| Role | Env var | Lab default | Notes |
+|------|---------|-------------|--------|
+| **Text / structured JSON** | `SHOAL_AI_MODEL` | `llama3.2:3b` | Hybrid `ReconcileAsset` / text paths; instruct/completion model |
+| **Vision / asset photos** | `SHOAL_AI_VISION_MODEL` | `moondream` (when lab pulls it) | Discover photo path; tiny VLM (~1.8B). Empty env → no local vision model |
+| **OCR / graphics failure screens** | — | not default | **Phase 6** only; candidates include `deepseek-ocr` and `os/exec` Tesseract — neither pre-committed |
+
+Optional text upgrade if operators want stronger JSON adherence: `qwen2.5:3b` (same size class). **Do not** use OCR-specialized models (e.g. `deepseek-ocr`) as the text hybrid default.
+
+**Call routing** (`internal/core/ai` — implementers must follow):
+
+```
+Complete(ctx, req)
+  → model = req.Model if non-empty, else SHOAL_AI_MODEL
+  → Ollama: POST {SHOAL_OLLAMA_URL}/api/chat
+  → Cloud:  POST {SHOAL_CLOUD_AI_BASE_URL}/chat/completions + Bearer token
+
+CompleteVision(ctx, req)
+  → model = req.Model if non-empty, else SHOAL_AI_VISION_MODEL if non-empty, else SHOAL_AI_MODEL
+  → if provider=ollama and photo path requires vision but no usable vision model is configured
+       → return a clear error (do not silently drop the image)
+  → Ollama: multimodal chat (image + text parts) on the selected model
+  → Cloud: OpenAI-compatible chat with image content blocks
+
+Discover text (redfish_json / csv AI fallback)  → Complete only
+Discover photo                                 → CompleteVision only
+  (never send photo bytes through text-only Complete)
+```
+
+Operators may set both env vars to the same multimodal cloud model. Cloud remains preferred for high-quality vision when available; local `moondream` is the lab-friendly optional path.
 
 **AI client configuration** (`internal/core/ai`), rendered by Ansible `compose_stack` / app env:
 
 | Env var | Purpose |
 |---------|---------|
 | `SHOAL_AI_PROVIDER` | `ollama` \| `cloud` |
-| `SHOAL_AI_MODEL` | Model name |
+| `SHOAL_AI_MODEL` | Text / default model name (lab: `llama3.2:3b`) |
+| `SHOAL_AI_VISION_MODEL` | Optional vision model for `CompleteVision` (lab: `moondream` when pulled; empty allowed) |
 | `SHOAL_OLLAMA_URL` | Local Ollama base URL |
 | `SHOAL_CLOUD_AI_BASE_URL` | OpenAI-compatible base when cloud |
 | `SHOAL_CLOUD_AI_API_KEY` | Vault secret; never log |
 
 Implementation notes:
-- Ollama: `POST {url}/api/chat` (or OpenAI-compatible route if enabled)
-- Cloud: `POST {base}/chat/completions` + Bearer token
-- Log: prompt hash, model, tokens, latency — **no secrets**, no full raw photo bytes
+- Ollama: `POST {url}/api/chat` (text and multimodal); OpenAI-compatible route optional if enabled on the server
+- Cloud: `POST {base}/chat/completions` + Bearer token; vision uses image content parts
+- Log: prompt hash/version, **resolved model name**, tokens, latency — **no secrets**, no full raw photo bytes
 - `http.Client` with timeouts; `NewRequestWithContext`
+- Lab Ansible: pull text (+ optional vision) models and export env in a **lab PR after this design lock** (not in the app Phase 3 code PR)
 
 ---
 
@@ -1278,7 +1312,8 @@ Default VM-hosted endpoints: NetBox `:8000`, sushy `:8001`, ISO HTTP `:8080`, Ol
 | `SHOAL_NETBOX_URL` | yes | e.g. `http://192.168.122.100:8000` |
 | `SHOAL_NETBOX_TOKEN` | yes | From vault / netbox_bootstrap; **add to `env.j2`** when app service lands |
 | `SHOAL_AI_PROVIDER` | yes | Already in `env.j2` |
-| `SHOAL_AI_MODEL` | yes | Already in `env.j2` |
+| `SHOAL_AI_MODEL` | yes | Text model; already in `env.j2` (lab default `llama3.2:3b`) |
+| `SHOAL_AI_VISION_MODEL` | no | Vision model for `CompleteVision`; add to `env.j2` / defaults in lab dual-model PR (lab default `moondream` when enabled) |
 | `SHOAL_OLLAMA_URL` | if ollama | Already in `env.j2` |
 | `SHOAL_CLOUD_AI_BASE_URL` | if cloud | Already in `env.j2` |
 | `SHOAL_CLOUD_AI_API_KEY` | if cloud | Vault; already in `env.j2` |
@@ -1363,7 +1398,9 @@ Phase 0 is a hard prerequisite. Phase 2 proves BMC-only + SOL **without requirin
 
 Parallel: Discover adapters/gate; Core Reconciler + real AI client; vision path; NetBox writes; few-shot learning loop.
 
-**Acceptance Criteria:** clean dump deterministic; spec-deviant → AI; conflicts → `needs_review`; photo path; redaction test vs cloud LLM.
+**Acceptance Criteria:** clean dump deterministic; spec-deviant → AI; conflicts → `needs_review`; photo path wired (`CompleteVision` + redaction tests); lab text hybrid validated on Ollama text model (`SHOAL_AI_MODEL`); live multimodal optional when `SHOAL_AI_VISION_MODEL` or cloud is configured; redaction ensures secrets never reach LLM payloads.
+
+**Prerequisite (lab):** dual-model AI contract (design §6 / v2.0.4) and lab Ansible that pulls/exports text + optional vision models (separate lab PR).
 
 ### Phase 4: Shoal Observe (Broaden)
 
@@ -1548,7 +1585,7 @@ go test ./...
 
 ## Open Questions
 
-**All previously open product decisions are resolved (v2.0.3).** Nothing remains that blocks PR0–PR8.
+**All previously open product decisions are resolved through v2.0.4.** Phase 0–2 are unblocked; Phase 3 follows the AI contract below.
 
 | Topic | Resolution |
 |-------|------------|
@@ -1563,8 +1600,11 @@ go test ./...
 | **Module path** | **`github.com/mattcburns/shoal`** |
 | **Redfish client** | **gofish day one**, wrapped in `internal/common/redfish` (no thin-client-first path) |
 | **App HTTP port** | **`:8088`** (`shoal_app_http_port` / `SHOAL_HTTP_ADDR`) |
-| **Phase 6 OCR** | **Deferred** — evaluate Tesseract (`os/exec`) vs cloud vision in Phase 6; neither pre-committed |
+| **Phase 6 OCR** | **Deferred** — evaluate Tesseract (`os/exec`) vs cloud vision / OCR VLMs (e.g. `deepseek-ocr`) in Phase 6; neither pre-committed |
 | **Live image build host** | **Both:** lab VM Ansible role **primary**; developer workstation **alternate** (§8.2 / Appendix I) |
+| **Lab AI text model** | **`SHOAL_AI_MODEL=llama3.2:3b`** (≤3B class; nested-lab friendly) |
+| **Lab AI vision model** | **`SHOAL_AI_VISION_MODEL=moondream`** when enabled; optional pull; photo path uses `CompleteVision` only |
+| **Complete vs CompleteVision** | Text Discover → `Complete` + `SHOAL_AI_MODEL`; photo → `CompleteVision` with `SHOAL_AI_VISION_MODEL` (else `SHOAL_AI_MODEL`); if photo path cannot send images to the resolved model → **clear error** (never drop the image) |
 
 **Deferred until Phase 6 (not blocking earlier phases):**
 
@@ -1584,11 +1624,10 @@ go test ./...
 
 ---
 
-**This document (v2.0.3) is ready for AI coding agents after PR0 lands it as SoT.**
+**This document (v2.0.4) is the SoT for agents.** Phase 0–2 are on `master`.
 
 Next actions:
-1. PR0: commit design + rewrite `AGENTS.md` (module path, gofish allow-list, Go DoD)
-2. Verify Phase 0 lab
-3. Execute PR1–PR8 (thesis spike **without** AI or Discover; gofish Redfish; flag-bound BMC + lab ISO URL)
-4. Continue PR9+ through hybrid Discover and hardened Deploy
-5. At Phase 6: choose OCR approach before implementing
+1. Lab PR: Ansible pull/export dual Ollama models (`SHOAL_AI_MODEL` + `SHOAL_AI_VISION_MODEL`) + smoke
+2. Phase 3 app: hybrid Discover + Core AI client honoring §6 call routing
+3. Later phases: Observe broaden, Deploy harden, packaging
+4. At Phase 6: choose OCR approach before implementing
