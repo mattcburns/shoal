@@ -66,7 +66,7 @@ container after the stack is healthy:
 | Ansible var | App env | Lab default | Role |
 |-------------|---------|-------------|------|
 | `shoal_ai_model` | `SHOAL_AI_MODEL` | `llama3.2:3b` | Text / hybrid JSON (required) |
-| `shoal_ai_vision_model` | `SHOAL_AI_VISION_MODEL` | `moondream` | Photo / `CompleteVision` (optional; empty skips pull + smoke) |
+| `shoal_ai_vision_model` | `SHOAL_AI_VISION_MODEL` | `deepseek-ocr` | Photo OCR via `Free OCR.` (optional; empty skips pull + smoke). Prefer over moondream for real serials. |
 
 `smoke.yml` asserts `/api/tags` includes the text model, and the vision model when
 `shoal_ai_vision_model` is non-empty. First vision pull can take several minutes.
@@ -76,15 +76,37 @@ Re-pull without full stack rebuild (on L1 / lab VM):
 ```bash
 ssh -i ~/.ssh/shoal_lab_vm lab@192.168.122.100 \
   'docker exec shoal-ollama ollama pull llama3.2:3b &&
-   docker exec shoal-ollama ollama pull moondream'
+   docker exec shoal-ollama ollama pull deepseek-ocr'
 curl -s http://192.168.122.100:11434/api/tags | jq '.models[].name'
 ```
 
 To skip vision in a constrained lab, set `shoal_ai_vision_model: ""` in
 `defaults.yml` (or inventory override) and re-run the compose/ollama portion of
-`up.yml`.
+`up.yml`. Photo AC requires a working OCR vision model (lab default
+`deepseek-ocr`); moondream is not sufficient for reliable serial extraction.
 
-Phase 3 app smoke will use these env vars once the hybrid Discover PR lands.
+### Phase 3 discover smoke (from L0 against VM lab)
+
+```bash
+export SHOAL_AI_PROVIDER=ollama
+export SHOAL_AI_MODEL=llama3.2:3b
+export SHOAL_AI_VISION_MODEL=deepseek-ocr
+export SHOAL_OLLAMA_URL=http://192.168.122.100:11434
+export SHOAL_NETBOX_URL=http://192.168.122.100:8000
+export SHOAL_NETBOX_TOKEN=…   # vault / bootstrap token
+
+# Clean dump → deterministic (no LLM)
+go run ./cmd/shoal discover ingest \
+  -kind redfish_json -file /tmp/clean-system.json \
+  -bmc-ip 192.168.122.100
+
+# Spec-deviant / incomplete dump → AI reconcile via Ollama
+go run ./cmd/shoal discover ingest \
+  -kind redfish_json -file /tmp/messy.json \
+  -bmc-ip 10.0.0.5
+```
+
+Also: `POST /v1/discover/ingest` when `shoal serve` is started with the same AI/NetBox env.
 
 ## 2) Fast stop (teardown / clean slate)
 ```bash

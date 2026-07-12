@@ -17,6 +17,7 @@ type Config struct {
 	NetBoxToken          string
 	AIProvider           string
 	AIModel              string
+	AIVisionModel        string // optional; CompleteVision (design §6 / v2.0.4)
 	OllamaURL            string
 	CloudAIBaseURL       string
 	CloudAIAPIKey        string
@@ -47,6 +48,7 @@ func Load() (Config, error) {
 		NetBoxToken:          os.Getenv("SHOAL_NETBOX_TOKEN"),
 		AIProvider:           strings.ToLower(envOr("SHOAL_AI_PROVIDER", "")),
 		AIModel:              os.Getenv("SHOAL_AI_MODEL"),
+		AIVisionModel:        os.Getenv("SHOAL_AI_VISION_MODEL"),
 		OllamaURL:            os.Getenv("SHOAL_OLLAMA_URL"),
 		CloudAIBaseURL:       os.Getenv("SHOAL_CLOUD_AI_BASE_URL"),
 		CloudAIAPIKey:        os.Getenv("SHOAL_CLOUD_AI_API_KEY"),

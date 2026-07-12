@@ -54,11 +54,12 @@ shoal_redis_port: 6379
 #
 # Text model (SHOAL_AI_MODEL): required; always pulled into the Ollama container.
 # Vision model (SHOAL_AI_VISION_MODEL): optional; empty skips pull/smoke for vision.
-# Lab default uses moondream (~1.8B) for Phase 3 photo path readiness. Nested lab
-# Ollama is often CPU-bound — keep ≤3B-class models.
+# Lab default is deepseek-ocr (~6.7GB) for real Free OCR on asset labels.
+# moondream is smaller/faster but too weak for inventory OCR (do not treat as AC).
+# Nested lab Ollama is often CPU-bound — first OCR pull/run may be slow.
 shoal_ai_provider: ollama
 shoal_ai_model: llama3.2:3b
-shoal_ai_vision_model: moondream
+shoal_ai_vision_model: deepseek-ocr
 shoal_cloud_ai_base_url: ""
 
 # --- Paths on the target host (where the lab stack runs) ---
