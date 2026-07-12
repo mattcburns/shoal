@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "shoal://schemas/normalization_result.v1.json",
+  "title": "NormalizationResult",
+  "type": "object",
+  "required": ["asset", "confidences", "needs_review"],
+  "additionalProperties": true,
+  "properties": {
+    "asset": {
+      "type": "object",
+      "required": ["serial", "bmc_ip"],
+      "properties": {
+        "serial": { "type": "string" },
+        "model": { "type": "string" },
+        "vendor": { "type": "string" },
+        "bmc_ip": { "type": "string" },
+        "credential_ref": { "type": "string" }
+      }
+    },
+    "confidences": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["field", "confidence", "source"],
+        "properties": {
+          "field": { "type": "string" },
+          "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+          "source": { "type": "string", "enum": ["deterministic", "ai"] },
+          "evidence": { "type": "string" }
+        }
+      }
+    },
+    "needs_review": { "type": "boolean" }
+  }
+}

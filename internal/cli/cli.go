@@ -15,15 +15,19 @@ import (
 
 	"github.com/mattcburns/shoal/internal/api"
 	"github.com/mattcburns/shoal/internal/common/config"
+	"github.com/mattcburns/shoal/internal/common/netbox"
 	"github.com/mattcburns/shoal/internal/common/redact"
 	"github.com/mattcburns/shoal/internal/common/redfish"
 	"github.com/mattcburns/shoal/internal/common/secrets"
+	"github.com/mattcburns/shoal/internal/core/ai"
+	"github.com/mattcburns/shoal/internal/core/reconcile"
 	"github.com/mattcburns/shoal/internal/deploy/job"
+	"github.com/mattcburns/shoal/internal/discover"
 	"github.com/mattcburns/shoal/internal/observe/sol"
 )
 
 // Version is the application version string (overridable via -ldflags).
-var Version = "0.2.0-phase2"
+var Version = "0.3.0-phase3"
 
 // Run dispatches subcommands. args should be os.Args[1:].
 func Run(args []string) int {
@@ -38,6 +42,8 @@ func Run(args []string) int {
 		return cmdServe(args[1:])
 	case "deploy":
 		return cmdDeploy(args[1:])
+	case "discover":
+		return cmdDiscover(args[1:])
 	case "help", "-h", "--help":
 		printUsage(os.Stdout)
 		return 0
@@ -55,11 +61,20 @@ Usage:
   shoal <command> [flags]
 
 Commands:
-  version   Print version and exit
-  serve     Run the HTTP API server
-  deploy    Provisioning: run | status | cancel
+  version    Print version and exit
+  serve      Run the HTTP API server
+  deploy     Provisioning: run | status | cancel
+  discover   Ingest assets: ingest
 
-Phase 2 example (VM lab):
+Phase 3 discover example:
+  export SHOAL_AI_PROVIDER=ollama
+  export SHOAL_AI_MODEL=llama3.2:3b
+  export SHOAL_OLLAMA_URL=http://192.168.122.100:11434
+  export SHOAL_NETBOX_URL=http://192.168.122.100:8000
+  export SHOAL_NETBOX_TOKEN=…
+  shoal discover ingest -kind redfish_json -file dump.json -bmc-ip 192.168.122.100
+
+Phase 2 deploy example (VM lab):
   export SHOAL_SERIAL_SSH_HOST=192.168.122.100
   export SHOAL_SERIAL_SSH_KEY=$HOME/.ssh/shoal_lab_vm
   shoal deploy run \
@@ -99,6 +114,24 @@ func cmdServe(args []string) int {
 	srvAPI := api.New(cfg, log)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	// Optional Discover / AI wiring (Phase 3).
+	if llm, err := ai.NewFromConfig(cfg); err != nil {
+		log.Warn("ai client not configured", "err", err.Error())
+	} else if llm != nil {
+		rec, err := reconcile.New(llm, log)
+		if err != nil {
+			log.Warn("reconciler init failed", "err", err.Error())
+		} else {
+			var nb netbox.API
+			if cfg.NetBoxURL != "" && cfg.NetBoxToken != "" {
+				nb = netbox.New(cfg.NetBoxURL, cfg.NetBoxToken)
+			}
+			disc := discover.New(log, rec, openSecrets(cfg), nb)
+			srvAPI.WithDiscover(disc)
+			log.Info("discover ingest API enabled")
+		}
+	}
 
 	store, closer, err := openJobStore(cfg)
 	if err != nil {

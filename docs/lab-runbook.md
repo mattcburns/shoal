@@ -84,7 +84,28 @@ To skip vision in a constrained lab, set `shoal_ai_vision_model: ""` in
 `defaults.yml` (or inventory override) and re-run the compose/ollama portion of
 `up.yml`.
 
-Phase 3 app smoke will use these env vars once the hybrid Discover PR lands.
+### Phase 3 discover smoke (from L0 against VM lab)
+
+```bash
+export SHOAL_AI_PROVIDER=ollama
+export SHOAL_AI_MODEL=llama3.2:3b
+export SHOAL_AI_VISION_MODEL=moondream
+export SHOAL_OLLAMA_URL=http://192.168.122.100:11434
+export SHOAL_NETBOX_URL=http://192.168.122.100:8000
+export SHOAL_NETBOX_TOKEN=…   # vault / bootstrap token
+
+# Clean dump → deterministic (no LLM)
+go run ./cmd/shoal discover ingest \
+  -kind redfish_json -file /tmp/clean-system.json \
+  -bmc-ip 192.168.122.100
+
+# Spec-deviant / incomplete dump → AI reconcile via Ollama
+go run ./cmd/shoal discover ingest \
+  -kind redfish_json -file /tmp/messy.json \
+  -bmc-ip 10.0.0.5
+```
+
+Also: `POST /v1/discover/ingest` when `shoal serve` is started with the same AI/NetBox env.
 
 ## 2) Fast stop (teardown / clean slate)
 ```bash
