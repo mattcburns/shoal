@@ -28,11 +28,11 @@ This is a **language/stack revision** of the v1.1 product design — not a green
 
 ---
 
-## Changes in v2.0 / v2.0.1 / v2.0.2 / v2.0.3 / v2.0.4
+## Changes in v2.0 / v2.0.1 / v2.0.2 / v2.0.3 / v2.0.4 / v2.0.5
 
 Full stack rewrite of the **application** from Python to **Go (Golang)**, maximizing the Go standard library **except where Redfish complexity justifies gofish**.
 
-| Area | v1.1 (Python) | v2.0.4 (Go) |
+| Area | v1.1 (Python) | v2.0.5 (Go) |
 |------|---------------|-------------|
 | Language | Python 3.11+ | Go 1.22+ (prefer latest stable) |
 | Module path | n/a | **`github.com/mattcburns/shoal`** |
@@ -58,7 +58,9 @@ Full stack rewrite of the **application** from Python to **Go (Golang)**, maximi
 
 **v2.0.3 (user decisions):** module path `github.com/mattcburns/shoal`; **gofish adopted day one** (no thin-client-first / 5-day exit); app port **`:8088` confirmed**; Phase 6 OCR approach **deferred** (Tesseract vs cloud vision evaluated in Phase 6); live-image build host **both** paths documented (lab VM Ansible **primary**, workstation alternate).
 
-**v2.0.4 (Phase 3 AI contract):** dual-model local AI — text (`SHOAL_AI_MODEL`, lab default `llama3.2:3b`) vs vision (`SHOAL_AI_VISION_MODEL`, lab default `moondream` when pulled); explicit `Complete` / `CompleteVision` routing; nested-lab CPU-friendly ≤3B defaults; Phase 6 OCR candidates named but not selected (`deepseek-ocr`, Tesseract). Lab Ansible pull/smoke lands in a follow-up PR after this design lock.
+**v2.0.4 (Phase 3 AI contract):** dual-model local AI — text (`SHOAL_AI_MODEL`) vs vision (`SHOAL_AI_VISION_MODEL`); explicit `Complete` / `CompleteVision` routing; nested-lab-friendly defaults.
+
+**v2.0.5 (photo vision model):** lab vision default is **`deepseek-ocr`** (Free OCR on asset labels; parse SERIAL/VENDOR/MODEL). Rejects placeholder serials. **`moondream` is not AC-grade** for inventory OCR. Text hybrid remains `llama3.2:3b` — do **not** use `deepseek-ocr` as the text model. Phase 6 graphics failure-screen OCR remains deferred (Tesseract vs cloud vision).
 
 **Preserved (product decisions, not language):**
 
@@ -1071,39 +1073,40 @@ type CancelJobRequest struct {
 6. **Redact secrets** from any payload before it reaches the model
 7. Run the **decode → unmarshal → validate** pipeline (§4.1); never trust raw `Content`
 
-**Lab / host model strategy (v2.0.4):**
+**Lab / host model strategy (v2.0.5):**
 
-Reference operator host may be modest (e.g. older Xeon, ~32 GB RAM, mobile Quadro ~4 GB VRAM). Nested VM lab Ollama is often **CPU-bound** (no GPU passthrough). Prefer **≤3B-class** defaults; do **not** set large VLMs (`llama3.2-vision:11b`, large LLaVA/MiniCPM) as lab defaults.
+Reference operator host may be modest (e.g. older Xeon, ~32 GB RAM, mobile Quadro ~4 GB VRAM). Nested VM lab Ollama is often **CPU-bound** (no GPU passthrough). Prefer small text models; vision OCR needs a real OCR VLM (not a caption-only toy).
 
 | Role | Env var | Lab default | Notes |
 |------|---------|-------------|--------|
 | **Text / structured JSON** | `SHOAL_AI_MODEL` | `llama3.2:3b` | Hybrid `ReconcileAsset` / text paths; instruct/completion model |
-| **Vision / asset photos** | `SHOAL_AI_VISION_MODEL` | `moondream` (when lab pulls it) | Discover photo path; tiny VLM (~1.8B). Empty env → no local vision model |
-| **OCR / graphics failure screens** | — | not default | **Phase 6** only; candidates include `deepseek-ocr` and `os/exec` Tesseract — neither pre-committed |
+| **Vision / asset-label photos** | `SHOAL_AI_VISION_MODEL` | **`deepseek-ocr`** | Discover photo path; Free OCR on labels. Empty env → no local vision. **`moondream` is not AC-grade** |
+| **Graphics failure-screen OCR** | — | not default | **Phase 6** only; candidates: `os/exec` Tesseract vs cloud vision (or OCR VLMs) — not pre-committed |
 
-Optional text upgrade if operators want stronger JSON adherence: `qwen2.5:3b` (same size class). **Do not** use OCR-specialized models (e.g. `deepseek-ocr`) as the text hybrid default.
+Optional text upgrade if operators want stronger JSON adherence: `qwen2.5:3b` (same size class). **Do not** use `deepseek-ocr` as the **text** hybrid default — it is OCR-first, not a general JSON reconciler.
 
 **Call routing** (`internal/core/ai` — implementers must follow):
 
 ```
 Complete(ctx, req)
   → model = req.Model if non-empty, else SHOAL_AI_MODEL
-  → Ollama: POST {SHOAL_OLLAMA_URL}/api/chat
+  → Ollama: POST {SHOAL_OLLAMA_URL}/api/chat (format=json for structured text)
   → Cloud:  POST {SHOAL_CLOUD_AI_BASE_URL}/chat/completions + Bearer token
 
 CompleteVision(ctx, req)
-  → model = req.Model if non-empty, else SHOAL_AI_VISION_MODEL if non-empty, else SHOAL_AI_MODEL
-  → if provider=ollama and photo path requires vision but no usable vision model is configured
-       → return a clear error (do not silently drop the image)
-  → Ollama: multimodal chat (image + text parts) on the selected model
+  → model = req.Model if non-empty, else SHOAL_AI_VISION_MODEL if non-empty, else error
+  → if photo path and no usable vision model → clear error (do not silently drop the image)
+  → Ollama: prefer POST {url}/api/generate with images (OCR VLMs); fall back to /api/chat
+  → Do not force format=json on vision (breaks small VLMs)
   → Cloud: OpenAI-compatible chat with image content blocks
 
 Discover text (redfish_json / csv AI fallback)  → Complete only
-Discover photo                                 → CompleteVision only
+Discover photo                                 → CompleteVision ("Free OCR.") then parse SERIAL/VENDOR/MODEL
   (never send photo bytes through text-only Complete)
+  If serial cannot be extracted from OCR → fail (no synthetic photo-unknown serials)
 ```
 
-Operators may set both env vars to the same multimodal cloud model. Cloud remains preferred for high-quality vision when available; local `moondream` is the lab-friendly optional path.
+Operators may use cloud multimodal models by setting provider/model env vars. Local photo AC is validated with **`deepseek-ocr`** Free OCR, not caption models.
 
 **AI client configuration** (`internal/core/ai`), rendered by Ansible `compose_stack` / app env:
 
@@ -1111,17 +1114,18 @@ Operators may set both env vars to the same multimodal cloud model. Cloud remain
 |---------|---------|
 | `SHOAL_AI_PROVIDER` | `ollama` \| `cloud` |
 | `SHOAL_AI_MODEL` | Text / default model name (lab: `llama3.2:3b`) |
-| `SHOAL_AI_VISION_MODEL` | Optional vision model for `CompleteVision` (lab: `moondream` when pulled; empty allowed) |
+| `SHOAL_AI_VISION_MODEL` | Vision/OCR model for `CompleteVision` (lab: `deepseek-ocr`; empty allowed to skip photo) |
 | `SHOAL_OLLAMA_URL` | Local Ollama base URL |
 | `SHOAL_CLOUD_AI_BASE_URL` | OpenAI-compatible base when cloud |
 | `SHOAL_CLOUD_AI_API_KEY` | Vault secret; never log |
 
 Implementation notes:
-- Ollama: `POST {url}/api/chat` (text and multimodal); OpenAI-compatible route optional if enabled on the server
+- Ollama text: `POST {url}/api/chat` with `format=json` when structuring
+- Ollama vision: prefer `POST {url}/api/generate` with `images` + short OCR prompt (`Free OCR.`); chat fallback; **no** vision `format=json`
 - Cloud: `POST {base}/chat/completions` + Bearer token; vision uses image content parts
 - Log: prompt hash/version, **resolved model name**, tokens, latency — **no secrets**, no full raw photo bytes
 - `http.Client` with timeouts; `NewRequestWithContext`
-- Lab Ansible: pull text (+ optional vision) models and export env in a **lab PR after this design lock** (not in the app Phase 3 code PR)
+- Lab Ansible: `shoal_ai_model` + `shoal_ai_vision_model` pulled by `compose_stack`; smoke asserts both appear in `/api/tags` when vision is non-empty
 
 ---
 
@@ -1313,7 +1317,7 @@ Default VM-hosted endpoints: NetBox `:8000`, sushy `:8001`, ISO HTTP `:8080`, Ol
 | `SHOAL_NETBOX_TOKEN` | yes | From vault / netbox_bootstrap; **add to `env.j2`** when app service lands |
 | `SHOAL_AI_PROVIDER` | yes | Already in `env.j2` |
 | `SHOAL_AI_MODEL` | yes | Text model; already in `env.j2` (lab default `llama3.2:3b`) |
-| `SHOAL_AI_VISION_MODEL` | no | Vision model for `CompleteVision`; add to `env.j2` / defaults in lab dual-model PR (lab default `moondream` when enabled) |
+| `SHOAL_AI_VISION_MODEL` | no | Vision/OCR model for `CompleteVision` (lab default `deepseek-ocr`; empty skips photo) |
 | `SHOAL_OLLAMA_URL` | if ollama | Already in `env.j2` |
 | `SHOAL_CLOUD_AI_BASE_URL` | if cloud | Already in `env.j2` |
 | `SHOAL_CLOUD_AI_API_KEY` | if cloud | Vault; already in `env.j2` |
@@ -1398,9 +1402,9 @@ Phase 0 is a hard prerequisite. Phase 2 proves BMC-only + SOL **without requirin
 
 Parallel: Discover adapters/gate; Core Reconciler + real AI client; vision path; NetBox writes; few-shot learning loop.
 
-**Acceptance Criteria:** clean dump deterministic; spec-deviant → AI; conflicts → `needs_review`; photo path wired (`CompleteVision` + redaction tests); lab text hybrid validated on Ollama text model (`SHOAL_AI_MODEL`); live multimodal optional when `SHOAL_AI_VISION_MODEL` or cloud is configured; redaction ensures secrets never reach LLM payloads.
+**Acceptance Criteria:** clean dump deterministic; spec-deviant → AI; conflicts → `needs_review`; photo path extracts **real** serial/vendor/model from label OCR (lab: `deepseek-ocr` Free OCR — not placeholder serials); redaction ensures secrets never reach LLM payloads; lab text hybrid on `SHOAL_AI_MODEL=llama3.2:3b`.
 
-**Prerequisite (lab):** dual-model AI contract (design §6 / v2.0.4) and lab Ansible that pulls/exports text + optional vision models (separate lab PR).
+**Prerequisite (lab):** dual-model AI contract (design §6 / v2.0.5) and Ansible that pulls/exports text + vision models (`llama3.2:3b` + `deepseek-ocr`).
 
 ### Phase 4: Shoal Observe (Broaden)
 
@@ -1585,7 +1589,7 @@ go test ./...
 
 ## Open Questions
 
-**All previously open product decisions are resolved through v2.0.4.** Phase 0–2 are unblocked; Phase 3 follows the AI contract below.
+**All previously open product decisions are resolved through v2.0.5.** Phase 0–2 are on `master`; Phase 3 follows the AI contract below.
 
 | Topic | Resolution |
 |-------|------------|
@@ -1600,11 +1604,11 @@ go test ./...
 | **Module path** | **`github.com/mattcburns/shoal`** |
 | **Redfish client** | **gofish day one**, wrapped in `internal/common/redfish` (no thin-client-first path) |
 | **App HTTP port** | **`:8088`** (`shoal_app_http_port` / `SHOAL_HTTP_ADDR`) |
-| **Phase 6 OCR** | **Deferred** — evaluate Tesseract (`os/exec`) vs cloud vision / OCR VLMs (e.g. `deepseek-ocr`) in Phase 6; neither pre-committed |
+| **Phase 6 graphics OCR** | **Deferred** — evaluate Tesseract (`os/exec`) vs cloud vision for failure screens; not the same as Phase 3 asset-label OCR |
 | **Live image build host** | **Both:** lab VM Ansible role **primary**; developer workstation **alternate** (§8.2 / Appendix I) |
-| **Lab AI text model** | **`SHOAL_AI_MODEL=llama3.2:3b`** (≤3B class; nested-lab friendly) |
-| **Lab AI vision model** | **`SHOAL_AI_VISION_MODEL=moondream`** when enabled; optional pull; photo path uses `CompleteVision` only |
-| **Complete vs CompleteVision** | Text Discover → `Complete` + `SHOAL_AI_MODEL`; photo → `CompleteVision` with `SHOAL_AI_VISION_MODEL` (else `SHOAL_AI_MODEL`); if photo path cannot send images to the resolved model → **clear error** (never drop the image) |
+| **Lab AI text model** | **`SHOAL_AI_MODEL=llama3.2:3b`** (instruct; nested-lab friendly) |
+| **Lab AI vision model** | **`SHOAL_AI_VISION_MODEL=deepseek-ocr`** for asset-label Free OCR; **moondream not AC**; empty skips photo |
+| **Complete vs CompleteVision** | Text Discover → `Complete` + text model; photo → `CompleteVision` (`Free OCR.`) + parse SERIAL/VENDOR/MODEL; missing serial → **fail** (no synthetic IDs) |
 
 **Deferred until Phase 6 (not blocking earlier phases):**
 
@@ -1624,10 +1628,9 @@ go test ./...
 
 ---
 
-**This document (v2.0.4) is the SoT for agents.** Phase 0–2 are on `master`.
+**This document (v2.0.5) is the SoT for agents.** Phase 0–2 and dual-model lab wiring are on `master`.
 
 Next actions:
-1. Lab PR: Ansible pull/export dual Ollama models (`SHOAL_AI_MODEL` + `SHOAL_AI_VISION_MODEL`) + smoke
-2. Phase 3 app: hybrid Discover + Core AI client honoring §6 call routing
-3. Later phases: Observe broaden, Deploy harden, packaging
-4. At Phase 6: choose OCR approach before implementing
+1. Phase 3 hybrid Discover PR (honors §6: text `llama3.2:3b`, vision `deepseek-ocr` Free OCR)
+2. Later phases: Observe broaden, Deploy harden, packaging
+3. At Phase 6: choose graphics failure-screen OCR approach before implementing
