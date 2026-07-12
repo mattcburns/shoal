@@ -4,7 +4,7 @@ This file is the canonical guide for how to work in this repository. It covers
 project conventions, commands, and style. For **architecture, data models, and
 the phased plan**, the source of truth is
 [`SHOAL_COMPREHENSIVE_DESIGN_AND_IMPLEMENTATION_PLAN.md`](./SHOAL_COMPREHENSIVE_DESIGN_AND_IMPLEMENTATION_PLAN.md)
-(**v2.0.3**, Go stack). When this file and the design doc disagree, fix one of
+(**v2.0.4**, Go stack). When this file and the design doc disagree, fix one of
 them in the same change — they must stay consistent.
 
 > **Read order for any task:** (1) this file, (2) the relevant Chapter 4 section
@@ -230,7 +230,8 @@ go run ./cmd/shoal deploy run \
 | `SHOAL_TELEMETRY_DATABASE_URL` | Lab Postgres `…:5433/shoal_telemetry` (jobs + events) |
 | `SHOAL_NETBOX_URL` / `SHOAL_NETBOX_TOKEN` | Identity store |
 | `SHOAL_AI_PROVIDER` | `ollama` \| `cloud` |
-| `SHOAL_AI_MODEL` | Model name |
+| `SHOAL_AI_MODEL` | Text / default model (lab: `llama3.2:3b`) |
+| `SHOAL_AI_VISION_MODEL` | Optional vision model for `CompleteVision` (lab: `moondream` when pulled; empty allowed) |
 | `SHOAL_OLLAMA_URL` | Local Ollama base URL |
 | `SHOAL_CLOUD_AI_BASE_URL` / `SHOAL_CLOUD_AI_API_KEY` | Cloud only; key is vault secret — never log |
 | `SHOAL_REDFISH_AUTH_MODE` | `basic` (lab default) \| `session` |
@@ -300,17 +301,30 @@ Full table and Ansible extension points: design doc §8.1.
 - Every prompt requests JSON matching the target schema, includes 2–4 few-shot
   examples, states the model's role, and asks for **per-field confidence + a
   raw excerpt as evidence**.
-- **Decode pipeline** (no Pydantic): embed schema text → `Complete` → strip
-  markdown fences → `json.Unmarshal` into `T` → `validate.T` → conflict policy
-  in Discover. Confidence ∈ [0,1]; AI-sourced fields should carry evidence.
+- **Decode pipeline** (no Pydantic): embed schema text → `Complete` /
+  `CompleteVision` → strip markdown fences → `json.Unmarshal` into `T` →
+  `validate.T` → conflict policy in Discover. Confidence ∈ [0,1]; AI-sourced
+  fields should carry evidence.
 - **Redact secrets** from every payload before the call
   (`internal/common/redact`).
-- Log every AI call: prompt hash/version, model, token counts (if available),
-  latency, and output summary. Logs must contain no secrets.
+- Log every AI call: prompt hash/version, **resolved model name**, token counts
+  (if available), latency, and output summary. Logs must contain no secrets and
+  no full raw photo bytes.
+- **Model selection** (design §6 / v2.0.4):
+  - `Complete` → `req.Model` or `SHOAL_AI_MODEL` (lab text: `llama3.2:3b`)
+  - `CompleteVision` → `req.Model` or `SHOAL_AI_VISION_MODEL` or
+    `SHOAL_AI_MODEL` (lab vision when pulled: `moondream`)
+  - Discover **text** path uses `Complete` only; **photo** path uses
+    `CompleteVision` only (never send image bytes through text-only
+    `Complete`). If the photo path cannot attach images to the resolved model,
+    return a clear error — do not drop the image.
 - Local vs cloud via env (`SHOAL_AI_PROVIDER`, `SHOAL_AI_MODEL`,
-  `SHOAL_OLLAMA_URL`, `SHOAL_CLOUD_AI_*`). Cloud API key lives in vault — never
-  in `defaults.yml` or a log. Don't assume a GPU: vision is cloud-preferred
-  (reference GPU has 2 GB VRAM). Hybrid pipeline keeps most inputs off vision.
+  `SHOAL_AI_VISION_MODEL`, `SHOAL_OLLAMA_URL`, `SHOAL_CLOUD_AI_*`). Cloud API
+  key lives in vault — never in `defaults.yml` or a log. Nested lab Ollama is
+  often CPU-bound: keep ≤3B-class defaults. High-quality vision is
+  cloud-preferred; local `moondream` is the optional lab path. Hybrid pipeline
+  keeps most inputs off vision. OCR / graphics failure screens are **Phase 6**
+  (e.g. `deepseek-ocr` or Tesseract) — not the Phase 3 text hybrid default.
 
 ---
 
