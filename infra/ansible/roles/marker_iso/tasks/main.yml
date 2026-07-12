@@ -1,0 +1,47 @@
+---
+# Build and publish the Phase 2 SHOAL marker live ISO into the lab ISO HTTP tree.
+# Primary build host: lab VM (L1). Artifact: {{ shoal_iso_server_dir }}/shoal-marker.iso
+
+- name: Install marker ISO build packages
+  ansible.builtin.apt:
+    name:
+      - busybox-static
+      - cpio
+      - gzip
+      - xorriso
+      - isolinux
+      - syslinux-common
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+  become: true
+
+- name: Ensure ISO server directory exists
+  ansible.builtin.file:
+    path: "{{ shoal_iso_server_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  become: true
+
+- name: Stage build-marker-iso.sh on target
+  ansible.builtin.copy:
+    src: build-marker-iso.sh
+    dest: /tmp/shoal-build-marker-iso.sh
+    mode: "0755"
+
+- name: Build and publish shoal-marker.iso
+  ansible.builtin.command:
+    cmd: /tmp/shoal-build-marker-iso.sh {{ shoal_iso_server_dir }}/shoal-marker.iso
+  become: true
+  register: marker_iso_build
+  changed_when: true
+
+- name: Show marker ISO URL
+  ansible.builtin.debug:
+    msg: |
+      Marker ISO published to {{ shoal_iso_server_dir }}/shoal-marker.iso
+      Operator URL: http://{{ shoal_service_host | default(shoal_lab_vm_host) }}:{{ shoal_iso_server_port }}/shoal-marker.iso
+      BMC (lab net): http://{{ shoal_lab_network_gateway }}:{{ shoal_iso_server_port }}/shoal-marker.iso
+      {{ marker_iso_build.stdout | default('') }}
