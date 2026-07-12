@@ -58,6 +58,34 @@ go run ./cmd/shoal deploy run \
 
 See also [phase2-live-image.md](./phase2-live-image.md).
 
+### Ollama models (design §6 / v2.0.4 dual-model contract)
+
+`up.yml` / `compose_stack` pulls configured Ollama models into the `shoal-ollama`
+container after the stack is healthy:
+
+| Ansible var | App env | Lab default | Role |
+|-------------|---------|-------------|------|
+| `shoal_ai_model` | `SHOAL_AI_MODEL` | `llama3.2:3b` | Text / hybrid JSON (required) |
+| `shoal_ai_vision_model` | `SHOAL_AI_VISION_MODEL` | `moondream` | Photo / `CompleteVision` (optional; empty skips pull + smoke) |
+
+`smoke.yml` asserts `/api/tags` includes the text model, and the vision model when
+`shoal_ai_vision_model` is non-empty. First vision pull can take several minutes.
+
+Re-pull without full stack rebuild (on L1 / lab VM):
+
+```bash
+ssh -i ~/.ssh/shoal_lab_vm lab@192.168.122.100 \
+  'docker exec shoal-ollama ollama pull llama3.2:3b &&
+   docker exec shoal-ollama ollama pull moondream'
+curl -s http://192.168.122.100:11434/api/tags | jq '.models[].name'
+```
+
+To skip vision in a constrained lab, set `shoal_ai_vision_model: ""` in
+`defaults.yml` (or inventory override) and re-run the compose/ollama portion of
+`up.yml`.
+
+Phase 3 app smoke will use these env vars once the hybrid Discover PR lands.
+
 ## 2) Fast stop (teardown / clean slate)
 ```bash
 ansible-playbook -i infra/ansible/inventory/lab-vm.yml infra/ansible/playbooks/down.yml

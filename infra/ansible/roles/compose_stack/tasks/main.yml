@@ -149,24 +149,42 @@
   delay: 3
   tags: [wait]
 
-- name: Pull Ollama model
-  shell: |
-    docker exec shoal-ollama ollama pull {{ shoal_ai_model }}
+# Text model is required; vision model is optional (empty string skips pull).
+# Sequential pulls keep nested-lab Ollama memory pressure lower than parallel.
+- name: Build Ollama model pull list
+  set_fact:
+    shoal_ollama_models_to_pull: >-
+      {{
+        ([shoal_ai_model] + ([shoal_ai_vision_model] if (shoal_ai_vision_model | default('') | length) > 0 else []))
+        | unique
+        | list
+      }}
+  tags: [ollama]
+
+- name: Pull Ollama models (text + optional vision)
+  ansible.builtin.command:
+    cmd: docker exec shoal-ollama ollama pull {{ item }}
+  loop: "{{ shoal_ollama_models_to_pull }}"
+  loop_control:
+    label: "{{ item }}"
   register: model_pull
-  changed_when: "'already exists' not in model_pull.stdout"
-  failed_when: false
+  # Pulls are slow and may be no-ops if the model is already present; always report changed=false
+  # would hide real work — mark changed on success so operators see which models were processed.
+  changed_when: model_pull.rc == 0
+  failed_when: model_pull.rc != 0
   tags: [ollama]
 
 - name: Display Compose stack status
   debug:
     msg: |
       Docker Compose stack is running.
-      
+
       Services:
       - NetBox: {{ shoal_netbox_url }}
       - PostgreSQL: localhost:5432 (netbox)
       - Redis: localhost:6379
       - Ollama: {{ shoal_ollama_url }}
+        models: {{ shoal_ollama_models_to_pull | join(', ') }}
       - HTTP Server: http://{{ ansible_host }}:{{ shoal_iso_server_port }}
       - Telemetry DB: localhost:5433 (shoal_telemetry)
   tags: [status]
