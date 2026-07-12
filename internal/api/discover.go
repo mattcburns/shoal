@@ -39,3 +39,24 @@ func (s *Server) handleDiscoverIngest(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, got)
 }
+
+func (s *Server) handleDiscoverConfirm(w http.ResponseWriter, r *http.Request) {
+	if s.discover == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+			"error": "discover not configured",
+		})
+		return
+	}
+	var req discover.ConfirmRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json: " + err.Error()})
+		return
+	}
+	got, err := s.discover.Confirm(r.Context(), req)
+	if err != nil {
+		s.log.Error("discover confirm failed", "err", err.Error())
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, got)
+}

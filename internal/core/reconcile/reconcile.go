@@ -15,6 +15,7 @@ import (
 	"github.com/mattcburns/shoal/internal/common/validate"
 	"github.com/mattcburns/shoal/internal/core/ai"
 	"github.com/mattcburns/shoal/internal/core/ai/decode"
+	"github.com/mattcburns/shoal/internal/core/fewshot"
 	"github.com/mattcburns/shoal/prompts"
 )
 
@@ -42,13 +43,19 @@ type ReconcilePhotoInput struct {
 
 // Service implements Reconciler.
 type Service struct {
-	LLM    ai.LLM
-	Log    *slog.Logger
-	Assets prompts.Assets
+	LLM     ai.LLM
+	Log     *slog.Logger
+	Assets  prompts.Assets
+	FewShot fewshot.Store // optional learned examples
 }
 
 // New constructs a Service. assets may be empty; Load is attempted if needed.
 func New(llm ai.LLM, log *slog.Logger) (*Service, error) {
+	return NewWithFewShot(llm, log, nil)
+}
+
+// NewWithFewShot constructs a Service with an optional learned few-shot store.
+func NewWithFewShot(llm ai.LLM, log *slog.Logger, fs fewshot.Store) (*Service, error) {
 	if log == nil {
 		log = slog.Default()
 	}
@@ -56,7 +63,7 @@ func New(llm ai.LLM, log *slog.Logger) (*Service, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Service{LLM: llm, Log: log, Assets: assets}, nil
+	return &Service{LLM: llm, Log: log, Assets: assets, FewShot: fs}, nil
 }
 
 // ReconcileAsset runs Complete + decode + validate.
@@ -79,10 +86,19 @@ func (s *Service) ReconcileAsset(ctx context.Context, in ReconcileAssetInput) (m
 		}
 		partialJSON = string(b)
 	}
+	few := s.Assets.ReconcileAssetFewShot
+	if s.FewShot != nil {
+		if learned, err := s.FewShot.Load(ctx, fewshot.PromptReconcileAsset, fewshot.DefaultLoadLimit); err == nil && len(learned) > 0 {
+			extra := fewshot.FormatForPrompt(learned)
+			if extra != "" {
+				few = few + "\n# Learned (operator-confirmed)\n" + extra
+			}
+		}
+	}
 	user := ai.BuildReconcileAssetPrompt(
 		s.Assets.ReconcileAssetMD,
 		s.Assets.SchemaNormalizationResult,
-		s.Assets.ReconcileAssetFewShot,
+		few,
 		string(rawJSON),
 		partialJSON,
 	)

@@ -108,6 +108,30 @@ go run ./cmd/shoal discover ingest \
 
 Also: `POST /v1/discover/ingest` when `shoal serve` is started with the same AI/NetBox env.
 
+### Phase 3b: confirm → few-shot learning
+
+Operator-confirmed normalizations append to a durable few-shot store (not NetBox).
+Set a directory outside git:
+
+```bash
+export SHOAL_FEWSHOT_DIR=./.shoal/fewshot
+mkdir -p "$SHOAL_FEWSHOT_DIR"
+
+# After reviewing an ingest JSON (stdout from discover ingest), confirm it:
+# confirm.json shape:
+# { "kind":"redfish_json", "input":{...redacted raw...}, "result":{ "asset":{...}, "confidences":[...], "needs_review":false } }
+go run ./cmd/shoal discover confirm -file /tmp/confirm.json
+
+# Or split files:
+go run ./cmd/shoal discover confirm \
+  -kind redfish_json \
+  -input /tmp/messy.json \
+  -result /tmp/ingest-out.json
+```
+
+API: `POST /v1/discover/confirm` with the same JSON body. Ingest still works without
+`SHOAL_FEWSHOT_DIR`; confirm returns an error until the dir is set.
+
 ## 2) Fast stop (teardown / clean slate)
 ```bash
 ansible-playbook -i infra/ansible/inventory/lab-vm.yml infra/ansible/playbooks/down.yml

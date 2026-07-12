@@ -240,6 +240,7 @@ go run ./cmd/shoal deploy run \
 | `SHOAL_BMC_USERNAME` / `SHOAL_BMC_PASSWORD` | Lab defaults only; production uses secrets backend per device |
 | `SHOAL_ISO_BASE_URL` | e.g. `http://192.168.122.100:8080` |
 | `SHOAL_RECONCILE_FAIL_ORPHANS` | Default `true` |
+| `SHOAL_FEWSHOT_DIR` | Optional; append-only learned few-shot JSONL (confirm learning). Empty disables confirm |
 
 Full table and Ansible extension points: design doc §8.1.
 
@@ -321,13 +322,18 @@ Full table and Ansible extension points: design doc §8.1.
     extracted from OCR, **fail** (no synthetic `photo-unknown` serials).
   - Do **not** use `deepseek-ocr` as the text hybrid model; do **not** treat
     `moondream` as photo AC.
+- **Learning loop (Phase 3b):** operator `discover confirm` / `POST /v1/discover/confirm`
+  appends redacted examples to `SHOAL_FEWSHOT_DIR` (Core `fewshot` store). Only
+  confirmed examples are learned — never auto-learn every ingest. Secrets must
+  not appear in few-shot input. Learned lines load into `ReconcileAsset` prompts
+  (capped). Confirm does **not** re-write NetBox.
 - Local vs cloud via env (`SHOAL_AI_PROVIDER`, `SHOAL_AI_MODEL`,
-  `SHOAL_AI_VISION_MODEL`, `SHOAL_OLLAMA_URL`, `SHOAL_CLOUD_AI_*`). Cloud API
-  key lives in vault — never in `defaults.yml` or a log. Nested lab Ollama is
-  often CPU-bound; text stays small (`llama3.2:3b`), vision OCR uses
-  `deepseek-ocr` (~6.7GB). Hybrid pipeline keeps most inputs off vision.
-  **Graphics failure-screen OCR** remains **Phase 6** (Tesseract vs cloud) —
-  separate from Phase 3 asset-label OCR.
+  `SHOAL_AI_VISION_MODEL`, `SHOAL_OLLAMA_URL`, `SHOAL_CLOUD_AI_*`,
+  `SHOAL_FEWSHOT_DIR`). Cloud API key lives in vault — never in `defaults.yml`
+  or a log. Nested lab Ollama is often CPU-bound; text stays small
+  (`llama3.2:3b`), vision OCR uses `deepseek-ocr` (~6.7GB). Hybrid pipeline
+  keeps most inputs off vision. **Graphics failure-screen OCR** remains
+  **Phase 6** (Tesseract vs cloud) — separate from Phase 3 asset-label OCR.
 
 ---
 
