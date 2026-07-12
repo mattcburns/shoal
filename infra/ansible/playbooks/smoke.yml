@@ -60,6 +60,47 @@
       failed_when: false
       changed_when: false
 
+    # Ollama /api/tags returns { "models": [ { "name": "llama3.2:3b", ... }, ... ] }.
+    # Match configured model as a prefix of the reported name (tag may add digests later).
+    - name: Assert Ollama text model is present
+      ansible.builtin.assert:
+        that:
+          - smoke_ollama.status == 200
+          - smoke_ollama.json.models is defined
+          - >
+            smoke_ollama.json.models
+            | map(attribute='name')
+            | select('search', '^' + (shoal_ai_model | regex_escape))
+            | list
+            | length > 0
+        fail_msg: >-
+          Ollama text model {{ shoal_ai_model }} not found in /api/tags.
+          Models: {{ smoke_ollama.json.models | default([]) | map(attribute='name') | list }}.
+          Pull with: docker exec shoal-ollama ollama pull {{ shoal_ai_model }}
+        success_msg: "Ollama text model present: {{ shoal_ai_model }}"
+      when: smoke_ollama.status == 200
+
+    - name: Assert Ollama vision model is present
+      ansible.builtin.assert:
+        that:
+          - smoke_ollama.status == 200
+          - smoke_ollama.json.models is defined
+          - >
+            smoke_ollama.json.models
+            | map(attribute='name')
+            | select('search', '^' + (shoal_ai_vision_model | regex_escape))
+            | list
+            | length > 0
+        fail_msg: >-
+          Ollama vision model {{ shoal_ai_vision_model }} not found in /api/tags.
+          Models: {{ smoke_ollama.json.models | default([]) | map(attribute='name') | list }}.
+          Pull with: docker exec shoal-ollama ollama pull {{ shoal_ai_vision_model }}
+          (or set shoal_ai_vision_model: "" to skip vision in this lab).
+        success_msg: "Ollama vision model present: {{ shoal_ai_vision_model }}"
+      when:
+        - smoke_ollama.status == 200
+        - (shoal_ai_vision_model | default('') | length) > 0
+
     - name: Check ISO HTTP server
       ansible.builtin.uri:
         url: "http://{{ shoal_service_host }}:{{ shoal_iso_server_port }}/"
