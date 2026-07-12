@@ -1,6 +1,6 @@
 # Shoal: Comprehensive Design Document & Phased Implementation Plan
 
-**Version:** 2.0.4  
+**Version:** 2.0.5  
 **Date:** July 2026  
 **Status:** Draft (post-review; open questions resolved)  
 **Author:** (architect / AI agent)  
