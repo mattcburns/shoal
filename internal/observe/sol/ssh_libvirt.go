@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/mattcburns/shoal/internal/common/models"
 )
@@ -32,10 +33,12 @@ type SSHSerialConfig struct {
 type SSHLibvirtTransport struct {
 	cfg SSHSerialConfig
 
-	mu     sync.Mutex
-	cancel context.CancelFunc
-	cmd    *exec.Cmd
-	stdout io.ReadCloser
+	mu       sync.Mutex
+	cancel   context.CancelFunc
+	cmd      *exec.Cmd
+	stdout   io.ReadCloser
+	waitOnce sync.Once
+	waitErr  error
 }
 
 // NewSSHLibvirtTransport constructs a transport from config.
@@ -87,7 +90,9 @@ func (t *SSHLibvirtTransport) Open(ctx context.Context, target string) (<-chan s
 	}
 	args = append(args, user+"@"+t.cfg.Host, remote)
 
-	cmd := exec.CommandContext(ctx, sshBin, args...)
+	// Detach process lifetime from the watch context: Open/Close own the process.
+	// Tying ssh to watchCtx made cancel races with pipe drain hang cmd.Wait.
+	cmd := exec.Command(sshBin, args...)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, fmt.Errorf("sol: ssh stdout: %w", err)
@@ -98,8 +103,10 @@ func (t *SSHLibvirtTransport) Open(ctx context.Context, target string) (<-chan s
 	}
 	t.cmd = cmd
 	t.stdout = stdout
+	t.waitOnce = sync.Once{}
+	t.waitErr = nil
 
-	ctx, cancel := context.WithCancel(ctx)
+	scanCtx, cancel := context.WithCancel(context.Background())
 	t.cancel = cancel
 	ch := make(chan string, 32)
 
@@ -110,36 +117,65 @@ func (t *SSHLibvirtTransport) Open(ctx context.Context, target string) (<-chan s
 		sc.Buffer(buf, 1024*1024)
 		for sc.Scan() {
 			select {
-			case <-ctx.Done():
+			case <-scanCtx.Done():
 				return
 			case ch <- sc.Text():
 			}
 		}
-		_ = cmd.Wait()
+		// Natural EOF: reap process. Close may also reap via waitOnce.
+		_ = t.reap()
 	}()
 
 	return ch, nil
 }
 
-// Close stops the SSH cat process.
+func (t *SSHLibvirtTransport) reap() error {
+	t.waitOnce.Do(func() {
+		t.mu.Lock()
+		cmd := t.cmd
+		t.mu.Unlock()
+		if cmd != nil {
+			t.waitErr = cmd.Wait()
+		}
+	})
+	return t.waitErr
+}
+
+// Close stops the SSH cat process. It never blocks indefinitely.
 func (t *SSHLibvirtTransport) Close() error {
 	t.mu.Lock()
-	defer t.mu.Unlock()
-	if t.cancel != nil {
-		t.cancel()
-		t.cancel = nil
+	cancel := t.cancel
+	t.cancel = nil
+	cmd := t.cmd
+	stdout := t.stdout
+	t.stdout = nil
+	t.mu.Unlock()
+
+	if cancel != nil {
+		cancel()
 	}
-	var err error
-	if t.cmd != nil && t.cmd.Process != nil {
-		_ = t.cmd.Process.Kill()
-		err = t.cmd.Wait()
+	// Unblock Scanner / ssh write side before Wait.
+	if stdout != nil {
+		_ = stdout.Close()
+	}
+	if cmd != nil && cmd.Process != nil {
+		_ = cmd.Process.Kill()
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- t.reap() }()
+	select {
+	case err := <-done:
+		t.mu.Lock()
 		t.cmd = nil
+		t.mu.Unlock()
+		return err
+	case <-time.After(3 * time.Second):
+		t.mu.Lock()
+		t.cmd = nil
+		t.mu.Unlock()
+		return fmt.Errorf("sol: ssh wait timed out after kill")
 	}
-	if t.stdout != nil {
-		_ = t.stdout.Close()
-		t.stdout = nil
-	}
-	return err
 }
 
 func shellQuote(s string) string {

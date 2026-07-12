@@ -379,6 +379,7 @@ func (o *Orchestrator) handleTerminalOnce(ctx context.Context, jobID string, rea
 	}
 
 	// Unregister watch first so SOL stops feeding markers.
+	// Bound the wait: a stuck SSH/PTY close must not prevent lifecycle transition.
 	sessionID := ""
 	systemID := ""
 	bmcURL := ""
@@ -390,11 +391,23 @@ func (o *Orchestrator) handleTerminalOnce(ctx context.Context, jobID string, rea
 		credRef = rs.credential
 	}
 	if sessionID != "" && o.watches != nil {
-		_ = o.watches.Unregister(ctx, sessionID)
+		unregDone := make(chan struct{})
+		go func() {
+			_ = o.watches.Unregister(context.Background(), sessionID)
+			close(unregDone)
+		}()
+		select {
+		case <-unregDone:
+		case <-time.After(10 * time.Second):
+			o.log.Warn("watch unregister timed out", "job_id", jobID, "session_id", sessionID)
+		case <-ctx.Done():
+			o.log.Warn("watch unregister aborted by context", "job_id", jobID)
+		}
 	}
 
-	// Load job for BMC endpoint if needed.
-	job, err := o.store.Get(ctx, jobID)
+	// Load job for BMC endpoint if needed. Prefer Background so a cancelled
+	// caller context cannot skip the terminal state write.
+	job, err := o.store.Get(context.Background(), jobID)
 	if err != nil {
 		return err
 	}
@@ -445,9 +458,12 @@ func (o *Orchestrator) handleTerminalOnce(ctx context.Context, jobID string, rea
 		errMsg = string(reason)
 	}
 
-	if err := o.store.Transition(ctx, jobID, to, errMsg); err != nil {
+	// Always commit lifecycle with Background so waiters observe the terminal state
+	// even if the terminalLoop request context already expired.
+	if err := o.store.Transition(context.Background(), jobID, to, errMsg); err != nil {
 		return err
 	}
+	o.log.Info("job terminal", "job_id", jobID, "state", string(to), "reason", string(reason))
 
 	o.mu.Lock()
 	delete(o.running, jobID)
@@ -571,12 +587,19 @@ func (p *progressAdapter) ApplyMarker(ctx context.Context, jobID string, m model
 }
 
 func (p *progressAdapter) ReportStall(ctx context.Context, jobID string, reason string) error {
+	if !p.stillProvisioning(ctx, jobID) {
+		return nil
+	}
 	_ = p.orch.store.UpdateProgress(ctx, jobID, "STALL", nil, 0, reason)
 	p.orch.enqueueTerminal(jobID, ReasonStall)
 	return nil
 }
 
 func (p *progressAdapter) ReportTransportError(ctx context.Context, jobID string, err error) error {
+	// Ignore stream close after DONE/cancel/stall already committed (e.g. guest poweroff).
+	if !p.stillProvisioning(ctx, jobID) {
+		return nil
+	}
 	msg := "transport error"
 	if err != nil {
 		msg = err.Error()
@@ -584,6 +607,14 @@ func (p *progressAdapter) ReportTransportError(ctx context.Context, jobID string
 	_ = p.orch.store.UpdateProgress(ctx, jobID, "TRANSPORT", nil, 0, msg)
 	p.orch.enqueueTerminal(jobID, ReasonTransport)
 	return nil
+}
+
+func (p *progressAdapter) stillProvisioning(ctx context.Context, jobID string) bool {
+	j, err := p.orch.store.Get(ctx, jobID)
+	if err != nil {
+		return true // fail open so real errors still surface
+	}
+	return j.State == models.StateProvisioning
 }
 
 var _ jobport.JobProgress = (*progressAdapter)(nil)

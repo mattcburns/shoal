@@ -129,6 +129,7 @@ func (w *WatchService) cleanupLocked(session models.WatchSession) {
 }
 
 // Unregister stops the watch for sessionID.
+// Close is bounded so Deploy HandleTerminal cannot hang on a stuck SSH/PTY.
 func (w *WatchService) Unregister(_ context.Context, sessionID string) error {
 	w.mu.Lock()
 	aw, ok := w.active[sessionID]
@@ -141,10 +142,22 @@ func (w *WatchService) Unregister(_ context.Context, sessionID string) error {
 	w.mu.Unlock()
 
 	aw.cancel()
-	_ = aw.trans.Close()
+
+	closeDone := make(chan struct{})
+	go func() {
+		_ = aw.trans.Close()
+		close(closeDone)
+	}()
+	select {
+	case <-closeDone:
+	case <-time.After(5 * time.Second):
+		w.log.Warn("sol transport close timed out", "session_id", sessionID)
+	}
+
 	select {
 	case <-aw.done:
 	case <-time.After(2 * time.Second):
+		w.log.Warn("sol watch run did not exit promptly", "session_id", sessionID)
 	}
 	w.log.Info("sol watch unregistered", "session_id", sessionID)
 	return nil
@@ -176,6 +189,8 @@ func (w *WatchService) run(ctx context.Context, aw *activeWatch, lines <-chan st
 			return
 		case line, ok := <-lines:
 			if !ok {
+				// Stream ended without a terminal marker (or after watch cancel).
+				// Deploy ignores transport errors once the job is no longer PROVISIONING.
 				_ = progress.ReportTransportError(context.Background(), aw.session.JobID, fmt.Errorf("sol stream closed"))
 				return
 			}
@@ -187,8 +202,12 @@ func (w *WatchService) run(ctx context.Context, aw *activeWatch, lines <-chan st
 			if err := progress.ApplyMarker(context.Background(), aw.session.JobID, m); err != nil {
 				w.log.Error("apply marker failed", "job_id", aw.session.JobID, "err", err.Error())
 			}
-			// Terminal markers: progress port notifies orchestrator; we keep
-			// running until Unregister so cleanup can complete.
+			// Terminal markers: orchestrator is notified via jobport; stop the
+			// watch loop so guest poweroff does not race as a transport error and
+			// so Unregister is not stuck draining a dead serial stream.
+			if IsTerminal(m) {
+				return
+			}
 		}
 	}
 }

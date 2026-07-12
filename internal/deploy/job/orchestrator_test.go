@@ -194,6 +194,85 @@ func TestOrchestratorStallFailsAndCleansUp(t *testing.T) {
 	t.Fatal("stall did not fail job in time")
 }
 
+// blockingCloseTransport hangs forever in Close — used to prove HandleTerminal
+// still transitions after DONE (regression for happy-path hang).
+type blockingCloseTransport struct {
+	inner   sol.Transport
+	started chan struct{}
+}
+
+func (b *blockingCloseTransport) Open(ctx context.Context, target string) (<-chan string, error) {
+	return b.inner.Open(ctx, target)
+}
+
+func (b *blockingCloseTransport) Close() error {
+	select {
+	case <-b.started:
+	default:
+		close(b.started)
+	}
+	select {} // hang forever
+}
+
+func TestOrchestratorDoneDespiteStuckSOLClose(t *testing.T) {
+	ctx := context.Background()
+	store := jobstore.NewMemory()
+	sec := secrets.NewMemory()
+	fakeBMC := redfish.NewFake()
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	pr, pw := io.Pipe()
+	closeStarted := make(chan struct{})
+	watch := sol.NewWatchService(log, nil)
+	watch.NewTransport = func(session models.WatchSession) sol.Transport {
+		return &blockingCloseTransport{
+			inner:   sol.NewReaderTransport(pr),
+			started: closeStarted,
+		}
+	}
+
+	orch := job.NewOrchestrator(job.Options{
+		Log: log, Store: store, Secrets: sec,
+		NewBMC:              func(cfg redfish.Config) (redfish.BMC, error) { return fakeBMC, nil },
+		Watches:             watch,
+		ReconcileFailOrphan: true,
+	})
+	defer orch.Stop()
+	watch.SetProgress(orch.ProgressPort())
+
+	j, err := orch.Start(ctx, models.StartJobRequest{
+		DeviceID: "n1", BMCEndpoint: "http://bmc", BMCUsername: "u", BMCPassword: "p",
+		SerialTarget: "n1", ISOURL: "http://iso/x.iso",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	writeMarker(t, pw, "SHOAL|1|1|2026-06-19T04:10:00Z|BOOT|5|OK|booting")
+	writeMarker(t, pw, "SHOAL|1|2|2026-06-19T04:10:20Z|DONE|100|OK|reboot pending")
+	_ = pw.Close()
+
+	// Unregister should attempt Close (which hangs); HandleTerminal must still provision.
+	deadline := time.Now().Add(15 * time.Second)
+	var final models.ProvisioningJob
+	for time.Now().Before(deadline) {
+		final, err = store.Get(ctx, j.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if final.State == models.StateProvisioned {
+			select {
+			case <-closeStarted:
+			case <-time.After(time.Second):
+				t.Fatal("expected Close to be attempted")
+			}
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("want provisioned despite stuck Close, got %s phase=%s err=%s", final.State, final.Phase, final.Error)
+}
+
 func TestOrchestratorOrphanReconcile(t *testing.T) {
 	ctx := context.Background()
 	store := jobstore.NewMemory()

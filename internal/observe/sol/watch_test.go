@@ -67,6 +67,53 @@ func TestWatchServiceMarkers(t *testing.T) {
 	_ = pw.Close()
 }
 
+func TestWatchServiceStopsOnTerminalMarker(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	prog := &recordingProgress{}
+	w := sol.NewWatchService(log, prog)
+	pr, pw := io.Pipe()
+	w.NewTransport = func(models.WatchSession) sol.Transport {
+		return sol.NewReaderTransport(pr)
+	}
+	ctx := context.Background()
+	if err := w.Register(ctx, models.WatchSession{
+		ID: "s1", JobID: "j1", DeviceID: "d1", Target: "t",
+		StallTimeout: time.Minute,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = io.WriteString(pw, "SHOAL|1|1|2026-06-19T04:10:00Z|DONE|100|OK|done\n")
+	// Give run loop time to apply terminal marker without closing the pipe.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		prog.mu.Lock()
+		n := len(prog.markers)
+		prog.mu.Unlock()
+		if n >= 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	prog.mu.Lock()
+	n := len(prog.markers)
+	prog.mu.Unlock()
+	if n < 1 {
+		t.Fatal("expected terminal marker applied")
+	}
+	// Unregister should complete quickly even if pipe still open.
+	done := make(chan error, 1)
+	go func() { done <- w.Unregister(ctx, "s1") }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Unregister hung after terminal marker")
+	}
+	_ = pw.Close()
+}
+
 func TestWatchServiceStall(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	prog := &recordingProgress{}
