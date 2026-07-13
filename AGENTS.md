@@ -240,7 +240,7 @@ go run ./cmd/shoal deploy run \
 | `SHOAL_BMC_USERNAME` / `SHOAL_BMC_PASSWORD` | Lab defaults only; production uses secrets backend per device |
 | `SHOAL_ISO_BASE_URL` | e.g. `http://192.168.122.100:8080` |
 | `SHOAL_RECONCILE_FAIL_ORPHANS` | Default `true` |
-| `SHOAL_FEWSHOT_DIR` | Optional; append-only learned few-shot JSONL (confirm learning). Empty disables confirm |
+| `SHOAL_FEWSHOT_DIR` | Append-only learned few-shot JSONL (confirm learning). Lab Ansible default: `/var/lib/shoal/fewshot` via `shoal_fewshot_dir` + `env.j2`. Empty disables confirm |
 
 Full table and Ansible extension points: design doc §8.1.
 

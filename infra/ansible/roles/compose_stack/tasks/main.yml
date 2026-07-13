@@ -16,6 +16,26 @@
     mode: '0600'
   tags: [config]
 
+# Parent must be traversable by the app user; fewshot dir is writable by
+# the remote login user (lab on L1; often the operator running direct-mode).
+- name: Ensure shoal state parent directory exists
+  file:
+    path: "{{ shoal_fewshot_dir | dirname }}"
+    state: directory
+    mode: '0755'
+  when: (shoal_fewshot_dir | default('') | length) > 0
+  tags: [config]
+
+- name: Ensure few-shot learning directory exists
+  file:
+    path: "{{ shoal_fewshot_dir }}"
+    state: directory
+    mode: '0750'
+    owner: "{{ ansible_user | default(shoal_lab_vm_user) }}"
+    group: "{{ ansible_user | default(shoal_lab_vm_user) }}"
+  when: (shoal_fewshot_dir | default('') | length) > 0
+  tags: [config]
+
 - name: Ensure NetBox configuration directory exists
   file:
     path: "{{ shoal_compose_dir }}/netbox-config"

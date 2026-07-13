@@ -111,15 +111,25 @@ Also: `POST /v1/discover/ingest` when `shoal serve` is started with the same AI/
 ### Phase 3b: confirm → few-shot learning
 
 Operator-confirmed normalizations append to a durable few-shot store (not NetBox).
-Set a directory outside git:
+
+**Lab default (Ansible):** `shoal_fewshot_dir` is `/var/lib/shoal/fewshot` on the
+service host. `compose_stack` creates the directory and writes
+`SHOAL_FEWSHOT_DIR` into `/opt/shoal/infra/.env`. Override or disable with
+`-e shoal_fewshot_dir=""` (empty skips the env var and mkdir).
+
+**Workstation `go run` against the lab:** the lab path is on the remote host —
+use a local durable dir (outside git), or source a local untracked `.env`:
 
 ```bash
 export SHOAL_FEWSHOT_DIR=./.shoal/fewshot
 mkdir -p "$SHOAL_FEWSHOT_DIR"
+```
 
+```bash
 # After reviewing an ingest JSON (stdout from discover ingest), confirm it:
 # confirm.json shape:
 # { "kind":"redfish_json", "input":{...redacted raw...}, "result":{ "asset":{...}, "confidences":[...], "needs_review":false } }
+# Confidence source must be "deterministic" or "ai".
 go run ./cmd/shoal discover confirm -file /tmp/confirm.json
 
 # Or split files:
@@ -129,8 +139,8 @@ go run ./cmd/shoal discover confirm \
   -result /tmp/ingest-out.json
 ```
 
-API: `POST /v1/discover/confirm` with the same JSON body. Ingest still works without
-`SHOAL_FEWSHOT_DIR`; confirm returns an error until the dir is set.
+API: `POST /v1/discover/confirm` with the same JSON body. Ingest still works if
+`SHOAL_FEWSHOT_DIR` is unset; confirm returns an error until the dir is set.
 
 ## 2) Fast stop (teardown / clean slate)
 ```bash

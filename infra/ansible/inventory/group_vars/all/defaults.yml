@@ -67,6 +67,9 @@ shoal_infra_dir: /opt/shoal/infra
 shoal_compose_dir: /opt/shoal/infra
 shoal_sushy_dir: /opt/shoal/infra/sushy-tools
 shoal_iso_server_dir: /srv/iso
+# Append-only learned few-shot JSONL (Phase 3b confirm). Outside git; durable on
+# the lab service host. Empty string disables SHOAL_FEWSHOT_DIR in env.j2.
+shoal_fewshot_dir: /var/lib/shoal/fewshot
 
 # --- Telemetry DB (non-secret parts) ---
 shoal_telemetry_db_name: shoal_telemetry
