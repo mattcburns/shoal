@@ -55,3 +55,34 @@ type VirtualMedia struct {
 	MediaTypes []string
 	SupportsCD bool
 }
+
+// SELOptions filters ListSEL results.
+type SELOptions struct {
+	// MaxEntries caps returned entries (0 = default 200).
+	MaxEntries int
+	// Since, when non-zero, keeps entries at or after this time (Created/EventTimestamp).
+	Since time.Time
+}
+
+// SELEntry is a Shoal-domain log/SEL record (no gofish types).
+type SELEntry struct {
+	ID         string // Log entry ID
+	Message    string
+	Severity   string    // OK | Warning | Critical | …
+	EntryType  string    // Event | SEL | Oem
+	Created    time.Time // zero if unknown
+	SensorType string
+	SensorNum  int // 0 when unset / not SEL
+	ODataID    string
+	LogService string // parent log service name or URI fragment
+}
+
+// SensorSample is one thermal/power sensor reading from Redfish.
+type SensorSample struct {
+	Name            string
+	Reading         float64
+	Units           string
+	PhysicalContext string
+	Status          string // Health / State summary when available
+	Kind            string // "temperature" | "fan" | "voltage" | "power" | …
+}
