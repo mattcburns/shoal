@@ -52,6 +52,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /v1/jobs/{id}", s.handleGetJob)
 	s.mux.HandleFunc("POST /v1/jobs/{id}/cancel", s.handleCancelJob)
 	s.mux.HandleFunc("POST /v1/discover/ingest", s.handleDiscoverIngest)
+	s.mux.HandleFunc("POST /v1/discover/confirm", s.handleDiscoverConfirm)
 }
 
 func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {

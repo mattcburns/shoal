@@ -20,6 +20,7 @@ import (
 	"github.com/mattcburns/shoal/internal/common/redfish"
 	"github.com/mattcburns/shoal/internal/common/secrets"
 	"github.com/mattcburns/shoal/internal/core/ai"
+	"github.com/mattcburns/shoal/internal/core/fewshot"
 	"github.com/mattcburns/shoal/internal/core/reconcile"
 	"github.com/mattcburns/shoal/internal/deploy/job"
 	"github.com/mattcburns/shoal/internal/discover"
@@ -64,7 +65,7 @@ Commands:
   version    Print version and exit
   serve      Run the HTTP API server
   deploy     Provisioning: run | status | cancel
-  discover   Ingest assets: ingest
+  discover   Assets: ingest | confirm
 
 Phase 3 discover example:
   export SHOAL_AI_PROVIDER=ollama
@@ -115,11 +116,20 @@ func cmdServe(args []string) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// Optional Discover / AI wiring (Phase 3).
+	// Optional Discover / AI wiring (Phase 3 + 3b learning).
+	var fsStore fewshot.Store
+	if cfg.FewShotDir != "" {
+		if st, err := fewshot.NewFileStore(cfg.FewShotDir); err != nil {
+			log.Warn("fewshot store unavailable", "err", err.Error())
+		} else {
+			fsStore = st
+			log.Info("fewshot learning enabled", "dir", cfg.FewShotDir)
+		}
+	}
 	if llm, err := ai.NewFromConfig(cfg); err != nil {
 		log.Warn("ai client not configured", "err", err.Error())
 	} else if llm != nil {
-		rec, err := reconcile.New(llm, log)
+		rec, err := reconcile.NewWithFewShot(llm, log, fsStore)
 		if err != nil {
 			log.Warn("reconciler init failed", "err", err.Error())
 		} else {
@@ -127,9 +137,9 @@ func cmdServe(args []string) int {
 			if cfg.NetBoxURL != "" && cfg.NetBoxToken != "" {
 				nb = netbox.New(cfg.NetBoxURL, cfg.NetBoxToken)
 			}
-			disc := discover.New(log, rec, openSecrets(cfg), nb)
+			disc := discover.NewWithFewShot(log, rec, openSecrets(cfg), nb, fsStore)
 			srvAPI.WithDiscover(disc)
-			log.Info("discover ingest API enabled")
+			log.Info("discover ingest/confirm API enabled")
 		}
 	}
 

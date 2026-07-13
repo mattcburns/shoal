@@ -33,6 +33,9 @@
           - Ollama: {{ shoal_ollama_url }}
           - HTTP ISO Server: http://{{ ansible_host }}:{{ shoal_iso_server_port }}
           - Telemetry DB: {{ shoal_telemetry_db_url }}
+          {% if (shoal_fewshot_dir | default('') | length) > 0 %}
+          - Few-shot learning dir (SHOAL_FEWSHOT_DIR): {{ shoal_fewshot_dir }}
+          {% endif %}
           
           Virtual BMC Nodes (via sushy-tools):
           {% for node in shoal_bmc_nodes %}

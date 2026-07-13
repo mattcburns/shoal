@@ -13,6 +13,7 @@ import (
 	"github.com/mattcburns/shoal/internal/common/redact"
 	"github.com/mattcburns/shoal/internal/common/secrets"
 	"github.com/mattcburns/shoal/internal/common/validate"
+	"github.com/mattcburns/shoal/internal/core/fewshot"
 	"github.com/mattcburns/shoal/internal/core/reconcile"
 	"github.com/mattcburns/shoal/internal/discover/adapters"
 	"github.com/mattcburns/shoal/internal/discover/gate"
@@ -36,10 +37,16 @@ type Service struct {
 	Reconciler reconcile.Reconciler
 	Secrets    secrets.Backend
 	NetBox     netbox.API
+	FewShot    fewshot.Store // optional; required for Confirm
 }
 
 // New constructs a Service with default adapters.
 func New(log *slog.Logger, rec reconcile.Reconciler, sec secrets.Backend, nb netbox.API) *Service {
+	return NewWithFewShot(log, rec, sec, nb, nil)
+}
+
+// NewWithFewShot constructs a Service with an optional learned few-shot store.
+func NewWithFewShot(log *slog.Logger, rec reconcile.Reconciler, sec secrets.Backend, nb netbox.API, fs fewshot.Store) *Service {
 	if log == nil {
 		log = slog.Default()
 	}
@@ -49,6 +56,7 @@ func New(log *slog.Logger, rec reconcile.Reconciler, sec secrets.Backend, nb net
 		Reconciler: rec,
 		Secrets:    sec,
 		NetBox:     nb,
+		FewShot:    fs,
 	}
 }
 

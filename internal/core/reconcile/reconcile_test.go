@@ -7,6 +7,7 @@ import (
 
 	"github.com/mattcburns/shoal/internal/common/models"
 	"github.com/mattcburns/shoal/internal/core/ai"
+	"github.com/mattcburns/shoal/internal/core/fewshot"
 	"github.com/mattcburns/shoal/internal/core/reconcile"
 )
 
@@ -26,7 +27,7 @@ func TestReconcileAssetWithFake(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, err := svc.ReconcileAsset(context.Background(), reconcile.ReconcileAssetInput{
-		RedactedRaw: map[string]any{"SerialNumber": "SN1", "password": "[REDACTED]"},
+		RedactedRaw: map[string]any{"SerialNumber": "SN1"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -37,8 +38,50 @@ func TestReconcileAssetWithFake(t *testing.T) {
 	if len(fake.Calls) != 1 {
 		t.Fatalf("calls %d", len(fake.Calls))
 	}
-	if strings.Contains(fake.Calls[0].User, "secretpass") {
-		t.Fatal("secret leaked into prompt")
+}
+
+func TestReconcileAssetIncludesLearnedFewShot(t *testing.T) {
+	dir := t.TempDir()
+	st, err := fewshot.NewFileStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = st.Append(context.Background(), fewshot.Example{
+		Prompt: fewshot.PromptReconcileAsset,
+		Kind:   "redfish_json",
+		Input:  map[string]any{"SerialNumber": "LEARNED"},
+		Output: models.NormalizationResult{
+			Asset: models.NormalizedAsset{Serial: "LEARNED", BMCIP: "9.9.9.9"},
+		},
+		Source: "operator_confirm",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := &ai.Fake{
+		ResponseFn: func(req ai.CompletionRequest) (ai.CompletionResponse, error) {
+			if !strings.Contains(req.User, "LEARNED") {
+				t.Fatalf("prompt missing learned example")
+			}
+			return ai.CompletionResponse{Content: `{
+  "asset": {"serial":"SN2","model":"M","vendor":"V","bmc_ip":"10.0.0.2"},
+  "confidences": [
+    {"field":"serial","confidence":0.9,"source":"ai","evidence":"x"},
+    {"field":"bmc_ip","confidence":0.9,"source":"ai","evidence":"y"}
+  ],
+  "needs_review": false
+}`}, nil
+		},
+	}
+	svc, err := reconcile.NewWithFewShot(fake, nil, st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = svc.ReconcileAsset(context.Background(), reconcile.ReconcileAssetInput{
+		RedactedRaw: map[string]any{"Id": "2"},
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }
 

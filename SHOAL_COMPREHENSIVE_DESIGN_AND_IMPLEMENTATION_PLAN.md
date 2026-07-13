@@ -1327,10 +1327,11 @@ Default VM-hosted endpoints: NetBox `:8000`, sushy `:8001`, ISO HTTP `:8080`, Ol
 | `SHOAL_BMC_USERNAME` / `SHOAL_BMC_PASSWORD` | lab only | Existing vault vars — for lab defaults / smoke; production uses secrets backend per device |
 | `SHOAL_ISO_BASE_URL` | no | e.g. `http://192.168.122.100:8080` |
 | `SHOAL_RECONCILE_FAIL_ORPHANS` | no | Default `true` |
+| `SHOAL_FEWSHOT_DIR` | no | Append-only learned few-shot JSONL (Phase 3b confirm). Lab default via Ansible `shoal_fewshot_dir` → `/var/lib/shoal/fewshot` in `env.j2` + mkdir. Empty disables confirm |
 
 **Ansible extensions (when packaging app service):**
 - `compose_stack` templates: add `shoal` service (static binary image), publish `SHOAL_HTTP_ADDR` port, inject table above into `env.j2`
-- `group_vars/all/defaults.yml`: `shoal_app_http_port: 8088`
+- `group_vars/all/defaults.yml`: `shoal_app_http_port: 8088`; **`shoal_fewshot_dir: /var/lib/shoal/fewshot`** (Phase 3b; already in `env.j2` + mkdir)
 - Secrets: `shoal_netbox_token` already bootstrapped — ensure it is exported into app env
 
 **Phase 0** does not require the Shoal container. **Phase 1** may `go run` with exported env. **Packaging PR** adds Compose service.

@@ -35,6 +35,8 @@ type Config struct {
 	SerialSSHKey  string
 	// SerialSSHSudo runs remote virsh/cat with sudo -n (default true when host set).
 	SerialSSHSudo bool
+	// FewShotDir is append-only learned few-shot JSONL storage (empty = learning disabled).
+	FewShotDir string
 }
 
 // Load reads SHOAL_* environment variables with Phase 1-friendly defaults.
@@ -64,6 +66,7 @@ func Load() (Config, error) {
 		SerialSSHUser:        envOr("SHOAL_SERIAL_SSH_USER", "lab"),
 		SerialSSHKey:         envOr("SHOAL_SERIAL_SSH_KEY", ""),
 		SerialSSHSudo:        true,
+		FewShotDir:           os.Getenv("SHOAL_FEWSHOT_DIR"),
 	}
 
 	if v := os.Getenv("SHOAL_RECONCILE_FAIL_ORPHANS"); v != "" {
