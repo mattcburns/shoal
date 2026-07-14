@@ -219,4 +219,26 @@ func (w *WatchService) ActiveCount() int {
 	return len(w.active)
 }
 
+// HasWatch reports whether deviceID currently has an active SOL session.
+func (w *WatchService) HasWatch(deviceID string) bool {
+	if deviceID == "" {
+		return false
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	_, ok := w.byDevice[deviceID]
+	return ok
+}
+
+// WatchingDeviceIDs returns device IDs with an active SOL watch.
+func (w *WatchService) WatchingDeviceIDs() []string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	out := make([]string, 0, len(w.byDevice))
+	for id := range w.byDevice {
+		out = append(out, id)
+	}
+	return out
+}
+
 var _ watchport.WatchRegistrar = (*WatchService)(nil)

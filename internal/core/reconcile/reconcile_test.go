@@ -183,3 +183,25 @@ func TestReconcileEventPassThrough(t *testing.T) {
 		t.Fatalf("%+v", ev)
 	}
 }
+
+func TestReconcileEventClassifiesSeverity(t *testing.T) {
+	svc, err := reconcile.New(&ai.Fake{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ev, err := svc.ReconcileEvent(context.Background(), models.RawEventInput{
+		DeviceID: "d1",
+		Source:   "sel",
+		Message:  "CPU thermal warning on inlet",
+		Raw:      map[string]any{"severity": "Warning", "sensor_type": "Temperature"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ev.Severity != "warning" {
+		t.Fatalf("severity=%q", ev.Severity)
+	}
+	if ev.Component != "Temperature" {
+		t.Fatalf("component=%q", ev.Component)
+	}
+}

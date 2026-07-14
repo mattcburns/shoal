@@ -142,6 +142,45 @@ go run ./cmd/shoal discover confirm \
 API: `POST /v1/discover/confirm` with the same JSON body. Ingest still works if
 `SHOAL_FEWSHOT_DIR` is unset; confirm returns an error until the dir is set.
 
+### Phase 4: Observe status + SEL/sensor poll
+
+Telemetry events/sensors go to Postgres (`SHOAL_TELEMETRY_DATABASE_URL`, lab
+`:5433/shoal_telemetry`) — **not** NetBox. **No silent memory fallback:** poll
+and `-events` require a working DSN; if the DSN is set but open fails, commands
+error out.
+
+```bash
+export SHOAL_TELEMETRY_DATABASE_URL="postgres://shoal:…@192.168.122.100:5433/shoal_telemetry?sslmode=disable"
+export SHOAL_BMC_USERNAME=… SHOAL_BMC_PASSWORD=…
+
+# Aggregate device status (job phase + last event)
+go run ./cmd/shoal observe status -device-id shoal-node-1
+go run ./cmd/shoal observe status -device-id shoal-node-1 -events 10
+
+# One-shot Redfish SEL + sensor poll → durable telemetry only
+go run ./cmd/shoal observe poll \
+  -device-id shoal-node-1 \
+  -bmc-url http://192.168.122.100:8001
+
+# Multi-system sushy: pass -system-id when using -bmc-url for power state
+go run ./cmd/shoal observe status -device-id shoal-node-1 \
+  -bmc-url http://192.168.122.100:8001 -system-id <uuid-or-name>
+
+# With serve: GET /v1/devices/{id}/status and /v1/devices/{id}/events
+# Background poller runs only when DSN is healthy; seeds jobs with bmc_endpoint;
+# interval elevates while a SOL watch is active (15s vs 60s idle).
+```
+
+**What “pass” means on lab:**
+- Poll exit 0 with `sel_new:0, sensors_written:0` is **valid** on sushy (no logs)
+  — it means Redfish open + list succeeded with empty data, **not** that rich SEL
+  was ingested. Write/dedup is covered by unit tests with Fake BMC.
+- Poll exit non-zero if Redfish fails or any normalize/write fails.
+- `ActiveJobID` is only set for `provisioning` jobs (failed jobs expose lifecycle
+  + error, not an “active” id).
+
+**Lab fidelity:** rich SEL/sensors need real BMC hardware.
+
 ## 2) Fast stop (teardown / clean slate)
 ```bash
 ansible-playbook -i infra/ansible/inventory/lab-vm.yml infra/ansible/playbooks/down.yml
