@@ -43,6 +43,31 @@ func TestStatusAggregatesJobAndEvents(t *testing.T) {
 	if st.LastEvent == "" || st.Percent == nil || *st.Percent != 40 {
 		t.Fatalf("%+v", st)
 	}
+	// Must not invent WATCHING phase
+	if st.Phase == "WATCHING" {
+		t.Fatal("must not invent WATCHING phase")
+	}
+}
+
+func TestStatusFailedJobNoActiveID(t *testing.T) {
+	jobs := jobstore.NewMemory()
+	ctx := context.Background()
+	now := time.Now().UTC()
+	_ = jobs.Insert(ctx, models.ProvisioningJob{
+		ID: "j-fail", DeviceID: "n2", State: models.StateFailed,
+		Phase: "IMAGE_WRITE", Error: "bmc error", UpdatedAt: &now,
+	})
+	svc := observe.New(nil, jobs, nil, nil)
+	st, err := svc.Status(ctx, "n2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.ActiveJobID != "" {
+		t.Fatalf("failed job must not set ActiveJobID: %+v", st)
+	}
+	if st.LifecycleState != models.StateFailed || st.LastEvent != "bmc error" {
+		t.Fatalf("%+v", st)
+	}
 }
 
 func TestStatusEmptyDevice(t *testing.T) {
@@ -50,5 +75,13 @@ func TestStatusEmptyDevice(t *testing.T) {
 	_, err := svc.Status(context.Background(), "")
 	if err == nil {
 		t.Fatal("expected error")
+	}
+}
+
+func TestListEventsRequiresStore(t *testing.T) {
+	svc := observe.New(nil, nil, nil, nil)
+	_, err := svc.ListEvents(context.Background(), "d", time.Time{}, 5)
+	if err == nil {
+		t.Fatal("expected error without telemetry")
 	}
 }

@@ -129,7 +129,7 @@ func cmdServe(args []string) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// Optional Discover / AI wiring (Phase 3 + 3b learning).
+	// Optional Discover / AI wiring (Phase 3 + 3b learning). No ai.Fake for Observe.
 	var fsStore fewshot.Store
 	var rec reconcile.Reconciler
 	if cfg.FewShotDir != "" {
@@ -155,12 +155,6 @@ func cmdServe(args []string) int {
 			disc := discover.NewWithFewShot(log, rec, openSecrets(cfg), nb, fsStore)
 			srvAPI.WithDiscover(disc)
 			log.Info("discover ingest/confirm API enabled")
-		}
-	}
-	// Deterministic event normalize when AI unavailable (Observe poll still works).
-	if rec == nil {
-		if r, err := reconcile.New(&ai.Fake{Content: `{}`}, log); err == nil {
-			rec = r
 		}
 	}
 
@@ -199,45 +193,50 @@ func cmdServe(args []string) int {
 			log.Warn("orphan reconcile", "err", err.Error())
 		}
 
-		// Phase 4: Observe status + background SEL/sensor poll for jobs with BMC endpoints.
+		// Phase 4: Observe status. Telemetry is Postgres-only — no silent memory fallback.
 		var telemStore telemetry.Store
 		if cfg.TelemetryDatabaseURL != "" {
 			db, err := telemetry.OpenAndMigrate(ctx, cfg.TelemetryDatabaseURL)
 			if err != nil {
-				log.Warn("telemetry store for observe", "err", err.Error())
+				log.Error("telemetry store open failed; observe events/poll disabled", "err", err.Error())
 			} else {
 				defer db.Close()
 				telemStore = telemetry.NewPostgres(db)
 			}
-		}
-		if telemStore == nil {
-			telemStore = telemetry.NewMemory()
+		} else {
+			log.Warn("SHOAL_TELEMETRY_DATABASE_URL unset; observe events/poll disabled")
 		}
 		obsSvc := observe.New(log, store, telemStore, watchSvc)
 		srvAPI.WithObserve(obsSvc)
-		log.Info("observe device status API enabled")
+		log.Info("observe device status API enabled", "telemetry", telemStore != nil)
 
-		poller := poll.New(log, telemStore, redfish.NewBMC)
-		poller.Watching = watchSvc
-		poller.Events = rec
-		seedPollTargets(ctx, poller, store, cfg)
-		go func() {
-			ticker := time.NewTicker(30 * time.Second)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				case <-ticker.C:
-					seedPollTargets(ctx, poller, store, cfg)
-				}
+		// Background SEL/sensor poll only with durable telemetry.
+		if telemStore != nil {
+			poller := poll.New(log, telemStore, redfish.NewBMC)
+			poller.Watching = watchSvc
+			// Use real Core reconciler when AI is configured; else deterministic poll path.
+			if rec != nil {
+				poller.Events = rec
 			}
-		}()
-		go poller.Run(ctx)
-		log.Info("observe SEL/sensor poller started",
-			"idle", poll.DefaultIdleInterval.String(),
-			"watch", poll.DefaultWatchInterval.String(),
-		)
+			seedPollTargets(ctx, poller, store, cfg)
+			go func() {
+				ticker := time.NewTicker(30 * time.Second)
+				defer ticker.Stop()
+				for {
+					select {
+					case <-ctx.Done():
+						return
+					case <-ticker.C:
+						seedPollTargets(ctx, poller, store, cfg)
+					}
+				}
+			}()
+			go poller.Run(ctx)
+			log.Info("observe SEL/sensor poller started",
+				"idle", poll.DefaultIdleInterval.String(),
+				"watch", poll.DefaultWatchInterval.String(),
+			)
+		}
 	}
 
 	httpSrv := &http.Server{

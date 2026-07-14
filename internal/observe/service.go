@@ -11,7 +11,6 @@ import (
 	"github.com/mattcburns/shoal/internal/common/models"
 	"github.com/mattcburns/shoal/internal/common/redfish"
 	"github.com/mattcburns/shoal/internal/common/telemetry"
-	"github.com/mattcburns/shoal/internal/observe/poll"
 	"github.com/mattcburns/shoal/internal/observe/sol"
 )
 
@@ -24,10 +23,8 @@ type WatchState interface {
 type Service struct {
 	Log       *slog.Logger
 	Jobs      jobport.JobQuery
-	Telemetry telemetry.Store
+	Telemetry telemetry.Store // nil → no events in status / ListEvents errors
 	Watches   WatchState
-	// Optional one-shot poller for live refresh during status.
-	Poller *poll.Poller
 }
 
 // New constructs an Observe service.
@@ -38,7 +35,9 @@ func New(log *slog.Logger, jobs jobport.JobQuery, store telemetry.Store, watches
 	return &Service{Log: log, Jobs: jobs, Telemetry: store, Watches: watches}
 }
 
-// Status aggregates job + telemetry + optional watch flag for a device.
+// Status aggregates job + telemetry for a device.
+// ActiveJobID is set only when the latest job is PROVISIONING (truly active).
+// Does not invent SOL phases (e.g. no synthetic "WATCHING").
 func (s *Service) Status(ctx context.Context, deviceID string) (models.DeviceStatus, error) {
 	if deviceID == "" {
 		return models.DeviceStatus{}, fmt.Errorf("observe: device_id required")
@@ -50,13 +49,15 @@ func (s *Service) Status(ctx context.Context, deviceID string) (models.DeviceSta
 
 	if job, ok := s.latestJob(ctx, deviceID); ok {
 		st.LifecycleState = job.State
-		st.ActiveJobID = job.ID
 		st.Phase = job.Phase
 		st.Percent = job.Percent
+		if job.State == models.StateProvisioning {
+			st.ActiveJobID = job.ID
+		}
 		if job.UpdatedAt != nil {
 			st.UpdatedAt = job.UpdatedAt.UTC()
 		}
-		if job.Error != "" && st.LastEvent == "" {
+		if job.Error != "" {
 			st.LastEvent = job.Error
 		}
 	}
@@ -64,8 +65,10 @@ func (s *Service) Status(ctx context.Context, deviceID string) (models.DeviceSta
 	if s.Telemetry != nil {
 		evs, err := s.Telemetry.ListEvents(ctx, deviceID, time.Time{}, 1)
 		if err != nil {
-			s.Log.Warn("list events for status", "device_id", deviceID, "err", err.Error())
-		} else if len(evs) > 0 {
+			return st, fmt.Errorf("observe: list events: %w", err)
+		}
+		if len(evs) > 0 {
+			// Prefer telemetry message when present; keep job error if no events.
 			st.LastEvent = formatEvent(evs[0])
 			if evs[0].Timestamp.After(st.UpdatedAt) {
 				st.UpdatedAt = evs[0].Timestamp
@@ -73,29 +76,22 @@ func (s *Service) Status(ctx context.Context, deviceID string) (models.DeviceSta
 		}
 	}
 
-	if s.Watches != nil && s.Watches.HasWatch(deviceID) {
-		// Encode watch activity in last_event suffix only if empty phase context.
-		if st.Phase == "" && st.ActiveJobID != "" {
-			st.Phase = "WATCHING"
-		}
-	}
-
 	return st, nil
 }
 
-// StatusWithPower optionally fills PowerState via Redfish GetSystem.
+// StatusWithPower fills PowerState via Redfish GetSystem. BMC errors are returned
+// (caller must not treat missing power as success when power was requested).
 func (s *Service) StatusWithPower(ctx context.Context, deviceID string, bmc redfish.BMC, systemID string) (models.DeviceStatus, error) {
 	st, err := s.Status(ctx, deviceID)
 	if err != nil {
 		return st, err
 	}
 	if bmc == nil {
-		return st, nil
+		return st, fmt.Errorf("observe: bmc required for power state")
 	}
 	sys, err := bmc.GetSystem(ctx, systemID)
 	if err != nil {
-		s.Log.Warn("power state", "device_id", deviceID, "err", err.Error())
-		return st, nil
+		return st, fmt.Errorf("observe: power state: %w", err)
 	}
 	st.PowerState = sys.PowerState
 	return st, nil
@@ -104,7 +100,7 @@ func (s *Service) StatusWithPower(ctx context.Context, deviceID string, bmc redf
 // ListEvents returns recent telemetry events for a device.
 func (s *Service) ListEvents(ctx context.Context, deviceID string, since time.Time, limit int) ([]models.NormalizedEvent, error) {
 	if s.Telemetry == nil {
-		return nil, fmt.Errorf("observe: telemetry store not configured")
+		return nil, fmt.Errorf("observe: telemetry store not configured (set SHOAL_TELEMETRY_DATABASE_URL)")
 	}
 	if deviceID == "" {
 		return nil, fmt.Errorf("observe: device_id required")
@@ -112,11 +108,15 @@ func (s *Service) ListEvents(ctx context.Context, deviceID string, since time.Ti
 	return s.Telemetry.ListEvents(ctx, deviceID, since, limit)
 }
 
+// Watching reports whether a SOL watch is active (for operators; not embedded in Phase).
+func (s *Service) Watching(deviceID string) bool {
+	return s.Watches != nil && s.Watches.HasWatch(deviceID)
+}
+
 func (s *Service) latestJob(ctx context.Context, deviceID string) (models.ProvisioningJob, bool) {
 	if s.Jobs == nil {
 		return models.ProvisioningJob{}, false
 	}
-	// Prefer active provisioning; else most recently updated job for device.
 	states := []models.LifecycleState{
 		models.StateProvisioning,
 		models.StateProvisioned,
@@ -129,6 +129,7 @@ func (s *Service) latestJob(ctx context.Context, deviceID string) (models.Provis
 	for _, st := range states {
 		list, err := s.Jobs.ListByState(ctx, st)
 		if err != nil {
+			s.Log.Warn("list jobs by state", "state", string(st), "err", err.Error())
 			continue
 		}
 		for _, j := range list {
@@ -139,7 +140,6 @@ func (s *Service) latestJob(ctx context.Context, deviceID string) (models.Provis
 				best, found = j, true
 				continue
 			}
-			// Prefer PROVISIONING always when present.
 			if best.State != models.StateProvisioning && j.State == models.StateProvisioning {
 				best = j
 				continue
@@ -172,5 +172,4 @@ func formatEvent(e models.NormalizedEvent) string {
 	return e.Message
 }
 
-// Ensure WatchService satisfies WatchState.
 var _ WatchState = (*sol.WatchService)(nil)

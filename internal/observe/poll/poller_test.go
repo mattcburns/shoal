@@ -7,8 +7,6 @@ import (
 
 	"github.com/mattcburns/shoal/internal/common/redfish"
 	"github.com/mattcburns/shoal/internal/common/telemetry"
-	"github.com/mattcburns/shoal/internal/core/ai"
-	"github.com/mattcburns/shoal/internal/core/reconcile"
 	"github.com/mattcburns/shoal/internal/observe/poll"
 )
 
@@ -27,12 +25,8 @@ func TestPollOnceWritesSELAndSensors(t *testing.T) {
 	fake.Sensors = []redfish.SensorSample{
 		{Name: "Inlet", Reading: 23, Units: "Cel", Kind: "temperature"},
 	}
-	rec, err := reconcile.New(&ai.Fake{}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	// Deterministic path — no Core / no Fake AI.
 	p := poll.New(nil, store, func(redfish.Config) (redfish.BMC, error) { return fake, nil })
-	p.Events = rec
 
 	selN, sensN, err := p.PollOnce(context.Background(), poll.Target{
 		DeviceID: "dev-1",
@@ -47,7 +41,6 @@ func TestPollOnceWritesSELAndSensors(t *testing.T) {
 	if sensN != 1 {
 		t.Fatalf("sensors=%d", sensN)
 	}
-	// second poll: no new SEL
 	selN, _, err = p.PollOnce(context.Background(), poll.Target{
 		DeviceID: "dev-1",
 		BMC:      redfish.Config{BaseURL: "http://fake"},
@@ -65,8 +58,19 @@ func TestPollOnceWritesSELAndSensors(t *testing.T) {
 	if evs[0].Severity != "warning" {
 		t.Fatalf("severity=%q", evs[0].Severity)
 	}
-	if evs[0].Component != "Temperature" && evs[0].Component != "thermal" {
+	if evs[0].Component != "Temperature" {
 		t.Fatalf("component=%q", evs[0].Component)
+	}
+}
+
+func TestPollOnceSurfacesWriteFailures(t *testing.T) {
+	// nil store → hard error
+	p := poll.New(nil, nil, func(redfish.Config) (redfish.BMC, error) { return redfish.NewFake(), nil })
+	_, _, err := p.PollOnce(context.Background(), poll.Target{
+		DeviceID: "d", BMC: redfish.Config{BaseURL: "http://x"},
+	})
+	if err == nil {
+		t.Fatal("expected error without store")
 	}
 }
 

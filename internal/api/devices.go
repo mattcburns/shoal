@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/mattcburns/shoal/internal/common/models"
 	"github.com/mattcburns/shoal/internal/observe"
 )
 
@@ -63,6 +64,9 @@ func (s *Server) handleDeviceEvents(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": err.Error()})
 		return
+	}
+	if evs == nil {
+		evs = []models.NormalizedEvent{}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"device_id": id,

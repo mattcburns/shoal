@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"strings"
 	"sync"
 	"time"
 
@@ -37,11 +36,12 @@ type WatchChecker interface {
 
 // Poller reads SEL/sensors via Redfish and writes telemetry.
 type Poller struct {
-	Log      *slog.Logger
-	Store    telemetry.Store
-	NewBMC   redfish.Factory
-	Events   reconcile.Reconciler // optional; deterministic path if nil
-	Watching WatchChecker         // optional
+	Log    *slog.Logger
+	Store  telemetry.Store
+	NewBMC redfish.Factory
+	// Events is optional Core reconciler; when nil, deterministic normalizeSELEntry is used.
+	Events   reconcile.Reconciler
+	Watching WatchChecker
 
 	IdleInterval  time.Duration
 	WatchInterval time.Duration
@@ -49,12 +49,12 @@ type Poller struct {
 	SELMaxEntries int
 
 	mu      sync.Mutex
-	targets map[string]Target // deviceID -> target
+	targets map[string]Target
 	seenSEL map[string]map[string]struct{}
 	sem     chan struct{}
 }
 
-// New constructs a Poller with defaults.
+// New constructs a Poller with defaults. newBMC nil → redfish.NewBMC.
 func New(log *slog.Logger, store telemetry.Store, newBMC redfish.Factory) *Poller {
 	if log == nil {
 		log = slog.Default()
@@ -113,6 +113,8 @@ func (p *Poller) Targets() []Target {
 }
 
 // PollOnce runs a single SEL+sensor poll for one target (deduped SEL writes).
+// Returns a non-nil error if Redfish fails or any normalize/write fails (counts
+// still reflect successful writes). Empty SEL/sensors with nil error is valid.
 func (p *Poller) PollOnce(ctx context.Context, t Target) (selWritten, sensorsWritten int, err error) {
 	if p.Store == nil {
 		return 0, 0, fmt.Errorf("poll: telemetry store not configured")
@@ -163,6 +165,9 @@ func (p *Poller) PollOnce(ctx context.Context, t Target) (selWritten, sensorsWri
 	seen := p.seenSEL[t.DeviceID]
 	p.mu.Unlock()
 
+	var failN int
+	var firstFail error
+
 	for _, e := range entries {
 		key := e.ODataID
 		if key == "" {
@@ -179,10 +184,18 @@ func (p *Poller) PollOnce(ctx context.Context, t Target) (selWritten, sensorsWri
 		}
 		ev, nerr := p.normalizeSEL(ctx, t.DeviceID, e)
 		if nerr != nil {
+			failN++
+			if firstFail == nil {
+				firstFail = fmt.Errorf("normalize: %w", nerr)
+			}
 			p.Log.Warn("poll normalize sel", "device_id", t.DeviceID, "err", nerr.Error())
 			continue
 		}
 		if err := p.Store.WriteEvent(ctx, ev); err != nil {
+			failN++
+			if firstFail == nil {
+				firstFail = fmt.Errorf("write event: %w", err)
+			}
 			p.Log.Warn("poll write event", "device_id", t.DeviceID, "err", err.Error())
 			continue
 		}
@@ -196,6 +209,10 @@ func (p *Poller) PollOnce(ctx context.Context, t Target) (selWritten, sensorsWri
 			name = s.Kind
 		}
 		if name == "" {
+			failN++
+			if firstFail == nil {
+				firstFail = fmt.Errorf("sensor sample missing name")
+			}
 			continue
 		}
 		if err := p.Store.WriteSensor(ctx, telemetry.SensorReading{
@@ -205,72 +222,53 @@ func (p *Poller) PollOnce(ctx context.Context, t Target) (selWritten, sensorsWri
 			Value:    s.Reading,
 			Unit:     s.Units,
 		}); err != nil {
+			failN++
+			if firstFail == nil {
+				firstFail = fmt.Errorf("write sensor: %w", err)
+			}
 			p.Log.Warn("poll write sensor", "device_id", t.DeviceID, "err", err.Error())
 			continue
 		}
 		sensorsWritten++
 	}
-	if selWritten > 0 || sensorsWritten > 0 {
-		p.Log.Info("poll complete",
-			"device_id", t.DeviceID,
-			"sel_new", selWritten,
-			"sensors", sensorsWritten,
-		)
+
+	p.Log.Info("poll complete",
+		"device_id", t.DeviceID,
+		"sel_new", selWritten,
+		"sensors", sensorsWritten,
+		"failures", failN,
+		"sel_seen", len(entries),
+		"sensor_seen", len(samples),
+	)
+	if failN > 0 {
+		return selWritten, sensorsWritten, fmt.Errorf("poll: %d item failure(s) after sel_new=%d sensors=%d: %w",
+			failN, selWritten, sensorsWritten, firstFail)
 	}
 	return selWritten, sensorsWritten, nil
 }
 
 func (p *Poller) normalizeSEL(ctx context.Context, deviceID string, e redfish.SELEntry) (models.NormalizedEvent, error) {
-	msg := e.Message
-	if msg == "" {
-		msg = e.ID
-	}
-	raw := map[string]any{
-		"severity":    e.Severity,
-		"entry_type":  e.EntryType,
-		"sensor_type": e.SensorType,
-		"log_service": e.LogService,
-		"odata_id":    e.ODataID,
-	}
-	in := models.RawEventInput{
-		DeviceID:  deviceID,
-		Source:    "sel",
-		Timestamp: e.Created,
-		Message:   msg,
-		Raw:       raw,
-	}
 	if p.Events != nil {
-		return p.Events.ReconcileEvent(ctx, in)
-	}
-	// Inline deterministic fallback (no Core wired).
-	sev := "info"
-	switch strings.ToLower(e.Severity) {
-	case "critical":
-		sev = "critical"
-	case "warning":
-		sev = "warning"
-	case "error":
-		sev = "error"
-	case "ok", "":
-		sev = "info"
-	default:
-		sev = strings.ToLower(e.Severity)
-		if sev == "" {
-			sev = "info"
+		raw := map[string]any{
+			"severity":    e.Severity,
+			"entry_type":  e.EntryType,
+			"sensor_type": e.SensorType,
+			"log_service": e.LogService,
+			"odata_id":    e.ODataID,
 		}
+		msg := e.Message
+		if msg == "" {
+			msg = e.ID
+		}
+		return p.Events.ReconcileEvent(ctx, models.RawEventInput{
+			DeviceID:  deviceID,
+			Source:    "sel",
+			Timestamp: e.Created,
+			Message:   msg,
+			Raw:       raw,
+		})
 	}
-	ts := e.Created
-	if ts.IsZero() {
-		ts = time.Now().UTC()
-	}
-	return models.NormalizedEvent{
-		DeviceID:  deviceID,
-		EventType: "sel",
-		Severity:  sev,
-		Component: e.SensorType,
-		Message:   msg,
-		Timestamp: ts,
-	}, nil
+	return normalizeSELEntry(deviceID, e), nil
 }
 
 // Run loops until ctx is cancelled. Polls all targets; uses WatchInterval when
@@ -282,7 +280,6 @@ func (p *Poller) Run(ctx context.Context) {
 	if p.WatchInterval <= 0 {
 		p.WatchInterval = DefaultWatchInterval
 	}
-	// Tick frequently enough to honor watch elevated rate; skip devices not due yet.
 	ticker := time.NewTicker(p.WatchInterval)
 	defer ticker.Stop()
 	last := make(map[string]time.Time)

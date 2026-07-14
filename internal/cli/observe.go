@@ -12,8 +12,6 @@ import (
 	"github.com/mattcburns/shoal/internal/common/models"
 	"github.com/mattcburns/shoal/internal/common/redfish"
 	"github.com/mattcburns/shoal/internal/common/telemetry"
-	"github.com/mattcburns/shoal/internal/core/ai"
-	"github.com/mattcburns/shoal/internal/core/reconcile"
 	"github.com/mattcburns/shoal/internal/observe"
 	"github.com/mattcburns/shoal/internal/observe/poll"
 )
@@ -43,10 +41,11 @@ func cmdObserveStatus(args []string) int {
 	fs := flag.NewFlagSet("observe status", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	deviceID := fs.String("device-id", "", "device id (required)")
-	events := fs.Int("events", 0, "include last N telemetry events (0=status only)")
+	events := fs.Int("events", 0, "include last N telemetry events (requires SHOAL_TELEMETRY_DATABASE_URL)")
 	bmcURL := fs.String("bmc-url", "", "optional Redfish base URL for power state")
 	bmcUser := fs.String("bmc-user", cfg.BMCUsername, "BMC username")
 	bmcPass := fs.String("bmc-pass", cfg.BMCPassword, "BMC password")
+	systemID := fs.String("system-id", "", "Redfish system id (required with multi-system BMC + -bmc-url)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -61,23 +60,24 @@ func cmdObserveStatus(args []string) int {
 
 	store, closer, err := openJobStore(cfg)
 	if err != nil {
-		log.Warn("job store unavailable", "err", err.Error())
-	} else if closer != nil {
+		fmt.Fprintf(os.Stderr, "job store: %v\n", err)
+		return 1
+	}
+	if closer != nil {
 		defer closer()
 	}
 
-	var telem telemetry.Store
-	if cfg.TelemetryDatabaseURL != "" {
-		db, err := telemetry.OpenAndMigrate(ctx, cfg.TelemetryDatabaseURL)
-		if err != nil {
-			log.Warn("telemetry store unavailable", "err", err.Error())
-		} else {
-			defer db.Close()
-			telem = telemetry.NewPostgres(db)
-		}
+	telem, telemCloser, err := openTelemetryStore(ctx, cfg, false)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "telemetry: %v\n", err)
+		return 1
 	}
-	if telem == nil {
-		telem = telemetry.NewMemory()
+	if telemCloser != nil {
+		defer telemCloser()
+	}
+	if *events > 0 && telem == nil {
+		fmt.Fprintln(os.Stderr, "observe status: -events requires SHOAL_TELEMETRY_DATABASE_URL")
+		return 1
 	}
 
 	svc := observe.New(log, store, telem, nil)
@@ -96,16 +96,27 @@ func cmdObserveStatus(args []string) int {
 			TLSMode:  cfg.RedfishTLSMode,
 			CAFile:   cfg.RedfishCAFile,
 		})
-		if err == nil {
-			if err := bmc.Open(ctx); err == nil {
-				st, _ = svc.StatusWithPower(ctx, *deviceID, bmc, "")
-				_ = bmc.Close(context.Background())
-			}
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "bmc: %v\n", err)
+			return 1
+		}
+		if err := bmc.Open(ctx); err != nil {
+			fmt.Fprintf(os.Stderr, "bmc open: %v\n", err)
+			return 1
+		}
+		defer func() { _ = bmc.Close(context.Background()) }()
+		st, err = svc.StatusWithPower(ctx, *deviceID, bmc, *systemID)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "power state: %v\n", err)
+			return 1
 		}
 	}
 
-	out := map[string]any{"status": st}
-	if *events > 0 && telem != nil {
+	out := map[string]any{
+		"status":   st,
+		"watching": svc.Watching(*deviceID),
+	}
+	if *events > 0 {
 		evs, err := svc.ListEvents(ctx, *deviceID, time.Time{}, *events)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "events: %v\n", err)
@@ -147,35 +158,18 @@ func cmdObservePoll(args []string) int {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	var telem telemetry.Store
-	if cfg.TelemetryDatabaseURL != "" {
-		db, err := telemetry.OpenAndMigrate(ctx, cfg.TelemetryDatabaseURL)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "telemetry: %v\n", err)
-			return 1
-		}
-		defer db.Close()
-		telem = telemetry.NewPostgres(db)
-	} else {
-		telem = telemetry.NewMemory()
-		log.Warn("no SHOAL_TELEMETRY_DATABASE_URL; using memory store (results not durable)")
+	// Durable store required — no silent memory fallback.
+	telem, closer, err := openTelemetryStore(ctx, cfg, true)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "telemetry: %v\n", err)
+		return 1
+	}
+	if closer != nil {
+		defer closer()
 	}
 
-	var rec reconcile.Reconciler
-	if llm, err := ai.NewFromConfig(cfg); err == nil && llm != nil {
-		if r, err := reconcile.New(llm, log); err == nil {
-			rec = r
-		}
-	}
-	// Deterministic-only reconciler when AI unavailable.
-	if rec == nil {
-		if r, err := reconcile.New(&ai.Fake{Content: `{}`}, log); err == nil {
-			rec = r
-		}
-	}
-
+	// Deterministic normalize only (no ai.Fake). Core reconciler optional later.
 	p := poll.New(log, telem, redfish.NewBMC)
-	p.Events = rec
 	selN, sensN, err := p.PollOnce(ctx, poll.Target{
 		DeviceID: *deviceID,
 		SystemID: *systemID,
@@ -188,14 +182,34 @@ func cmdObservePoll(args []string) int {
 			CAFile:   cfg.RedfishCAFile,
 		},
 	})
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "poll: %v\n", err)
-		return 1
-	}
-	_ = json.NewEncoder(os.Stdout).Encode(map[string]any{
+	out := map[string]any{
 		"device_id":       *deviceID,
 		"sel_new":         selN,
 		"sensors_written": sensN,
-	})
+	}
+	if err != nil {
+		out["error"] = err.Error()
+		_ = json.NewEncoder(os.Stdout).Encode(out)
+		fmt.Fprintf(os.Stderr, "poll: %v\n", err)
+		return 1
+	}
+	_ = json.NewEncoder(os.Stdout).Encode(out)
 	return 0
+}
+
+// openTelemetryStore opens Postgres when DSN is set.
+// requireDSN=true → error if unset or open fails.
+// requireDSN=false → nil store if unset; error if set but open fails (no memory fallback).
+func openTelemetryStore(ctx context.Context, cfg config.Config, requireDSN bool) (telemetry.Store, func(), error) {
+	if cfg.TelemetryDatabaseURL == "" {
+		if requireDSN {
+			return nil, nil, fmt.Errorf("SHOAL_TELEMETRY_DATABASE_URL is required")
+		}
+		return nil, nil, nil
+	}
+	db, err := telemetry.OpenAndMigrate(ctx, cfg.TelemetryDatabaseURL)
+	if err != nil {
+		return nil, nil, err
+	}
+	return telemetry.NewPostgres(db), func() { _ = db.Close() }, nil
 }

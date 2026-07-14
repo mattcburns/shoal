@@ -50,4 +50,22 @@ func TestDeviceStatusAndEvents(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("events %d %s", rr.Code, rr.Body.String())
 	}
+	var body map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body["events"] == nil {
+		t.Fatal("events must be [] not null")
+	}
+}
+
+func TestDeviceEventsWithoutTelemetry(t *testing.T) {
+	obs := observe.New(nil, jobstore.NewMemory(), nil, nil)
+	s := api.New(config.Config{}, nil).WithObserve(obs)
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/devices/x/events", nil)
+	s.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status %d", rr.Code)
+	}
 }

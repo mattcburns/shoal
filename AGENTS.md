@@ -245,8 +245,10 @@ go run ./cmd/shoal deploy run \
 Full table and Ansible extension points: design doc §8.1.
 
 **Phase 4 Observe:** `shoal observe status|poll`, `GET /v1/devices/{id}/status` and
-`…/events`. Poll uses Redfish `ListSEL`/`ListSensors` → `telemetry.Store`.
-Observe never imports Deploy (job reads via `jobport.JobQuery`).
+`…/events`. Poll uses Redfish `ListSEL`/`ListSensors` → durable `telemetry.Store`
+only (no silent memory fallback). Empty SEL/sensors with exit 0 is valid when the
+BMC has no logs; write failures and Redfish errors fail the poll. Observe never
+imports Deploy (job reads via `jobport.JobQuery`).
 
 ---
 
