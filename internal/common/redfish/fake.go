@@ -20,6 +20,13 @@ type Fake struct {
 
 	// FailNextCleanup forces CleanupMediaAndBoot to fail once.
 	FailNextCleanup bool
+
+	// SEL and Sensors are returned by ListSEL / ListSensors (Phase 4 Observe).
+	SEL     []SELEntry
+	Sensors []SensorSample
+	// ListSELErr / ListSensorsErr force errors when set.
+	ListSELErr     error
+	ListSensorsErr error
 }
 
 // NewFake returns a Fake with one system and one CD virtual media slot.
@@ -165,6 +172,40 @@ func (f *Fake) CleanupMediaAndBoot(ctx context.Context, systemID string) error {
 		}
 	}
 	return f.ClearBootOverride(ctx, systemID)
+}
+
+func (f *Fake) ListSEL(_ context.Context, _ string, opts SELOptions) ([]SELEntry, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.ListSELErr != nil {
+		return nil, f.ListSELErr
+	}
+	out := make([]SELEntry, 0, len(f.SEL))
+	for _, e := range f.SEL {
+		if !opts.Since.IsZero() && !e.Created.IsZero() && e.Created.Before(opts.Since) {
+			continue
+		}
+		out = append(out, e)
+	}
+	max := opts.MaxEntries
+	if max <= 0 {
+		max = 200
+	}
+	if len(out) > max {
+		out = out[:max]
+	}
+	return out, nil
+}
+
+func (f *Fake) ListSensors(_ context.Context, _ string) ([]SensorSample, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.ListSensorsErr != nil {
+		return nil, f.ListSensorsErr
+	}
+	out := make([]SensorSample, len(f.Sensors))
+	copy(out, f.Sensors)
+	return out, nil
 }
 
 // MediaInserted reports whether any media is inserted (test helper).

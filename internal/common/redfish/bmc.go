@@ -22,6 +22,12 @@ type BMC interface {
 	Power(ctx context.Context, systemID, resetType string) error
 	// CleanupMediaAndBoot ejects all inserted media for the system and clears boot override.
 	CleanupMediaAndBoot(ctx context.Context, systemID string) error
+	// ListSEL returns log entries (SEL/event logs) for the system, managers, and chassis.
+	// Best-effort: missing LogServices yield an empty slice, not an error.
+	ListSEL(ctx context.Context, systemID string, opts SELOptions) ([]SELEntry, error)
+	// ListSensors returns thermal/power sensor samples for chassis related to systemID.
+	// Best-effort: missing Thermal/Power yield empty slice or partial results.
+	ListSensors(ctx context.Context, systemID string) ([]SensorSample, error)
 }
 
 // Factory constructs a BMC from config (composition root injects this).

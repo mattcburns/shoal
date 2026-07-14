@@ -112,6 +112,49 @@ func TestLabRedfishVirtualMediaBootCleanup(t *testing.T) {
 	t.Logf("boot after cleanup: %+v", boot)
 }
 
+// TestLabListSELAndSensors exercises Phase 4 Redfish reads. sushy-tools often
+// has empty logs/sensors — empty results are OK; hard errors are not.
+func TestLabListSELAndSensors(t *testing.T) {
+	base := envOr("SHOAL_BMC_URL", "http://192.168.122.100:8001")
+	user := os.Getenv("SHOAL_BMC_USERNAME")
+	pass := os.Getenv("SHOAL_BMC_PASSWORD")
+	if user == "" || pass == "" {
+		t.Skip("SHOAL_BMC_USERNAME/PASSWORD required")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	bmc, err := redfish.NewBMC(redfish.Config{
+		BaseURL: base, Username: user, Password: pass,
+		AuthMode: "basic", TLSMode: "off", MaxConcurrent: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bmc.Open(ctx); err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer func() { _ = bmc.Close(context.Background()) }()
+
+	systems, err := bmc.ListSystems(ctx)
+	if err != nil || len(systems) == 0 {
+		t.Fatalf("systems: %v n=%d", err, len(systems))
+	}
+	sysID := systems[0].ID
+
+	sel, err := bmc.ListSEL(ctx, sysID, redfish.SELOptions{MaxEntries: 50})
+	if err != nil {
+		t.Fatalf("ListSEL: %v", err)
+	}
+	t.Logf("SEL entries: %d", len(sel))
+
+	sensors, err := bmc.ListSensors(ctx, sysID)
+	if err != nil {
+		t.Fatalf("ListSensors: %v", err)
+	}
+	t.Logf("sensors: %d", len(sensors))
+}
+
 func envOr(k, d string) string {
 	if v := os.Getenv(k); v != "" {
 		return v

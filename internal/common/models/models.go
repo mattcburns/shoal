@@ -30,6 +30,8 @@ type NormalizationResult struct {
 
 // NormalizedEvent is a telemetry/event record correlated to a device.
 type NormalizedEvent struct {
+	// ID is the durable events.id primary key. Empty on write → Store assigns one.
+	ID        string    `json:"id,omitempty"`
 	DeviceID  string    `json:"device_id"` // required for telemetry.events.device_id correlation
 	EventType string    `json:"event_type"`
 	Severity  string    `json:"severity"`
@@ -37,6 +39,7 @@ type NormalizedEvent struct {
 	Message   string    `json:"message"`
 	Timestamp time.Time `json:"timestamp"`
 	// Raw must be redacted before any LLM call; may be empty in API responses.
+	// Telemetry Store does not persist Raw by default (use raw_ref only if needed later).
 	Raw map[string]any `json:"raw,omitempty"`
 }
 

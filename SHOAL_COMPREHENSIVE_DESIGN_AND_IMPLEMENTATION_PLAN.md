@@ -1590,7 +1590,7 @@ go test ./...
 
 ## Open Questions
 
-**All previously open product decisions are resolved through v2.0.5.** Phase 0–2 are on `master`; Phase 3 follows the AI contract below.
+**All previously open product decisions are resolved through v2.0.5.** Phase 0–3 are on `master`; Phase 4 (Observe broaden) is next.
 
 | Topic | Resolution |
 |-------|------------|
@@ -1629,9 +1629,9 @@ go test ./...
 
 ---
 
-**This document (v2.0.5) is the SoT for agents.** Phase 0–2 and dual-model lab wiring are on `master`.
+**This document (v2.0.5) is the SoT for agents.** Phase 0–3 (incl. dual-model lab + hybrid Discover + few-shot learning) are on `master`.
 
 Next actions:
-1. Phase 3 hybrid Discover PR (honors §6: text `llama3.2:3b`, vision `deepseek-ocr` Free OCR)
-2. Later phases: Observe broaden, Deploy harden, packaging
+1. Phase 4 Observe broaden: telemetry Store, Redfish SEL/sensors, poll, device status CLI/API
+2. Later: Phase 5 Deploy harden, packaging
 3. At Phase 6: choose graphics failure-screen OCR approach before implementing
