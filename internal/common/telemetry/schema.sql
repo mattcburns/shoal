@@ -15,8 +15,14 @@ CREATE TABLE IF NOT EXISTS jobs (
   error            TEXT,
   sol_session_id   TEXT,
   iso_url          TEXT,
-  bmc_endpoint     TEXT
+  bmc_endpoint     TEXT,
+  system_id        TEXT,
+  credential_ref   TEXT
 );
+
+-- Phase 5a.1: columns for cross-process cancel/orphan BMC cleanup
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS system_id TEXT;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS credential_ref TEXT;
 
 CREATE TABLE IF NOT EXISTS events (
   id TEXT PRIMARY KEY,

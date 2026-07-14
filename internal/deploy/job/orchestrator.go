@@ -203,17 +203,21 @@ func (o *Orchestrator) Start(ctx context.Context, req models.StartJobRequest) (m
 		profile = "spike"
 	}
 	now := time.Now().UTC()
+	sessionID := "sol-" + jobID
 	job := models.ProvisioningJob{
-		ID:          jobID,
-		DeviceID:    req.DeviceID,
-		ProfileRef:  profile,
-		State:       models.StateProvisioning,
-		Attempt:     1,
-		Phase:       "STARTING",
-		StartedAt:   &now,
-		UpdatedAt:   &now,
-		ISOURL:      req.ISOURL,
-		BMCEndpoint: req.BMCEndpoint,
+		ID:            jobID,
+		DeviceID:      req.DeviceID,
+		ProfileRef:    profile,
+		State:         models.StateProvisioning,
+		Attempt:       1,
+		Phase:         "STARTING",
+		StartedAt:     &now,
+		UpdatedAt:     &now,
+		ISOURL:        req.ISOURL,
+		BMCEndpoint:   req.BMCEndpoint,
+		SystemID:      req.SystemID,
+		CredentialRef: credRef,
+		SOLSessionID:  sessionID,
 	}
 	if err := o.store.Insert(ctx, job); err != nil {
 		return models.ProvisioningJob{}, err
@@ -226,7 +230,7 @@ func (o *Orchestrator) Start(ctx context.Context, req models.StartJobRequest) (m
 		systemID:   req.SystemID,
 		credential: credRef,
 		bmcURL:     req.BMCEndpoint,
-		sessionID:  "sol-" + jobID,
+		sessionID:  sessionID,
 	}
 	o.mu.Lock()
 	o.running[jobID] = rs
@@ -283,6 +287,10 @@ func (o *Orchestrator) provision(ctx context.Context, job models.ProvisioningJob
 		}
 	}
 	rs.systemID = sys.ID
+	// Persist runtime coords so a different process can cancel/orphan-cleanup.
+	if err := o.store.UpdateRuntime(ctx, job.ID, sys.ID, rs.sessionID, rs.credential); err != nil {
+		return fmt.Errorf("persist runtime: %w", err)
+	}
 
 	vms, err := bmc.ListVirtualMedia(ctx, sys.ID)
 	if err != nil {
@@ -420,14 +428,24 @@ func (o *Orchestrator) handleTerminalOnce(ctx context.Context, jobID string, rea
 		}
 	}
 
-	// Load job for BMC endpoint if needed. Prefer Background so a cancelled
+	// Load job for BMC coordinates. Prefer Background so a cancelled
 	// caller context cannot skip the terminal state write.
 	job, err := o.store.Get(context.Background(), jobID)
 	if err != nil {
 		return err
 	}
+	// Prefer in-memory runState; fall back to durable job fields (out-of-process cancel/orphan).
 	if bmcURL == "" {
 		bmcURL = job.BMCEndpoint
+	}
+	if systemID == "" {
+		systemID = job.SystemID
+	}
+	if credRef == "" {
+		credRef = job.CredentialRef
+	}
+	if sessionID == "" {
+		sessionID = job.SOLSessionID
 	}
 
 	// Always-run cleanup when we have BMC coordinates (hard timeout so we still transition).
@@ -613,14 +631,14 @@ func (o *Orchestrator) ReconcileOrphans(ctx context.Context) error {
 			"job_id", j.ID, "device_id", j.DeviceID,
 			"decision", "fail_orphan", "reason", "unrecoverable_after_restart",
 		)
-		// Seed runState for cleanup coordinates.
+		// Seed runState from durable job fields for cleanup coordinates.
 		o.mu.Lock()
 		if _, ok := o.running[j.ID]; !ok {
 			o.running[j.ID] = &runState{
 				bmcURL:     j.BMCEndpoint,
 				sessionID:  j.SOLSessionID,
-				systemID:   "",
-				credential: "", // may fail cleanup without creds; still transition
+				systemID:   j.SystemID,
+				credential: j.CredentialRef,
 			}
 		}
 		o.mu.Unlock()

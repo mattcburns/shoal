@@ -18,5 +18,7 @@ type Store interface {
 	Get(ctx context.Context, id string) (models.ProvisioningJob, error)
 	ListByState(ctx context.Context, state models.LifecycleState) ([]models.ProvisioningJob, error)
 	UpdateProgress(ctx context.Context, jobID string, phase string, percent *int, seq int, errSoft string) error
+	// UpdateRuntime persists BMC runtime coordinates for cancel/orphan cleanup.
+	UpdateRuntime(ctx context.Context, jobID string, systemID, solSessionID, credentialRef string) error
 	Transition(ctx context.Context, jobID string, to models.LifecycleState, errMsg string) error
 }

@@ -271,11 +271,25 @@ func cmdDeployCancel(args []string) int {
 		fmt.Fprintf(os.Stderr, "cancel: %v\n", err)
 		return 1
 	}
-	// Wait briefly for async terminal
-	time.Sleep(300 * time.Millisecond)
-	j, err := store.Get(context.Background(), *jobID)
-	if err == nil {
-		_ = json.NewEncoder(os.Stdout).Encode(j)
+	// Poll until terminal (HandleTerminal is async; cleanup may take tens of seconds).
+	var j models.ProvisioningJob
+	deadline := time.Now().Add(60 * time.Second)
+	for time.Now().Before(deadline) {
+		var err error
+		j, err = store.Get(context.Background(), *jobID)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "get job: %v\n", err)
+			return 1
+		}
+		if j.State != models.StateProvisioning {
+			break
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	_ = json.NewEncoder(os.Stdout).Encode(j)
+	if j.State == models.StateProvisioning {
+		fmt.Fprintln(os.Stderr, "cancel: still provisioning after wait (terminal async may still be running)")
+		return 1
 	}
 	return 0
 }

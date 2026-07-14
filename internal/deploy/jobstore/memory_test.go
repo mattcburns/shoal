@@ -47,3 +47,23 @@ func TestMemoryStoreLifecycle(t *testing.T) {
 		t.Fatalf("want not found: %v", err)
 	}
 }
+
+func TestMemoryUpdateRuntime(t *testing.T) {
+	ctx := context.Background()
+	s := jobstore.NewMemory()
+	if err := s.Insert(ctx, models.ProvisioningJob{
+		ID: "j2", DeviceID: "d2", State: models.StateProvisioning, CredentialRef: "job-j2",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateRuntime(ctx, "j2", "sys-1", "sol-j2", "job-j2"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Get(ctx, "j2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.SystemID != "sys-1" || got.SOLSessionID != "sol-j2" || got.CredentialRef != "job-j2" {
+		t.Fatalf("%+v", got)
+	}
+}

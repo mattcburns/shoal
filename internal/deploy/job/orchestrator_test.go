@@ -70,6 +70,14 @@ func TestOrchestratorHappyPathDone(t *testing.T) {
 	if nb.BySerial["lab-node-1"].LifecycleState != models.StateProvisioning {
 		t.Fatalf("netbox want provisioning, got %s", nb.BySerial["lab-node-1"].LifecycleState)
 	}
+	// Runtime coords must be durable for out-of-process cancel.
+	loaded, err := store.Get(ctx, j.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.SystemID == "" || loaded.CredentialRef == "" || loaded.SOLSessionID == "" {
+		t.Fatalf("runtime not persisted: system=%q cred=%q sol=%q", loaded.SystemID, loaded.CredentialRef, loaded.SOLSessionID)
+	}
 
 	// Emit SOL progress then DONE
 	writeMarker(t, pw, "SHOAL|1|1|2026-06-19T04:10:00Z|BOOT|5|OK|booting")
@@ -101,6 +109,55 @@ func TestOrchestratorHappyPathDone(t *testing.T) {
 	// password must not appear on job JSON-ish fields
 	if final.BMCEndpoint == "" {
 		t.Fatal("bmc endpoint should persist")
+	}
+}
+
+func TestOrchestratorCancelWithoutRunStateUsesDurableRuntime(t *testing.T) {
+	// Simulate out-of-process cancel: job + secrets exist, but no in-memory runState.
+	ctx := context.Background()
+	store := jobstore.NewMemory()
+	sec := secrets.NewMemory()
+	fakeBMC := redfish.NewFake()
+	// Pre-insert media as if another process started the job.
+	_ = fakeBMC.InsertVirtualMedia(ctx, "/redfish/v1/Managers/1/VirtualMedia/Cd", "http://iso/x.iso")
+	_ = fakeBMC.SetBootOverrideOnceCD(ctx, "1")
+	_ = sec.Put(ctx, "job-orphan", secrets.Credential{Username: "admin", Password: "secret"})
+	now := time.Now().UTC()
+	pj := models.ProvisioningJob{
+		ID: "orphan-1", DeviceID: "d1", State: models.StateProvisioning,
+		BMCEndpoint: "http://bmc.test", SystemID: "1", CredentialRef: "job-orphan",
+		SOLSessionID: "sol-orphan-1", StartedAt: &now, UpdatedAt: &now,
+	}
+	if err := store.Insert(ctx, pj); err != nil {
+		t.Fatal(err)
+	}
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	watch := sol.NewWatchService(log, nil)
+	orch := job.NewOrchestrator(job.Options{
+		Log: log, Store: store, Secrets: sec,
+		NewBMC: func(cfg redfish.Config) (redfish.BMC, error) { return fakeBMC, nil },
+		Watches: watch, AuthMode: "basic", TLSMode: "off", ReconcileFailOrphan: true,
+	})
+	defer orch.Stop()
+	watch.SetProgress(orch.ProgressPort())
+
+	if err := orch.Cancel(ctx, "orphan-1"); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	var final models.ProvisioningJob
+	for time.Now().Before(deadline) {
+		final, _ = store.Get(ctx, "orphan-1")
+		if final.State == models.StateFailed {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if final.State != models.StateFailed {
+		t.Fatalf("state %s err=%s", final.State, final.Error)
+	}
+	if fakeBMC.MediaInserted() || !fakeBMC.BootCleared() {
+		t.Fatal("expected cleanup using durable system_id + credential_ref")
 	}
 }
 

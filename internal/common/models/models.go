@@ -81,6 +81,11 @@ type ProvisioningJob struct {
 	SOLSessionID  string         `json:"sol_session_id,omitempty"`
 	ISOURL        string         `json:"iso_url,omitempty"`
 	BMCEndpoint   string         `json:"bmc_endpoint,omitempty"`
+	// SystemID is the Redfish computer system id (for cleanup after restart/cancel).
+	SystemID string `json:"system_id,omitempty"`
+	// CredentialRef is the secrets-backend key (never a password). Required for
+	// out-of-process cancel/orphan cleanup when SHOAL_SECRETS_DIR is shared.
+	CredentialRef string `json:"credential_ref,omitempty"`
 }
 
 // RawAssetInput is Discover ingest (API/CLI).

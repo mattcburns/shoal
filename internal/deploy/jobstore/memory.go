@@ -89,6 +89,29 @@ func (m *Memory) UpdateProgress(_ context.Context, jobID string, phase string, p
 	return nil
 }
 
+// UpdateRuntime persists system_id, sol_session_id, and credential_ref.
+func (m *Memory) UpdateRuntime(_ context.Context, jobID string, systemID, solSessionID, credentialRef string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	j, ok := m.jobs[jobID]
+	if !ok {
+		return ErrNotFound
+	}
+	if systemID != "" {
+		j.SystemID = systemID
+	}
+	if solSessionID != "" {
+		j.SOLSessionID = solSessionID
+	}
+	if credentialRef != "" {
+		j.CredentialRef = credentialRef
+	}
+	now := time.Now().UTC()
+	j.UpdatedAt = &now
+	m.jobs[jobID] = j
+	return nil
+}
+
 // Transition sets lifecycle state and optional error message.
 func (m *Memory) Transition(_ context.Context, jobID string, to models.LifecycleState, errMsg string) error {
 	m.mu.Lock()

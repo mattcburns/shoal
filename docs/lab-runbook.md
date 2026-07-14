@@ -184,7 +184,7 @@ go run ./cmd/shoal observe status -device-id shoal-node-1 \
 ### Phase 5a: NetBox lifecycle on deploy
 
 When `SHOAL_NETBOX_URL` + `SHOAL_NETBOX_TOKEN` are set, Deploy best-effort
-syncs NetBox `lifecycle_state` (custom field or comments fallback):
+syncs NetBox `lifecycle_state`:
 
 | Job event | NetBox state |
 |-----------|----------------|
@@ -192,11 +192,29 @@ syncs NetBox `lifecycle_state` (custom field or comments fallback):
 | Terminal DONE (post-check OK) | `provisioned` |
 | Terminal fail/cancel/stall/… | `failed` |
 
+**Custom fields** (created by `bootstrap_netbox` / `netbox_bootstrap`):
+`lifecycle_state`, `credential_ref`, `bmc_ip` on `dcim.device`. After adding
+them on an existing lab, re-run bootstrap (or create CFs once) and re-ingest
+devices so values land in custom fields instead of comments.
+
 NetBox down does **not** block BMC actions (warn log only). Device key is the
 job `device_id` (serial preferred after Discover ingest).
 
-Reliability contract (unchanged + polish): always cleanup Virtual Media + boot
-override; cancel/stall/orphan fail; DONE post-check verifies media ejected.
+**Cross-process cancel/cleanup:** jobs persist `system_id` + `credential_ref`.
+Use a **shared** secrets dir so the cancel process can resolve BMC credentials:
+
+```bash
+export SHOAL_SECRETS_DIR=./.shoal/secrets   # same path for deploy run and cancel
+mkdir -p "$SHOAL_SECRETS_DIR"
+# deploy run … then later:
+go run ./cmd/shoal deploy cancel -job <id>
+```
+
+Prefer cancel via the same `shoal serve` process (`POST /v1/jobs/{id}/cancel`)
+when the job was started under serve.
+
+Reliability contract: always cleanup Virtual Media + boot override;
+cancel/stall/orphan fail; DONE post-check verifies media ejected.
 
 ## 2) Fast stop (teardown / clean slate)
 ```bash
