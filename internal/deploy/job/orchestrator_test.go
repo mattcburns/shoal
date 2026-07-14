@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/mattcburns/shoal/internal/common/models"
+	"github.com/mattcburns/shoal/internal/common/netbox"
 	"github.com/mattcburns/shoal/internal/common/redfish"
 	"github.com/mattcburns/shoal/internal/common/secrets"
 	"github.com/mattcburns/shoal/internal/deploy/job"
@@ -20,6 +21,10 @@ func TestOrchestratorHappyPathDone(t *testing.T) {
 	store := jobstore.NewMemory()
 	sec := secrets.NewMemory()
 	fakeBMC := redfish.NewFake()
+	nb := netbox.NewMemory()
+	_, _ = nb.UpsertDevice(ctx, models.DeviceIdentity{
+		Serial: "lab-node-1", LifecycleState: models.StateDiscovered,
+	})
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 
 	// Pipe-based SOL transport: write markers into the watch.
@@ -37,6 +42,7 @@ func TestOrchestratorHappyPathDone(t *testing.T) {
 			return fakeBMC, nil
 		},
 		Watches:             watch,
+		NetBox:              nb,
 		AuthMode:            "basic",
 		TLSMode:             "off",
 		ReconcileFailOrphan: true,
@@ -60,6 +66,9 @@ func TestOrchestratorHappyPathDone(t *testing.T) {
 	}
 	if !fakeBMC.MediaInserted() {
 		t.Fatal("expected media inserted")
+	}
+	if nb.BySerial["lab-node-1"].LifecycleState != models.StateProvisioning {
+		t.Fatalf("netbox want provisioning, got %s", nb.BySerial["lab-node-1"].LifecycleState)
 	}
 
 	// Emit SOL progress then DONE
@@ -85,6 +94,9 @@ func TestOrchestratorHappyPathDone(t *testing.T) {
 	}
 	if !fakeBMC.BootCleared() || fakeBMC.MediaInserted() {
 		t.Fatal("cleanup incomplete: media/boot still set")
+	}
+	if nb.BySerial["lab-node-1"].LifecycleState != models.StateProvisioned {
+		t.Fatalf("netbox want provisioned, got %s", nb.BySerial["lab-node-1"].LifecycleState)
 	}
 	// password must not appear on job JSON-ish fields
 	if final.BMCEndpoint == "" {

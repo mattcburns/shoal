@@ -2,10 +2,12 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 
 	"github.com/mattcburns/shoal/internal/common/models"
+	"github.com/mattcburns/shoal/internal/common/validate"
 	"github.com/mattcburns/shoal/internal/deploy/jobstore"
 )
 
@@ -19,6 +21,11 @@ type JobCanceler interface {
 	Cancel(ctx context.Context, jobID string) error
 }
 
+// JobStarter starts a provisioning job (Orchestrator).
+type JobStarter interface {
+	Start(ctx context.Context, req models.StartJobRequest) (models.ProvisioningJob, error)
+}
+
 // WithJobStore attaches a job store for GET /v1/jobs/{id}.
 func (s *Server) WithJobStore(store jobstore.Store) *Server {
 	s.jobs = store
@@ -29,6 +36,42 @@ func (s *Server) WithJobStore(store jobstore.Store) *Server {
 func (s *Server) WithJobCanceler(c JobCanceler) *Server {
 	s.cancel = c
 	return s
+}
+
+// WithJobStarter attaches start support for POST /v1/jobs.
+func (s *Server) WithJobStarter(st JobStarter) *Server {
+	s.start = st
+	return s
+}
+
+func (s *Server) handleStartJob(w http.ResponseWriter, r *http.Request) {
+	if s.start == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+			"error": "job start not configured",
+		})
+		return
+	}
+	var req models.StartJobRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json"})
+		return
+	}
+	if err := validate.StartJobRequest(req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	j, err := s.start.Start(r.Context(), req)
+	if err != nil {
+		s.log.Warn("start job", "err", err.Error())
+		// May still have a job row after partial start.
+		if j.ID != "" {
+			writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error(), "job": j})
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusCreated, j)
 }
 
 func (s *Server) handleGetJob(w http.ResponseWriter, r *http.Request) {

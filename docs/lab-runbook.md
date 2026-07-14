@@ -181,6 +181,23 @@ go run ./cmd/shoal observe status -device-id shoal-node-1 \
 
 **Lab fidelity:** rich SEL/sensors need real BMC hardware.
 
+### Phase 5a: NetBox lifecycle on deploy
+
+When `SHOAL_NETBOX_URL` + `SHOAL_NETBOX_TOKEN` are set, Deploy best-effort
+syncs NetBox `lifecycle_state` (custom field or comments fallback):
+
+| Job event | NetBox state |
+|-----------|----------------|
+| Start (job row inserted) | `provisioning` |
+| Terminal DONE (post-check OK) | `provisioned` |
+| Terminal fail/cancel/stall/… | `failed` |
+
+NetBox down does **not** block BMC actions (warn log only). Device key is the
+job `device_id` (serial preferred after Discover ingest).
+
+Reliability contract (unchanged + polish): always cleanup Virtual Media + boot
+override; cancel/stall/orphan fail; DONE post-check verifies media ejected.
+
 ## 2) Fast stop (teardown / clean slate)
 ```bash
 ansible-playbook -i infra/ansible/inventory/lab-vm.yml infra/ansible/playbooks/down.yml

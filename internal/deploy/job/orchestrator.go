@@ -13,6 +13,7 @@ import (
 
 	"github.com/mattcburns/shoal/internal/common/jobport"
 	"github.com/mattcburns/shoal/internal/common/models"
+	"github.com/mattcburns/shoal/internal/common/netbox"
 	"github.com/mattcburns/shoal/internal/common/redfish"
 	"github.com/mattcburns/shoal/internal/common/secrets"
 	"github.com/mattcburns/shoal/internal/common/validate"
@@ -34,6 +35,14 @@ const (
 	ReasonPanic       TerminalReason = "panic"
 )
 
+// Reliability timeouts (Phase 5 polish — named constants).
+const (
+	CleanupTimeout        = 45 * time.Second
+	UnregisterTimeout     = 10 * time.Second
+	TerminalWorkerTimeout = 2 * time.Minute
+	DefaultSOLStall       = 3 * time.Minute
+)
+
 // Orchestrator owns lifecycle transitions, BMC actions, and cleanup.
 type Orchestrator struct {
 	log        *slog.Logger
@@ -41,6 +50,7 @@ type Orchestrator struct {
 	secrets    secrets.Backend
 	newBMC     redfish.Factory
 	watches    watchport.WatchRegistrar
+	netbox     netbox.LifecycleWriter // optional; identity lifecycle only
 	authMode   string
 	tlsMode    string
 	caFile     string
@@ -76,6 +86,7 @@ type Options struct {
 	Secrets             secrets.Backend
 	NewBMC              redfish.Factory
 	Watches             watchport.WatchRegistrar
+	NetBox              netbox.LifecycleWriter // optional Phase 5 lifecycle sync
 	AuthMode            string
 	TLSMode             string
 	CAFile              string
@@ -105,6 +116,7 @@ func NewOrchestrator(opts Options) *Orchestrator {
 		secrets:    opts.Secrets,
 		newBMC:     opts.NewBMC,
 		watches:    opts.Watches,
+		netbox:     opts.NetBox,
 		authMode:   auth,
 		tlsMode:    tlsMode,
 		caFile:     opts.CAFile,
@@ -135,7 +147,7 @@ func (o *Orchestrator) terminalLoop() {
 		case <-o.stopCh:
 			return
 		case ev := <-o.terminal:
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			ctx, cancel := context.WithTimeout(context.Background(), TerminalWorkerTimeout)
 			if err := o.HandleTerminal(ctx, ev.jobID, ev.reason); err != nil {
 				o.log.Error("HandleTerminal failed", "job_id", ev.jobID, "reason", string(ev.reason), "err", err.Error())
 			}
@@ -159,7 +171,9 @@ func (o *Orchestrator) Get(ctx context.Context, jobID string) (models.Provisioni
 	return o.store.Get(ctx, jobID)
 }
 
-// Start begins a provisioning job using CLI/API binding fields (no NetBox).
+// Start begins a provisioning job using CLI/API binding fields.
+// When NetBox is configured, best-effort lifecycle_state=provisioning is written
+// (failure is logged and does not block BMC actions).
 func (o *Orchestrator) Start(ctx context.Context, req models.StartJobRequest) (models.ProvisioningJob, error) {
 	if err := validate.StartJobRequest(req); err != nil {
 		return models.ProvisioningJob{}, err
@@ -204,6 +218,7 @@ func (o *Orchestrator) Start(ctx context.Context, req models.StartJobRequest) (m
 	if err := o.store.Insert(ctx, job); err != nil {
 		return models.ProvisioningJob{}, err
 	}
+	o.syncNetBoxLifecycle(ctx, req.DeviceID, models.StateProvisioning)
 
 	jobCtx, cancel := context.WithCancel(context.Background())
 	rs := &runState{
@@ -292,7 +307,7 @@ func (o *Orchestrator) provision(ctx context.Context, job models.ProvisioningJob
 	stall := req.StallTimeout
 	if stall <= 0 {
 		// Live ISO boot can take well over 90s before the first marker.
-		stall = 3 * time.Minute
+		stall = DefaultSOLStall
 	}
 	session := models.WatchSession{
 		ID:           rs.sessionID,
@@ -398,7 +413,7 @@ func (o *Orchestrator) handleTerminalOnce(ctx context.Context, jobID string, rea
 		}()
 		select {
 		case <-unregDone:
-		case <-time.After(10 * time.Second):
+		case <-time.After(UnregisterTimeout):
 			o.log.Warn("watch unregister timed out", "job_id", jobID, "session_id", sessionID)
 		case <-ctx.Done():
 			o.log.Warn("watch unregister aborted by context", "job_id", jobID)
@@ -416,13 +431,13 @@ func (o *Orchestrator) handleTerminalOnce(ctx context.Context, jobID string, rea
 	}
 
 	// Always-run cleanup when we have BMC coordinates (hard timeout so we still transition).
+	var cleanupErr error
 	if bmcURL != "" {
-		cctx, ccancel := context.WithTimeout(context.Background(), 45*time.Second)
-		err := o.cleanupBMC(cctx, bmcURL, credRef, systemID)
+		cctx, ccancel := context.WithTimeout(context.Background(), CleanupTimeout)
+		cleanupErr = o.cleanupBMC(cctx, bmcURL, credRef, systemID)
 		ccancel()
-		if err != nil {
-			o.log.Error("bmc cleanup failed", "job_id", jobID, "err", err.Error())
-			// still transition
+		if cleanupErr != nil {
+			o.log.Error("bmc cleanup failed", "job_id", jobID, "err", cleanupErr.Error())
 		}
 	}
 
@@ -432,6 +447,18 @@ func (o *Orchestrator) handleTerminalOnce(ctx context.Context, jobID string, rea
 	case ReasonDoneOK:
 		to = models.StateProvisioned
 		errMsg = ""
+		// Phase 5: DONE post-check — cleanup must have left media/boot clear.
+		if cleanupErr != nil {
+			to = models.StateFailed
+			errMsg = "post-check: bmc cleanup incomplete: " + cleanupErr.Error()
+			o.log.Warn("DONE post-check failed", "job_id", jobID, "err", cleanupErr.Error())
+		} else if bmcURL != "" {
+			if err := o.postCheckClean(context.Background(), bmcURL, credRef, systemID); err != nil {
+				to = models.StateFailed
+				errMsg = "post-check: " + err.Error()
+				o.log.Warn("DONE post-check failed", "job_id", jobID, "err", err.Error())
+			}
+		}
 	case ReasonCancel:
 		to = models.StateFailed
 		errMsg = "canceled"
@@ -464,11 +491,67 @@ func (o *Orchestrator) handleTerminalOnce(ctx context.Context, jobID string, rea
 		return err
 	}
 	o.log.Info("job terminal", "job_id", jobID, "state", string(to), "reason", string(reason))
+	o.syncNetBoxLifecycle(context.Background(), job.DeviceID, to)
 
 	o.mu.Lock()
 	delete(o.running, jobID)
 	o.mu.Unlock()
 	return nil
+}
+
+// postCheckClean verifies media ejected and boot override cleared after cleanup.
+func (o *Orchestrator) postCheckClean(ctx context.Context, bmcURL, credRef, systemID string) error {
+	user, pass := "", ""
+	if credRef != "" && o.secrets != nil {
+		if c, err := o.secrets.Get(ctx, credRef); err == nil {
+			user, pass = c.Username, c.Password
+		}
+	}
+	bmc, err := o.newBMC(redfish.Config{
+		BaseURL: bmcURL, Username: user, Password: pass,
+		AuthMode: o.authMode, TLSMode: o.tlsMode, CAFile: o.caFile, MaxConcurrent: 1,
+	})
+	if err != nil {
+		return fmt.Errorf("bmc for post-check: %w", err)
+	}
+	if err := bmc.Open(ctx); err != nil {
+		return fmt.Errorf("bmc open post-check: %w", err)
+	}
+	defer func() { _ = bmc.Close(context.Background()) }()
+	vms, err := bmc.ListVirtualMedia(ctx, systemID)
+	if err != nil {
+		return fmt.Errorf("list media post-check: %w", err)
+	}
+	for _, vm := range vms {
+		if vm.Inserted {
+			return fmt.Errorf("virtual media still inserted (%s)", vm.URI)
+		}
+	}
+	boot, err := bmc.GetBoot(ctx, systemID)
+	if err != nil {
+		return fmt.Errorf("get boot post-check: %w", err)
+	}
+	if boot.OverrideEnabled != "" && boot.OverrideEnabled != "Disabled" && boot.OverrideEnabled != "disabled" {
+		return fmt.Errorf("boot override still set (%s/%s)", boot.OverrideEnabled, boot.OverrideTarget)
+	}
+	return nil
+}
+
+// syncNetBoxLifecycle best-effort updates NetBox identity lifecycle_state.
+// Failures are logged only (do not reverse JobStore transition).
+func (o *Orchestrator) syncNetBoxLifecycle(ctx context.Context, deviceKey string, state models.LifecycleState) {
+	if o.netbox == nil || deviceKey == "" {
+		return
+	}
+	if err := o.netbox.SetLifecycle(ctx, deviceKey, state); err != nil {
+		o.log.Warn("netbox lifecycle sync failed",
+			"device_id", deviceKey,
+			"lifecycle_state", string(state),
+			"err", err.Error(),
+		)
+		return
+	}
+	o.log.Info("netbox lifecycle synced", "device_id", deviceKey, "lifecycle_state", string(state))
 }
 
 func (o *Orchestrator) cleanupBMC(ctx context.Context, bmcURL, credRef, systemID string) error {
@@ -512,16 +595,24 @@ func (o *Orchestrator) cleanupBMC(ctx context.Context, bmcURL, credRef, systemID
 
 // ReconcileOrphans fails in-flight PROVISIONING jobs left from a previous process.
 // Default policy (failOrphan=true): cleanup + FAILED for each.
+// Re-attach SOL is deferred (MVP: fail orphans is the safe default).
 func (o *Orchestrator) ReconcileOrphans(ctx context.Context) error {
 	jobs, err := o.store.ListByState(ctx, models.StateProvisioning)
 	if err != nil {
 		return err
 	}
 	for _, j := range jobs {
-		o.log.Warn("reconciling orphan job", "job_id", j.ID, "device_id", j.DeviceID, "fail", o.failOrphan)
 		if !o.failOrphan {
+			o.log.Warn("reconciling orphan job",
+				"job_id", j.ID, "device_id", j.DeviceID,
+				"decision", "skip", "reason", "SHOAL_RECONCILE_FAIL_ORPHANS=false",
+			)
 			continue
 		}
+		o.log.Warn("reconciling orphan job",
+			"job_id", j.ID, "device_id", j.DeviceID,
+			"decision", "fail_orphan", "reason", "unrecoverable_after_restart",
+		)
 		// Seed runState for cleanup coordinates.
 		o.mu.Lock()
 		if _, ok := o.running[j.ID]; !ok {
@@ -546,7 +637,7 @@ func (o *Orchestrator) enqueueTerminal(jobID string, reason TerminalReason) {
 	default:
 		// channel full — run async
 		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			ctx, cancel := context.WithTimeout(context.Background(), TerminalWorkerTimeout)
 			defer cancel()
 			_ = o.HandleTerminal(ctx, jobID, reason)
 		}()

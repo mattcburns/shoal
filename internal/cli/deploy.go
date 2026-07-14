@@ -12,6 +12,7 @@ import (
 
 	"github.com/mattcburns/shoal/internal/common/config"
 	"github.com/mattcburns/shoal/internal/common/models"
+	"github.com/mattcburns/shoal/internal/common/netbox"
 	"github.com/mattcburns/shoal/internal/common/redfish"
 	"github.com/mattcburns/shoal/internal/common/telemetry"
 	"github.com/mattcburns/shoal/internal/deploy/job"
@@ -104,12 +105,17 @@ func cmdDeployRun(args []string) int {
 		KeyPath: cfg.SerialSSHKey,
 		UseSudo: cfg.SerialSSHSudo,
 	})
+	var nb netbox.LifecycleWriter
+	if cfg.NetBoxURL != "" && cfg.NetBoxToken != "" {
+		nb = netbox.New(cfg.NetBoxURL, cfg.NetBoxToken)
+	}
 	orch := job.NewOrchestrator(job.Options{
 		Log:                 log,
 		Store:               store,
 		Secrets:             secretBackend,
 		NewBMC:              redfish.NewBMC,
 		Watches:             watchSvc,
+		NetBox:              nb,
 		AuthMode:            cfg.RedfishAuthMode,
 		TLSMode:             cfg.RedfishTLSMode,
 		CAFile:              cfg.RedfishCAFile,
@@ -242,12 +248,17 @@ func cmdDeployCancel(args []string) int {
 		KeyPath: cfg.SerialSSHKey,
 		UseSudo: cfg.SerialSSHSudo,
 	})
+	var nb netbox.LifecycleWriter
+	if cfg.NetBoxURL != "" && cfg.NetBoxToken != "" {
+		nb = netbox.New(cfg.NetBoxURL, cfg.NetBoxToken)
+	}
 	orch := job.NewOrchestrator(job.Options{
 		Log:                 log,
 		Store:               store,
 		Secrets:             secretBackend,
 		NewBMC:              redfish.NewBMC,
 		Watches:             watchSvc,
+		NetBox:              nb,
 		AuthMode:            cfg.RedfishAuthMode,
 		TLSMode:             cfg.RedfishTLSMode,
 		CAFile:              cfg.RedfishCAFile,
