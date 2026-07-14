@@ -12,9 +12,10 @@ import (
 	"github.com/mattcburns/shoal/internal/common/telemetry"
 	"github.com/mattcburns/shoal/internal/deploy/jobstore"
 	"github.com/mattcburns/shoal/internal/discover"
+	"github.com/mattcburns/shoal/internal/observe"
 )
 
-// Server is the HTTP API surface (health + jobs + discover).
+// Server is the HTTP API surface (health + jobs + discover + observe).
 type Server struct {
 	cfg config.Config
 	log *slog.Logger
@@ -24,6 +25,7 @@ type Server struct {
 	jobs     jobstore.Store
 	cancel   JobCanceler
 	discover *discover.Service
+	observe  *observe.Service
 }
 
 // New constructs a Server with routes registered.
@@ -53,6 +55,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /v1/jobs/{id}/cancel", s.handleCancelJob)
 	s.mux.HandleFunc("POST /v1/discover/ingest", s.handleDiscoverIngest)
 	s.mux.HandleFunc("POST /v1/discover/confirm", s.handleDiscoverConfirm)
+	s.mux.HandleFunc("GET /v1/devices/{id}/status", s.handleDeviceStatus)
+	s.mux.HandleFunc("GET /v1/devices/{id}/events", s.handleDeviceEvents)
 }
 
 func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {

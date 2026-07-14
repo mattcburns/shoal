@@ -1632,6 +1632,6 @@ go test ./...
 **This document (v2.0.5) is the SoT for agents.** Phase 0–3 (incl. dual-model lab + hybrid Discover + few-shot learning) are on `master`.
 
 Next actions:
-1. Phase 4 Observe broaden: telemetry Store, Redfish SEL/sensors, poll, device status CLI/API
+1. Phase 4 Observe broaden (4a Store+SEL landed; 4b poll/status CLI/API)
 2. Later: Phase 5 Deploy harden, packaging
 3. At Phase 6: choose graphics failure-screen OCR approach before implementing

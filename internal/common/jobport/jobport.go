@@ -1,5 +1,5 @@
-// Package jobport defines the progress interface Observe consumes.
-// Deploy implements JobProgress; Observe must not import deploy.
+// Package jobport defines progress and job-read ports Observe consumes.
+// Deploy implements these; Observe must not import deploy.
 package jobport
 
 import (
@@ -15,4 +15,11 @@ type JobProgress interface {
 	ApplyMarker(ctx context.Context, jobID string, m models.SOLMarker) error
 	ReportStall(ctx context.Context, jobID string, reason string) error
 	ReportTransportError(ctx context.Context, jobID string, err error) error
+}
+
+// JobQuery is a read-only view of durable jobs for Observe status aggregation.
+// jobstore.Store satisfies this without Observe importing deploy.
+type JobQuery interface {
+	Get(ctx context.Context, id string) (models.ProvisioningJob, error)
+	ListByState(ctx context.Context, state models.LifecycleState) ([]models.ProvisioningJob, error)
 }

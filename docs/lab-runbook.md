@@ -142,6 +142,32 @@ go run ./cmd/shoal discover confirm \
 API: `POST /v1/discover/confirm` with the same JSON body. Ingest still works if
 `SHOAL_FEWSHOT_DIR` is unset; confirm returns an error until the dir is set.
 
+### Phase 4: Observe status + SEL/sensor poll
+
+Telemetry events/sensors go to Postgres (`SHOAL_TELEMETRY_DATABASE_URL`, lab
+`:5433/shoal_telemetry`) — **not** NetBox.
+
+```bash
+export SHOAL_TELEMETRY_DATABASE_URL="postgres://shoal:…@192.168.122.100:5433/shoal_telemetry?sslmode=disable"
+export SHOAL_BMC_USERNAME=… SHOAL_BMC_PASSWORD=…
+
+# Aggregate device status (job phase + last event)
+go run ./cmd/shoal observe status -device-id shoal-node-1
+go run ./cmd/shoal observe status -device-id shoal-node-1 -events 10
+
+# One-shot Redfish SEL + sensor poll → telemetry store
+go run ./cmd/shoal observe poll \
+  -device-id shoal-node-1 \
+  -bmc-url http://192.168.122.100:8001
+
+# With serve: GET /v1/devices/{id}/status and /v1/devices/{id}/events
+# Background poller seeds targets from jobs that have bmc_endpoint set;
+# interval elevates while a SOL watch is active (15s vs 60s idle).
+```
+
+**Lab fidelity:** sushy-tools often returns **empty** SEL/sensors — poll still
+succeeds (0 new entries). Rich SEL requires real BMC hardware.
+
 ## 2) Fast stop (teardown / clean slate)
 ```bash
 ansible-playbook -i infra/ansible/inventory/lab-vm.yml infra/ansible/playbooks/down.yml

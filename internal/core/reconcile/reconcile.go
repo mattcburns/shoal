@@ -244,23 +244,87 @@ func truncateRunes(s string, n int) string {
 	return s[:n] + "…"
 }
 
-// ReconcileEvent is a minimal text event normalizer for later Observe use.
+// ReconcileEvent normalizes Observe SEL/sensor/SOL text (deterministic-first).
+// Phase 4: keyword severity/component; full AI event path remains optional later.
 func (s *Service) ReconcileEvent(ctx context.Context, in models.RawEventInput) (models.NormalizedEvent, error) {
+	_ = ctx
 	if in.Raw != nil && redact.ContainsSensitiveKey(in.Raw) {
 		return models.NormalizedEvent{}, fmt.Errorf("reconcile: event raw still contains sensitive keys")
 	}
-	// Phase 3: deterministic pass-through; AI event path expands in Phase 4.
+	msg := strings.TrimSpace(in.Message)
+	src := strings.TrimSpace(in.Source)
+	if src == "" {
+		src = "sel"
+	}
+	sev, component := classifyEventText(msg, in.Raw)
+	ts := in.Timestamp
+	if ts.IsZero() {
+		ts = time.Now().UTC()
+	}
 	ev := models.NormalizedEvent{
 		DeviceID:  in.DeviceID,
-		EventType: in.Source,
-		Severity:  "info",
-		Message:   in.Message,
-		Timestamp: in.Timestamp,
+		EventType: src,
+		Severity:  sev,
+		Component: component,
+		Message:   msg,
+		Timestamp: ts,
 	}
 	if err := validate.NormalizedEvent(ev); err != nil {
 		return models.NormalizedEvent{}, err
 	}
 	return ev, nil
+}
+
+func classifyEventText(msg string, raw map[string]any) (severity, component string) {
+	severity = "info"
+	lower := strings.ToLower(msg)
+	switch {
+	case strings.Contains(lower, "critical"), strings.Contains(lower, "fatal"),
+		strings.Contains(lower, "failure"), strings.Contains(lower, "failed"),
+		strings.Contains(lower, "assert"):
+		severity = "critical"
+	case strings.Contains(lower, "warning"), strings.Contains(lower, "degraded"),
+		strings.Contains(lower, "throttle"), strings.Contains(lower, "predictive"):
+		severity = "warning"
+	case strings.Contains(lower, "error"):
+		severity = "error"
+	}
+	if raw != nil {
+		if s, ok := raw["severity"].(string); ok && strings.TrimSpace(s) != "" {
+			// Prefer structured BMC severity when present.
+			switch strings.ToLower(strings.TrimSpace(s)) {
+			case "critical", "warning", "ok", "info", "error":
+				if strings.EqualFold(s, "ok") {
+					severity = "info"
+				} else {
+					severity = strings.ToLower(s)
+				}
+			}
+		}
+		if c, ok := raw["sensor_type"].(string); ok && strings.TrimSpace(c) != "" {
+			component = strings.TrimSpace(c)
+		}
+		if c, ok := raw["component"].(string); ok && strings.TrimSpace(c) != "" {
+			component = strings.TrimSpace(c)
+		}
+	}
+	if component == "" {
+		switch {
+		case strings.Contains(lower, "temp"), strings.Contains(lower, "thermal"):
+			component = "thermal"
+		case strings.Contains(lower, "fan"):
+			component = "fan"
+		case strings.Contains(lower, "power"), strings.Contains(lower, "psu"), strings.Contains(lower, "voltage"):
+			component = "power"
+		case strings.Contains(lower, "memory"), strings.Contains(lower, "dimm"):
+			component = "memory"
+		case strings.Contains(lower, "cpu"), strings.Contains(lower, "processor"):
+			component = "cpu"
+		case strings.Contains(lower, "disk"), strings.Contains(lower, "drive"), strings.Contains(lower, "storage"):
+			component = "storage"
+		}
+	}
+	return severity, component
 }
 
 var _ Reconciler = (*Service)(nil)

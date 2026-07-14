@@ -15,20 +15,25 @@ import (
 
 	"github.com/mattcburns/shoal/internal/api"
 	"github.com/mattcburns/shoal/internal/common/config"
+	"github.com/mattcburns/shoal/internal/common/models"
 	"github.com/mattcburns/shoal/internal/common/netbox"
 	"github.com/mattcburns/shoal/internal/common/redact"
 	"github.com/mattcburns/shoal/internal/common/redfish"
 	"github.com/mattcburns/shoal/internal/common/secrets"
+	"github.com/mattcburns/shoal/internal/common/telemetry"
 	"github.com/mattcburns/shoal/internal/core/ai"
 	"github.com/mattcburns/shoal/internal/core/fewshot"
 	"github.com/mattcburns/shoal/internal/core/reconcile"
 	"github.com/mattcburns/shoal/internal/deploy/job"
+	"github.com/mattcburns/shoal/internal/deploy/jobstore"
 	"github.com/mattcburns/shoal/internal/discover"
+	"github.com/mattcburns/shoal/internal/observe"
+	"github.com/mattcburns/shoal/internal/observe/poll"
 	"github.com/mattcburns/shoal/internal/observe/sol"
 )
 
 // Version is the application version string (overridable via -ldflags).
-var Version = "0.3.0-phase3"
+var Version = "0.4.0-phase4"
 
 // Run dispatches subcommands. args should be os.Args[1:].
 func Run(args []string) int {
@@ -45,6 +50,8 @@ func Run(args []string) int {
 		return cmdDeploy(args[1:])
 	case "discover":
 		return cmdDiscover(args[1:])
+	case "observe":
+		return cmdObserve(args[1:])
 	case "help", "-h", "--help":
 		printUsage(os.Stdout)
 		return 0
@@ -66,6 +73,12 @@ Commands:
   serve      Run the HTTP API server
   deploy     Provisioning: run | status | cancel
   discover   Assets: ingest | confirm
+  observe    Status / poll: status | poll
+
+Phase 4 observe example:
+  export SHOAL_TELEMETRY_DATABASE_URL=postgres://…@192.168.122.100:5433/shoal_telemetry
+  shoal observe status -device-id shoal-node-1
+  shoal observe poll -device-id shoal-node-1 -bmc-url http://192.168.122.100:8001
 
 Phase 3 discover example:
   export SHOAL_AI_PROVIDER=ollama
@@ -118,6 +131,7 @@ func cmdServe(args []string) int {
 
 	// Optional Discover / AI wiring (Phase 3 + 3b learning).
 	var fsStore fewshot.Store
+	var rec reconcile.Reconciler
 	if cfg.FewShotDir != "" {
 		if st, err := fewshot.NewFileStore(cfg.FewShotDir); err != nil {
 			log.Warn("fewshot store unavailable", "err", err.Error())
@@ -129,10 +143,11 @@ func cmdServe(args []string) int {
 	if llm, err := ai.NewFromConfig(cfg); err != nil {
 		log.Warn("ai client not configured", "err", err.Error())
 	} else if llm != nil {
-		rec, err := reconcile.NewWithFewShot(llm, log, fsStore)
+		r, err := reconcile.NewWithFewShot(llm, log, fsStore)
 		if err != nil {
 			log.Warn("reconciler init failed", "err", err.Error())
 		} else {
+			rec = r
 			var nb netbox.API
 			if cfg.NetBoxURL != "" && cfg.NetBoxToken != "" {
 				nb = netbox.New(cfg.NetBoxURL, cfg.NetBoxToken)
@@ -140,6 +155,12 @@ func cmdServe(args []string) int {
 			disc := discover.NewWithFewShot(log, rec, openSecrets(cfg), nb, fsStore)
 			srvAPI.WithDiscover(disc)
 			log.Info("discover ingest/confirm API enabled")
+		}
+	}
+	// Deterministic event normalize when AI unavailable (Observe poll still works).
+	if rec == nil {
+		if r, err := reconcile.New(&ai.Fake{Content: `{}`}, log); err == nil {
+			rec = r
 		}
 	}
 
@@ -177,6 +198,46 @@ func cmdServe(args []string) int {
 		if err := orch.ReconcileOrphans(ctx); err != nil {
 			log.Warn("orphan reconcile", "err", err.Error())
 		}
+
+		// Phase 4: Observe status + background SEL/sensor poll for jobs with BMC endpoints.
+		var telemStore telemetry.Store
+		if cfg.TelemetryDatabaseURL != "" {
+			db, err := telemetry.OpenAndMigrate(ctx, cfg.TelemetryDatabaseURL)
+			if err != nil {
+				log.Warn("telemetry store for observe", "err", err.Error())
+			} else {
+				defer db.Close()
+				telemStore = telemetry.NewPostgres(db)
+			}
+		}
+		if telemStore == nil {
+			telemStore = telemetry.NewMemory()
+		}
+		obsSvc := observe.New(log, store, telemStore, watchSvc)
+		srvAPI.WithObserve(obsSvc)
+		log.Info("observe device status API enabled")
+
+		poller := poll.New(log, telemStore, redfish.NewBMC)
+		poller.Watching = watchSvc
+		poller.Events = rec
+		seedPollTargets(ctx, poller, store, cfg)
+		go func() {
+			ticker := time.NewTicker(30 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					seedPollTargets(ctx, poller, store, cfg)
+				}
+			}
+		}()
+		go poller.Run(ctx)
+		log.Info("observe SEL/sensor poller started",
+			"idle", poll.DefaultIdleInterval.String(),
+			"watch", poll.DefaultWatchInterval.String(),
+		)
 	}
 
 	httpSrv := &http.Server{
@@ -217,6 +278,40 @@ func openSecrets(cfg config.Config) secrets.Backend {
 		}
 	}
 	return secrets.NewMemory()
+}
+
+// seedPollTargets registers BMC endpoints from durable jobs for SEL/sensor poll.
+func seedPollTargets(ctx context.Context, p *poll.Poller, store jobstore.Store, cfg config.Config) {
+	if p == nil || store == nil {
+		return
+	}
+	states := []models.LifecycleState{
+		models.StateProvisioning,
+		models.StateProvisioned,
+		models.StateFailed,
+	}
+	for _, st := range states {
+		list, err := store.ListByState(ctx, st)
+		if err != nil {
+			continue
+		}
+		for _, j := range list {
+			if j.BMCEndpoint == "" || j.DeviceID == "" {
+				continue
+			}
+			_ = p.SetTarget(poll.Target{
+				DeviceID: j.DeviceID,
+				BMC: redfish.Config{
+					BaseURL:  j.BMCEndpoint,
+					Username: cfg.BMCUsername,
+					Password: cfg.BMCPassword,
+					AuthMode: cfg.RedfishAuthMode,
+					TLSMode:  cfg.RedfishTLSMode,
+					CAFile:   cfg.RedfishCAFile,
+				},
+			})
+		}
+	}
 }
 
 func newLogger(level string) *slog.Logger {

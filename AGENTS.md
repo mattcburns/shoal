@@ -227,7 +227,7 @@ go run ./cmd/shoal deploy run \
 |---------|--------|
 | `SHOAL_HTTP_ADDR` | Default `:8088`; bind management interface in lab |
 | `SHOAL_LOG_LEVEL` | `debug` \| `info` \| `warn` \| `error` (default `info`) |
-| `SHOAL_TELEMETRY_DATABASE_URL` | Lab Postgres `…:5433/shoal_telemetry` (jobs + events) |
+| `SHOAL_TELEMETRY_DATABASE_URL` | Lab Postgres `…:5433/shoal_telemetry` (jobs + events/sensors; Observe poll) |
 | `SHOAL_NETBOX_URL` / `SHOAL_NETBOX_TOKEN` | Identity store |
 | `SHOAL_AI_PROVIDER` | `ollama` \| `cloud` |
 | `SHOAL_AI_MODEL` | Text / default model (lab: `llama3.2:3b`) |
@@ -243,6 +243,10 @@ go run ./cmd/shoal deploy run \
 | `SHOAL_FEWSHOT_DIR` | Append-only learned few-shot JSONL (confirm learning). Lab Ansible default: `/var/lib/shoal/fewshot` via `shoal_fewshot_dir` + `env.j2`. Empty disables confirm |
 
 Full table and Ansible extension points: design doc §8.1.
+
+**Phase 4 Observe:** `shoal observe status|poll`, `GET /v1/devices/{id}/status` and
+`…/events`. Poll uses Redfish `ListSEL`/`ListSensors` → `telemetry.Store`.
+Observe never imports Deploy (job reads via `jobport.JobQuery`).
 
 ---
 
