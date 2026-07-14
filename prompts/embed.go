@@ -7,22 +7,32 @@ import (
 )
 
 //go:embed schemas/normalization_result.v1.json
+//go:embed schemas/provisioning_profile.v1.json
 //go:embed reconcile_asset.v1.md
+//go:embed provisioning_profile.v1.md
 //go:embed fewshot/reconcile_asset.v1.jsonl
+//go:embed fewshot/provisioning_profile.v1.jsonl
 var fs embed.FS
 
-// Assets is the set of files used by reconcile.
+// Assets is the set of files used by reconcile and profile generation.
 type Assets struct {
-	SchemaNormalizationResult string
-	ReconcileAssetMD          string
-	ReconcileAssetFewShot     string
+	SchemaNormalizationResult  string
+	SchemaProvisioningProfile  string
+	ReconcileAssetMD           string
+	ReconcileAssetFewShot      string
+	ProvisioningProfileMD      string
+	ProvisioningProfileFewShot string
 }
 
 // Load reads embedded prompt files.
 func Load() (Assets, error) {
 	schema, err := fs.ReadFile("schemas/normalization_result.v1.json")
 	if err != nil {
-		return Assets{}, fmt.Errorf("prompts: schema: %w", err)
+		return Assets{}, fmt.Errorf("prompts: schema normalization: %w", err)
+	}
+	profSchema, err := fs.ReadFile("schemas/provisioning_profile.v1.json")
+	if err != nil {
+		return Assets{}, fmt.Errorf("prompts: schema profile: %w", err)
 	}
 	md, err := fs.ReadFile("reconcile_asset.v1.md")
 	if err != nil {
@@ -30,11 +40,22 @@ func Load() (Assets, error) {
 	}
 	few, err := fs.ReadFile("fewshot/reconcile_asset.v1.jsonl")
 	if err != nil {
-		return Assets{}, fmt.Errorf("prompts: fewshot: %w", err)
+		return Assets{}, fmt.Errorf("prompts: fewshot asset: %w", err)
+	}
+	pmd, err := fs.ReadFile("provisioning_profile.v1.md")
+	if err != nil {
+		return Assets{}, fmt.Errorf("prompts: provisioning_profile: %w", err)
+	}
+	pfew, err := fs.ReadFile("fewshot/provisioning_profile.v1.jsonl")
+	if err != nil {
+		return Assets{}, fmt.Errorf("prompts: fewshot profile: %w", err)
 	}
 	return Assets{
-		SchemaNormalizationResult: string(schema),
-		ReconcileAssetMD:          string(md),
-		ReconcileAssetFewShot:     string(few),
+		SchemaNormalizationResult:  string(schema),
+		SchemaProvisioningProfile:  string(profSchema),
+		ReconcileAssetMD:           string(md),
+		ReconcileAssetFewShot:      string(few),
+		ProvisioningProfileMD:      string(pmd),
+		ProvisioningProfileFewShot: string(pfew),
 	}, nil
 }

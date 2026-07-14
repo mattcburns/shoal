@@ -135,7 +135,7 @@ func TestOrchestratorCancelWithoutRunStateUsesDurableRuntime(t *testing.T) {
 	watch := sol.NewWatchService(log, nil)
 	orch := job.NewOrchestrator(job.Options{
 		Log: log, Store: store, Secrets: sec,
-		NewBMC: func(cfg redfish.Config) (redfish.BMC, error) { return fakeBMC, nil },
+		NewBMC:  func(cfg redfish.Config) (redfish.BMC, error) { return fakeBMC, nil },
 		Watches: watch, AuthMode: "basic", TLSMode: "off", ReconcileFailOrphan: true,
 	})
 	defer orch.Stop()

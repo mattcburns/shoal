@@ -80,7 +80,25 @@ func ProvisioningProfile(p models.ProvisioningProfile) error {
 	if strings.TrimSpace(p.ISOBase) == "" {
 		return fmt.Errorf("validate: profile iso_base is required")
 	}
+	for _, step := range append(append([]string{}, p.PostInstallSteps...), p.DestructSteps...) {
+		if looksSecretStep(step) {
+			return fmt.Errorf("validate: profile steps must not contain secret-like content")
+		}
+	}
+	if len(p.DestructSteps) > 0 && !p.NeedsApproval {
+		return fmt.Errorf("validate: destruct_steps require needs_approval=true")
+	}
 	return nil
+}
+
+func looksSecretStep(s string) bool {
+	lower := strings.ToLower(s)
+	for _, needle := range []string{"password", "passwd", "secret", "api_key", "apikey", "token=", "bearer "} {
+		if strings.Contains(lower, needle) {
+			return true
+		}
+	}
+	return false
 }
 
 // ProfileRequirements rejects secret-like keys in Extra.

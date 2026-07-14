@@ -1034,6 +1034,9 @@ type StartJobRequest struct {
     SerialTarget string `json:"serial_target"`           // libvirt domain or SOL target
     SystemID     string `json:"system_id,omitempty"`
     CredentialRef string `json:"credential_ref,omitempty"` // alt: pre-seeded secret (skip user/pass)
+    // ApproveDestruct is operator consent for NeedsApproval / DestructSteps (Phase 5b).
+    // Does not bypass a missing profile store entry; only supplies consent at Start.
+    ApproveDestruct bool `json:"approve_destruct,omitempty"`
 }
 
 type CancelJobRequest struct {
@@ -1328,10 +1331,11 @@ Default VM-hosted endpoints: NetBox `:8000`, sushy `:8001`, ISO HTTP `:8080`, Ol
 | `SHOAL_ISO_BASE_URL` | no | e.g. `http://192.168.122.100:8080` |
 | `SHOAL_RECONCILE_FAIL_ORPHANS` | no | Default `true` |
 | `SHOAL_FEWSHOT_DIR` | no | Append-only learned few-shot JSONL (Phase 3b confirm). Lab default via Ansible `shoal_fewshot_dir` → `/var/lib/shoal/fewshot` in `env.j2` + mkdir. Empty disables confirm |
+| `SHOAL_PROFILE_DIR` | no | JSON provisioning profiles + approval records (Phase 5b). Lab default via Ansible `shoal_profile_dir` → `/var/lib/shoal/profiles` in `env.j2` + mkdir. Empty disables non-spike profile load; `spike` profile ref always allowed without a store |
 
 **Ansible extensions (when packaging app service):**
 - `compose_stack` templates: add `shoal` service (static binary image), publish `SHOAL_HTTP_ADDR` port, inject table above into `env.j2`
-- `group_vars/all/defaults.yml`: `shoal_app_http_port: 8088`; **`shoal_fewshot_dir: /var/lib/shoal/fewshot`** (Phase 3b; already in `env.j2` + mkdir)
+- `group_vars/all/defaults.yml`: `shoal_app_http_port: 8088`; **`shoal_fewshot_dir: /var/lib/shoal/fewshot`** (Phase 3b); **`shoal_profile_dir: /var/lib/shoal/profiles`** (Phase 5b; both already in `env.j2` + mkdir)
 - Secrets: `shoal_netbox_token` already bootstrapped — ensure it is exported into app env
 
 **Phase 0** does not require the Shoal container. **Phase 1** may `go run` with exported env. **Packaging PR** adds Compose service.
@@ -1414,6 +1418,8 @@ SEL/sensor poll, session caps, event normalize, watch mode, CLI status; stretch 
 ### Phase 5: Shoal Deploy (Harden)
 
 Full ISO pipeline, reliability contract polish, profile generation + approval, NetBox lifecycle sync.
+
+**Phase 5b (profiles + approval):** Core `Profiler` generates `ProvisioningProfile` via AI + schema validate. Durable store under `SHOAL_PROFILE_DIR` (not NetBox). CLI `shoal profile generate|save|show|list|approve`. Deploy `Start` rejects non-`spike` refs without store entry; `NeedsApproval` / non-empty `DestructSteps` require prior `profile approve` or `StartJobRequest.ApproveDestruct` / `-approve-destruct`. AI never auto-executes destruct.
 
 ### Phase 6: Polish
 

@@ -16,6 +16,16 @@ func BuildReconcileAssetPrompt(template, schema, fewshot, rawJSON, partialJSON s
 	return s
 }
 
+// BuildProvisioningProfilePrompt fills the profile generation template.
+func BuildProvisioningProfilePrompt(template, schema, fewshot, assetJSON, reqJSON string) string {
+	s := template
+	s = strings.ReplaceAll(s, "{{SCHEMA}}", schema)
+	s = strings.ReplaceAll(s, "{{FEWSHOT}}", fewshot)
+	s = strings.ReplaceAll(s, "{{ASSET}}", assetJSON)
+	s = strings.ReplaceAll(s, "{{REQUIREMENTS}}", reqJSON)
+	return s
+}
+
 // LoadPromptAssets loads embedded prompts from the prompts package.
 func LoadPromptAssets() (prompts.Assets, error) {
 	return prompts.Load()

@@ -180,6 +180,9 @@ type StartJobRequest struct {
 	CredentialRef string `json:"credential_ref,omitempty"` // alt: pre-seeded secret (skip user/pass)
 	// StallTimeout is the SOL silence window before ReportStall (0 = Orchestrator default).
 	StallTimeout time.Duration `json:"stall_timeout,omitempty"`
+	// ApproveDestruct acknowledges NeedsApproval / DestructSteps on the profile (Phase 5b).
+	// Does not bypass a missing profile store entry; only supplies operator consent.
+	ApproveDestruct bool `json:"approve_destruct,omitempty"`
 }
 
 // CancelJobRequest cancels an in-flight provisioning job.
