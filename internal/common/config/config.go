@@ -37,6 +37,8 @@ type Config struct {
 	SerialSSHSudo bool
 	// FewShotDir is append-only learned few-shot JSONL storage (empty = learning disabled).
 	FewShotDir string
+	// ProfileDir is JSON profile store for Phase 5b (empty disables profile load/approve).
+	ProfileDir string
 }
 
 // Load reads SHOAL_* environment variables with Phase 1-friendly defaults.
@@ -67,6 +69,7 @@ func Load() (Config, error) {
 		SerialSSHKey:         envOr("SHOAL_SERIAL_SSH_KEY", ""),
 		SerialSSHSudo:        true,
 		FewShotDir:           os.Getenv("SHOAL_FEWSHOT_DIR"),
+		ProfileDir:           os.Getenv("SHOAL_PROFILE_DIR"),
 	}
 
 	if v := os.Getenv("SHOAL_RECONCILE_FAIL_ORPHANS"); v != "" {

@@ -36,6 +36,9 @@
           {% if (shoal_fewshot_dir | default('') | length) > 0 %}
           - Few-shot learning dir (SHOAL_FEWSHOT_DIR): {{ shoal_fewshot_dir }}
           {% endif %}
+          {% if (shoal_profile_dir | default('') | length) > 0 %}
+          - Profile store dir (SHOAL_PROFILE_DIR): {{ shoal_profile_dir }}
+          {% endif %}
           
           Virtual BMC Nodes (via sushy-tools):
           {% for node in shoal_bmc_nodes %}

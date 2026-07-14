@@ -1,4 +1,3 @@
-// Package profile generates provisioning profiles (AI-assisted).
-// Destructive steps still require human approval before Deploy executes them.
-// Implementation lands in later phases.
+// Package profile generates and stores provisioning profiles (AI-assisted).
+// Destructive steps require human approval before Deploy executes them.
 package profile

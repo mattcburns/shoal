@@ -15,6 +15,7 @@ import (
 	"github.com/mattcburns/shoal/internal/common/netbox"
 	"github.com/mattcburns/shoal/internal/common/redfish"
 	"github.com/mattcburns/shoal/internal/common/telemetry"
+	"github.com/mattcburns/shoal/internal/core/profile"
 	"github.com/mattcburns/shoal/internal/deploy/job"
 	"github.com/mattcburns/shoal/internal/deploy/jobstore"
 	"github.com/mattcburns/shoal/internal/observe/sol"
@@ -56,7 +57,8 @@ func cmdDeployRun(args []string) int {
 	serial := fs.String("serial-target", "", "libvirt domain or console path")
 	isoURL := fs.String("iso-url", "", "BMC-reachable ISO URL on lab :8080")
 	systemID := fs.String("system-id", "", "optional Redfish system id or name")
-	profile := fs.String("profile-ref", "spike", "profile ref")
+	profileRef := fs.String("profile-ref", "spike", "profile ref (spike = no store; else SHOAL_PROFILE_DIR)")
+	approveDestruct := fs.Bool("approve-destruct", false, "operator consent for NeedsApproval/DestructSteps profiles")
 	sshHost := fs.String("serial-ssh-host", cfg.SerialSSHHost, "SSH host for nested libvirt serial (VM mode)")
 	sshUser := fs.String("serial-ssh-user", cfg.SerialSSHUser, "SSH user for serial delegate")
 	sshKey := fs.String("serial-ssh-key", cfg.SerialSSHKey, "SSH private key for serial delegate")
@@ -75,15 +77,16 @@ func cmdDeployRun(args []string) int {
 		dev = *device
 	}
 	req := models.StartJobRequest{
-		DeviceID:     dev,
-		ProfileRef:   *profile,
-		ISOURL:       *isoURL,
-		BMCEndpoint:  *bmcURL,
-		BMCUsername:  *bmcUser,
-		BMCPassword:  *bmcPass,
-		SerialTarget: *serial,
-		SystemID:     *systemID,
-		StallTimeout: *stallTimeout,
+		DeviceID:        dev,
+		ProfileRef:      *profileRef,
+		ISOURL:          *isoURL,
+		BMCEndpoint:     *bmcURL,
+		BMCUsername:     *bmcUser,
+		BMCPassword:     *bmcPass,
+		SerialTarget:    *serial,
+		SystemID:        *systemID,
+		StallTimeout:    *stallTimeout,
+		ApproveDestruct: *approveDestruct,
 	}
 
 	store, dbCloser, err := openJobStore(cfg)
@@ -109,6 +112,15 @@ func cmdDeployRun(args []string) int {
 	if cfg.NetBoxURL != "" && cfg.NetBoxToken != "" {
 		nb = netbox.New(cfg.NetBoxURL, cfg.NetBoxToken)
 	}
+	var profStore profile.Store
+	if cfg.ProfileDir != "" {
+		st, err := profile.NewFileStore(cfg.ProfileDir)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "profile store: %v\n", err)
+			return 1
+		}
+		profStore = st
+	}
 	orch := job.NewOrchestrator(job.Options{
 		Log:                 log,
 		Store:               store,
@@ -116,6 +128,7 @@ func cmdDeployRun(args []string) int {
 		NewBMC:              redfish.NewBMC,
 		Watches:             watchSvc,
 		NetBox:              nb,
+		Profiles:            profStore,
 		AuthMode:            cfg.RedfishAuthMode,
 		TLSMode:             cfg.RedfishTLSMode,
 		CAFile:              cfg.RedfishCAFile,

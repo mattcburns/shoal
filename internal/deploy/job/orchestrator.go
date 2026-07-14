@@ -18,6 +18,7 @@ import (
 	"github.com/mattcburns/shoal/internal/common/secrets"
 	"github.com/mattcburns/shoal/internal/common/validate"
 	"github.com/mattcburns/shoal/internal/common/watchport"
+	"github.com/mattcburns/shoal/internal/core/profile"
 	"github.com/mattcburns/shoal/internal/deploy/jobstore"
 	"github.com/mattcburns/shoal/internal/observe/sol"
 )
@@ -51,6 +52,7 @@ type Orchestrator struct {
 	newBMC     redfish.Factory
 	watches    watchport.WatchRegistrar
 	netbox     netbox.LifecycleWriter // optional; identity lifecycle only
+	profiles   profile.Store          // optional; Phase 5b approval gate
 	authMode   string
 	tlsMode    string
 	caFile     string
@@ -70,6 +72,10 @@ type runState struct {
 	sessionID  string
 	credential string
 	bmcURL     string
+	// terminalQueued is set under Orchestrator.mu so only the first terminal
+	// reason (cancel, DONE, stall, transport, …) is accepted. Without this,
+	// Unregister-driven stream close races cancel and can win with "sol transport error".
+	terminalQueued bool
 	// terminalOnce ensures HandleTerminal runs once
 	terminalOnce sync.Once
 }
@@ -87,6 +93,7 @@ type Options struct {
 	NewBMC              redfish.Factory
 	Watches             watchport.WatchRegistrar
 	NetBox              netbox.LifecycleWriter // optional Phase 5 lifecycle sync
+	Profiles            profile.Store          // optional Phase 5b profile load/approval
 	AuthMode            string
 	TLSMode             string
 	CAFile              string
@@ -117,6 +124,7 @@ func NewOrchestrator(opts Options) *Orchestrator {
 		newBMC:     opts.NewBMC,
 		watches:    opts.Watches,
 		netbox:     opts.NetBox,
+		profiles:   opts.Profiles,
 		authMode:   auth,
 		tlsMode:    tlsMode,
 		caFile:     opts.CAFile,
@@ -174,12 +182,21 @@ func (o *Orchestrator) Get(ctx context.Context, jobID string) (models.Provisioni
 // Start begins a provisioning job using CLI/API binding fields.
 // When NetBox is configured, best-effort lifecycle_state=provisioning is written
 // (failure is logged and does not block BMC actions).
+// Profiles with NeedsApproval/DestructSteps require store approval or ApproveDestruct.
 func (o *Orchestrator) Start(ctx context.Context, req models.StartJobRequest) (models.ProvisioningJob, error) {
 	if err := validate.StartJobRequest(req); err != nil {
 		return models.ProvisioningJob{}, err
 	}
 	if o.watches == nil {
 		return models.ProvisioningJob{}, fmt.Errorf("job: watch registrar not configured")
+	}
+
+	profileRef := req.ProfileRef
+	if profileRef == "" {
+		profileRef = "spike"
+	}
+	if err := o.checkProfileApproval(ctx, profileRef, req.ApproveDestruct); err != nil {
+		return models.ProvisioningJob{}, err
 	}
 
 	jobID := newID()
@@ -198,10 +215,7 @@ func (o *Orchestrator) Start(ctx context.Context, req models.StartJobRequest) (m
 		return models.ProvisioningJob{}, fmt.Errorf("job: resolve credentials: %w", err)
 	}
 
-	profile := req.ProfileRef
-	if profile == "" {
-		profile = "spike"
-	}
+	profile := profileRef
 	now := time.Now().UTC()
 	sessionID := "sol-" + jobID
 	job := models.ProvisioningJob{
@@ -555,6 +569,32 @@ func (o *Orchestrator) postCheckClean(ctx context.Context, bmcURL, credRef, syst
 	return nil
 }
 
+// checkProfileApproval enforces Phase 5b human gate before any BMC action.
+// spike / empty ref with no store entry is always allowed (Phase 2 path).
+func (o *Orchestrator) checkProfileApproval(ctx context.Context, ref string, approveDestruct bool) error {
+	if ref == "" || ref == "spike" {
+		return nil
+	}
+	if o.profiles == nil {
+		return fmt.Errorf("job: profile %q requires SHOAL_PROFILE_DIR (profile store not configured)", ref)
+	}
+	rec, err := o.profiles.Get(ctx, ref)
+	if err != nil {
+		return fmt.Errorf("job: load profile %q: %w", ref, err)
+	}
+	if !rec.NeedsOperatorApproval() {
+		return nil
+	}
+	if approveDestruct {
+		o.log.Info("profile destruct approved via StartJobRequest",
+			"profile_ref", ref,
+			"approved_by_flag", true,
+		)
+		return nil
+	}
+	return fmt.Errorf("job: profile %q requires approval (run: shoal profile approve -ref %s, or pass -approve-destruct)", ref, ref)
+}
+
 // syncNetBoxLifecycle best-effort updates NetBox identity lifecycle_state.
 // Failures are logged only (do not reverse JobStore transition).
 func (o *Orchestrator) syncNetBoxLifecycle(ctx context.Context, deviceKey string, state models.LifecycleState) {
@@ -650,6 +690,18 @@ func (o *Orchestrator) ReconcileOrphans(ctx context.Context) error {
 }
 
 func (o *Orchestrator) enqueueTerminal(jobID string, reason TerminalReason) {
+	// First terminal reason wins for in-process jobs. Observe may still report
+	// stream close after cancel/DONE unregister; those must not replace the reason.
+	o.mu.Lock()
+	if rs, ok := o.running[jobID]; ok {
+		if rs.terminalQueued {
+			o.mu.Unlock()
+			return
+		}
+		rs.terminalQueued = true
+	}
+	o.mu.Unlock()
+
 	select {
 	case o.terminal <- terminalEvent{jobID: jobID, reason: reason}:
 	default:

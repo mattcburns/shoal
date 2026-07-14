@@ -70,6 +70,9 @@ shoal_iso_server_dir: /srv/iso
 # Append-only learned few-shot JSONL (Phase 3b confirm). Outside git; durable on
 # the lab service host. Empty string disables SHOAL_FEWSHOT_DIR in env.j2.
 shoal_fewshot_dir: /var/lib/shoal/fewshot
+# Provisioning profiles + approval records (Phase 5b). Outside git; durable on
+# the lab service host. Empty string disables SHOAL_PROFILE_DIR in env.j2.
+shoal_profile_dir: /var/lib/shoal/profiles
 
 # --- Telemetry DB (non-secret parts) ---
 shoal_telemetry_db_name: shoal_telemetry

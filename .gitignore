@@ -18,3 +18,4 @@ infra/cloud-init-seed.iso
 *.out
 coverage.out
 vendor/
+.shoal/

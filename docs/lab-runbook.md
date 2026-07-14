@@ -216,6 +216,44 @@ when the job was started under serve.
 Reliability contract: always cleanup Virtual Media + boot override;
 cancel/stall/orphan fail; DONE post-check verifies media ejected.
 
+### Phase 5b: provisioning profiles + approval
+
+Profiles are **not** stored in NetBox. Use a durable directory.
+
+**Lab default (Ansible):** `shoal_profile_dir` is `/var/lib/shoal/profiles` on the
+service host. `compose_stack` creates the directory and writes
+`SHOAL_PROFILE_DIR` into `/opt/shoal/infra/.env`. Override or disable with
+`-e shoal_profile_dir=""` (empty skips the env var and mkdir).
+
+**Workstation `go run` against the lab:** the lab path is on the remote host —
+use a local durable dir (outside git), or source a local untracked `.env`:
+
+```bash
+export SHOAL_PROFILE_DIR=./.shoal/profiles
+mkdir -p "$SHOAL_PROFILE_DIR"
+export SHOAL_AI_PROVIDER=ollama SHOAL_AI_MODEL=llama3.2:3b
+export SHOAL_OLLAMA_URL=http://192.168.122.100:11434
+
+# AI generate (optional -save writes the store)
+go run ./cmd/shoal profile generate \
+  -os-family ubuntu -hostname lab-1 -serial SN1 -bmc-ip 10.0.0.5 -save
+
+# Or save a hand-written profile JSON
+go run ./cmd/shoal profile save -file /tmp/profile.json
+
+# Approve destructive / needs_approval profiles
+go run ./cmd/shoal profile approve -ref lab-1-ubuntu -by matt
+
+# Deploy with a stored profile (spike = no store, Phase 2 path)
+go run ./cmd/shoal deploy run -profile-ref lab-1-ubuntu ...
+# or one-shot consent without prior approve:
+go run ./cmd/shoal deploy run -profile-ref wipe-me -approve-destruct ...
+```
+
+`NeedsApproval` or non-empty `destruct_steps` block Start until approved or
+`-approve-destruct` is set. AI never auto-executes destruct. Spike / empty
+`profile-ref` still works with `SHOAL_PROFILE_DIR` unset.
+
 ## 2) Fast stop (teardown / clean slate)
 ```bash
 ansible-playbook -i infra/ansible/inventory/lab-vm.yml infra/ansible/playbooks/down.yml

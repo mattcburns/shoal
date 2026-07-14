@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ProvisioningProfile",
+  "type": "object",
+  "required": ["ref", "iso_base", "needs_approval"],
+  "additionalProperties": true,
+  "properties": {
+    "ref": { "type": "string", "minLength": 1 },
+    "iso_base": { "type": "string", "minLength": 1 },
+    "embedded_payload": { "type": "string" },
+    "post_install_steps": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "destruct_steps": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "needs_approval": { "type": "boolean" }
+  }
+}

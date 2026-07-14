@@ -23,6 +23,7 @@ import (
 	"github.com/mattcburns/shoal/internal/common/telemetry"
 	"github.com/mattcburns/shoal/internal/core/ai"
 	"github.com/mattcburns/shoal/internal/core/fewshot"
+	"github.com/mattcburns/shoal/internal/core/profile"
 	"github.com/mattcburns/shoal/internal/core/reconcile"
 	"github.com/mattcburns/shoal/internal/deploy/job"
 	"github.com/mattcburns/shoal/internal/deploy/jobstore"
@@ -33,7 +34,7 @@ import (
 )
 
 // Version is the application version string (overridable via -ldflags).
-var Version = "0.4.0-phase4"
+var Version = "0.5.0-phase5"
 
 // Run dispatches subcommands. args should be os.Args[1:].
 func Run(args []string) int {
@@ -52,6 +53,8 @@ func Run(args []string) int {
 		return cmdDiscover(args[1:])
 	case "observe":
 		return cmdObserve(args[1:])
+	case "profile":
+		return cmdProfile(args[1:])
 	case "help", "-h", "--help":
 		printUsage(os.Stdout)
 		return 0
@@ -74,6 +77,13 @@ Commands:
   deploy     Provisioning: run | status | cancel
   discover   Assets: ingest | confirm
   observe    Status / poll: status | poll
+  profile    Profiles: generate | save | show | list | approve
+
+Phase 5 profile example:
+  export SHOAL_PROFILE_DIR=./.shoal/profiles
+  export SHOAL_AI_PROVIDER=ollama SHOAL_AI_MODEL=llama3.2:3b
+  shoal profile generate -os-family ubuntu -hostname lab-1 -save
+  shoal profile approve -ref lab-1-ubuntu -by matt
 
 Phase 4 observe example:
   export SHOAL_TELEMETRY_DATABASE_URL=postgres://…@192.168.122.100:5433/shoal_telemetry
@@ -179,6 +189,15 @@ func cmdServe(args []string) int {
 		if cfg.NetBoxURL != "" && cfg.NetBoxToken != "" {
 			nb = netbox.New(cfg.NetBoxURL, cfg.NetBoxToken)
 		}
+		var profStore profile.Store
+		if cfg.ProfileDir != "" {
+			if st, err := profile.NewFileStore(cfg.ProfileDir); err != nil {
+				log.Warn("profile store unavailable", "err", err.Error())
+			} else {
+				profStore = st
+				log.Info("profile store enabled", "dir", cfg.ProfileDir)
+			}
+		}
 		orch := job.NewOrchestrator(job.Options{
 			Log:                 log,
 			Store:               store,
@@ -186,6 +205,7 @@ func cmdServe(args []string) int {
 			NewBMC:              redfish.NewBMC,
 			Watches:             watchSvc,
 			NetBox:              nb,
+			Profiles:            profStore,
 			AuthMode:            cfg.RedfishAuthMode,
 			TLSMode:             cfg.RedfishTLSMode,
 			CAFile:              cfg.RedfishCAFile,

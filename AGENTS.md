@@ -241,6 +241,7 @@ go run ./cmd/shoal deploy run \
 | `SHOAL_ISO_BASE_URL` | e.g. `http://192.168.122.100:8080` |
 | `SHOAL_RECONCILE_FAIL_ORPHANS` | Default `true` |
 | `SHOAL_FEWSHOT_DIR` | Append-only learned few-shot JSONL (confirm learning). Lab Ansible default: `/var/lib/shoal/fewshot` via `shoal_fewshot_dir` + `env.j2`. Empty disables confirm |
+| `SHOAL_PROFILE_DIR` | JSON provisioning profiles + approval records (Phase 5b). Lab Ansible default: `/var/lib/shoal/profiles` via `shoal_profile_dir` + `env.j2`. Empty disables non-spike profile load |
 
 Full table and Ansible extension points: design doc §8.1.
 
@@ -255,8 +256,9 @@ imports Deploy (job reads via `jobport.JobQuery`).
 blocks BMC on NetBox errors). Lab bootstrap creates device custom fields
 `lifecycle_state`, `credential_ref`, `bmc_ip`. Jobs persist `system_id` +
 `credential_ref` for out-of-process cancel/orphan BMC cleanup (share
-`SHOAL_SECRETS_DIR`). Sole lifecycle writer remains Orchestrator; JobStore stays
-pure persistence.
+`SHOAL_SECRETS_DIR`). Profiles live under `SHOAL_PROFILE_DIR`; destruct /
+`needs_approval` require `profile approve` or `-approve-destruct` before Start.
+Sole lifecycle writer remains Orchestrator; JobStore stays pure persistence.
 
 ---
 
