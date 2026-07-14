@@ -27,6 +27,53 @@ func TestMemoryUpsert(t *testing.T) {
 	}
 }
 
+func TestMemorySetLifecycle(t *testing.T) {
+	m := netbox.NewMemory()
+	_, err := m.UpsertDevice(context.Background(), models.DeviceIdentity{
+		Serial: "NODE-1", LifecycleState: models.StateDiscovered,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.SetLifecycle(context.Background(), "NODE-1", models.StateProvisioning); err != nil {
+		t.Fatal(err)
+	}
+	if m.BySerial["NODE-1"].LifecycleState != models.StateProvisioning {
+		t.Fatalf("%+v", m.BySerial["NODE-1"])
+	}
+	if err := m.SetLifecycle(context.Background(), "missing", models.StateFailed); err == nil {
+		t.Fatal("expected not found")
+	}
+}
+
+func TestClientSetLifecycle(t *testing.T) {
+	var patched bool
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/dcim/devices/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"results": []any{map[string]any{"id": 7}},
+			})
+			return
+		}
+		if r.Method == http.MethodPatch {
+			patched = true
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	c := netbox.New(srv.URL, "tok")
+	if err := c.SetLifecycle(context.Background(), "SERIAL-X", models.StateProvisioned); err != nil {
+		t.Fatal(err)
+	}
+	if !patched {
+		t.Fatal("expected PATCH")
+	}
+}
+
 func TestClientFindCreate(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/dcim/devices/", func(w http.ResponseWriter, r *http.Request) {

@@ -250,6 +250,14 @@ only (no silent memory fallback). Empty SEL/sensors with exit 0 is valid when th
 BMC has no logs; write failures and Redfish errors fail the poll. Observe never
 imports Deploy (job reads via `jobport.JobQuery`).
 
+**Phase 5 Deploy (in progress):** Orchestrator may best-effort sync NetBox
+`lifecycle_state` via `netbox.LifecycleWriter` on Start/HandleTerminal (never
+blocks BMC on NetBox errors). Lab bootstrap creates device custom fields
+`lifecycle_state`, `credential_ref`, `bmc_ip`. Jobs persist `system_id` +
+`credential_ref` for out-of-process cancel/orphan BMC cleanup (share
+`SHOAL_SECRETS_DIR`). Sole lifecycle writer remains Orchestrator; JobStore stays
+pure persistence.
+
 ---
 
 ## 4. Coding Style

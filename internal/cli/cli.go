@@ -175,12 +175,17 @@ func cmdServe(args []string) int {
 			KeyPath: cfg.SerialSSHKey,
 			UseSudo: cfg.SerialSSHSudo,
 		})
+		var nb netbox.LifecycleWriter
+		if cfg.NetBoxURL != "" && cfg.NetBoxToken != "" {
+			nb = netbox.New(cfg.NetBoxURL, cfg.NetBoxToken)
+		}
 		orch := job.NewOrchestrator(job.Options{
 			Log:                 log,
 			Store:               store,
 			Secrets:             secretBackend,
 			NewBMC:              redfish.NewBMC,
 			Watches:             watchSvc,
+			NetBox:              nb,
 			AuthMode:            cfg.RedfishAuthMode,
 			TLSMode:             cfg.RedfishTLSMode,
 			CAFile:              cfg.RedfishCAFile,
@@ -189,6 +194,7 @@ func cmdServe(args []string) int {
 		defer orch.Stop()
 		watchSvc.SetProgress(orch.ProgressPort())
 		srvAPI.WithJobCanceler(orch)
+		srvAPI.WithJobStarter(orch)
 		if err := orch.ReconcileOrphans(ctx); err != nil {
 			log.Warn("orphan reconcile", "err", err.Error())
 		}

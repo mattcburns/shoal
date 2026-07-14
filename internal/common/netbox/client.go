@@ -38,9 +38,17 @@ func New(baseURL, token string) *Client {
 	}
 }
 
-// API is the surface Discover depends on.
+// API is the surface Discover depends on (identity upsert).
 type API interface {
 	UpsertDevice(ctx context.Context, id models.DeviceIdentity) (string, error)
+}
+
+// LifecycleWriter is the Deploy surface for NetBox lifecycle_state only.
+// Core never calls this; Discover uses UpsertDevice on ingest.
+type LifecycleWriter interface {
+	// SetLifecycle updates lifecycle_state for a device identified by NetBox id
+	// or serial (serial lookup first, then numeric id).
+	SetLifecycle(ctx context.Context, deviceKey string, state models.LifecycleState) error
 }
 
 // UpsertDevice finds a device by serial or creates one; sets lifecycle custom field when possible.
@@ -151,6 +159,41 @@ func (c *Client) patchDevice(ctx context.Context, netboxID string, id models.Dev
 		fb := map[string]any{
 			"comments": fmt.Sprintf("lifecycle_state=%s credential_ref=%s bmc_ip=%s",
 				id.LifecycleState, id.CredentialRef, id.BMCIP),
+		}
+		return c.doJSON(ctx, http.MethodPatch, "/api/dcim/devices/"+netboxID+"/", fb, nil)
+	}
+	return nil
+}
+
+// SetLifecycle implements LifecycleWriter.
+func (c *Client) SetLifecycle(ctx context.Context, deviceKey string, state models.LifecycleState) error {
+	if c.BaseURL == "" || c.Token == "" {
+		return fmt.Errorf("netbox: missing url or token")
+	}
+	deviceKey = strings.TrimSpace(deviceKey)
+	if deviceKey == "" {
+		return fmt.Errorf("netbox: device key required")
+	}
+	if state == "" {
+		return fmt.Errorf("netbox: lifecycle state required")
+	}
+	netboxID, err := c.findBySerial(ctx, deviceKey)
+	if err != nil {
+		return err
+	}
+	if netboxID == "" {
+		// Treat key as NetBox numeric id when serial lookup misses.
+		netboxID = deviceKey
+	}
+	body := map[string]any{
+		"custom_fields": map[string]any{
+			"lifecycle_state": string(state),
+		},
+	}
+	err = c.doJSON(ctx, http.MethodPatch, "/api/dcim/devices/"+netboxID+"/", body, nil)
+	if err != nil {
+		fb := map[string]any{
+			"comments": fmt.Sprintf("lifecycle_state=%s", state),
 		}
 		return c.doJSON(ctx, http.MethodPatch, "/api/dcim/devices/"+netboxID+"/", fb, nil)
 	}
@@ -281,12 +324,17 @@ func truncate(s string, n int) string {
 // Memory is an in-memory NetBox fake for tests.
 type Memory struct {
 	BySerial map[string]models.DeviceIdentity
+	ByID     map[string]models.DeviceIdentity
 	Next     int
 }
 
 // NewMemory constructs a Memory API.
 func NewMemory() *Memory {
-	return &Memory{BySerial: map[string]models.DeviceIdentity{}, Next: 1}
+	return &Memory{
+		BySerial: map[string]models.DeviceIdentity{},
+		ByID:     map[string]models.DeviceIdentity{},
+		Next:     1,
+	}
 }
 
 // UpsertDevice implements API.
@@ -297,13 +345,41 @@ func (m *Memory) UpsertDevice(_ context.Context, id models.DeviceIdentity) (stri
 	if existing, ok := m.BySerial[id.Serial]; ok && existing.ID != "" {
 		id.ID = existing.ID
 		m.BySerial[id.Serial] = id
+		m.ByID[id.ID] = id
 		return id.ID, nil
 	}
 	id.ID = fmt.Sprintf("%d", m.Next)
 	m.Next++
 	m.BySerial[id.Serial] = id
+	m.ByID[id.ID] = id
 	return id.ID, nil
+}
+
+// SetLifecycle implements LifecycleWriter.
+func (m *Memory) SetLifecycle(_ context.Context, deviceKey string, state models.LifecycleState) error {
+	if deviceKey == "" || state == "" {
+		return fmt.Errorf("netbox/memory: device key and state required")
+	}
+	if id, ok := m.BySerial[deviceKey]; ok {
+		id.LifecycleState = state
+		m.BySerial[deviceKey] = id
+		if id.ID != "" {
+			m.ByID[id.ID] = id
+		}
+		return nil
+	}
+	if id, ok := m.ByID[deviceKey]; ok {
+		id.LifecycleState = state
+		m.ByID[deviceKey] = id
+		if id.Serial != "" {
+			m.BySerial[id.Serial] = id
+		}
+		return nil
+	}
+	return fmt.Errorf("netbox/memory: device %q not found", deviceKey)
 }
 
 var _ API = (*Client)(nil)
 var _ API = (*Memory)(nil)
+var _ LifecycleWriter = (*Client)(nil)
+var _ LifecycleWriter = (*Memory)(nil)

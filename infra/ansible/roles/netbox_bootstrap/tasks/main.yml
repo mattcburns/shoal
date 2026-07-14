@@ -219,6 +219,46 @@
   when: device_type_info.json.results | length > 0
   tags: [device_type]
 
+# Device custom fields for Shoal identity + lifecycle (NetBox 4.x object_types).
+# Discover/Deploy prefer custom_fields; comments are only a fallback when CFs missing.
+- name: Create Shoal device custom fields
+  uri:
+    url: "{{ shoal_netbox_url }}/api/extras/custom-fields/"
+    method: POST
+    headers: "{{ netbox_auth_header }}"
+    body_format: json
+    body:
+      name: "{{ item.name }}"
+      label: "{{ item.label }}"
+      type: text
+      object_types:
+        - dcim.device
+      required: false
+      description: "{{ item.description }}"
+      weight: "{{ item.weight | default(100) }}"
+    status_code: [200, 201, 400]
+  loop:
+    - name: lifecycle_state
+      label: Lifecycle state
+      description: "Shoal lifecycle_state (discovered|ready|provisioning|provisioned|failed)"
+      weight: 100
+    - name: credential_ref
+      label: Credential ref
+      description: "Opaque secrets backend key for BMC credentials (never a password)"
+      weight: 110
+    - name: bmc_ip
+      label: BMC IP
+      description: "Management BMC address for this device"
+      weight: 120
+  register: cf_create
+  failed_when: >
+    cf_create.status | int not in [200, 201, 400] or
+    (cf_create.status | int == 400 and
+     'already exists' not in (cf_create.json | default({}) | to_json | lower) and
+     'unique' not in (cf_create.json | default({}) | to_json | lower) and
+     'duplicate' not in (cf_create.json | default({}) | to_json | lower))
+  tags: [custom_fields]
+
 - name: Register virtual BMC nodes in NetBox
   uri:
     url: "{{ shoal_netbox_url }}/api/dcim/devices/"
@@ -252,6 +292,7 @@
       - Device Role: Virtual BMC Node (ID: {{ shoal_device_role_id }})
       - Manufacturer: Shoal Virtual (ID: {{ shoal_manufacturer_id }})
       - Device Type: Virtual Server (ID: {{ shoal_device_type_id }})
+      - Custom fields (dcim.device): lifecycle_state, credential_ref, bmc_ip
       
       Registered devices:
       {% for node in shoal_bmc_nodes %}

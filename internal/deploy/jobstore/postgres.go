@@ -32,12 +32,14 @@ func (p *Postgres) Insert(ctx context.Context, job models.ProvisioningJob) error
 	_, err := p.db.ExecContext(ctx, `
 INSERT INTO jobs (
   id, device_id, profile_ref, state, attempt, phase, percent, last_marker_seq,
-  started_at, updated_at, error, sol_session_id, iso_url, bmc_endpoint
-) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+  started_at, updated_at, error, sol_session_id, iso_url, bmc_endpoint,
+  system_id, credential_ref
+) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
 		job.ID, job.DeviceID, job.ProfileRef, string(job.State), job.Attempt,
 		nullString(job.Phase), nullInt(job.Percent), job.LastMarkerSeq,
 		job.StartedAt, job.UpdatedAt, nullString(job.Error), nullString(job.SOLSessionID),
 		nullString(job.ISOURL), nullString(job.BMCEndpoint),
+		nullString(job.SystemID), nullString(job.CredentialRef),
 	)
 	if err != nil {
 		return fmt.Errorf("jobstore: insert: %w", err)
@@ -49,7 +51,8 @@ INSERT INTO jobs (
 func (p *Postgres) Get(ctx context.Context, id string) (models.ProvisioningJob, error) {
 	row := p.db.QueryRowContext(ctx, `
 SELECT id, device_id, profile_ref, state, attempt, phase, percent, last_marker_seq,
-       started_at, updated_at, error, sol_session_id, iso_url, bmc_endpoint
+       started_at, updated_at, error, sol_session_id, iso_url, bmc_endpoint,
+       system_id, credential_ref
 FROM jobs WHERE id = $1`, id)
 	j, err := scanJob(row)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -65,7 +68,8 @@ FROM jobs WHERE id = $1`, id)
 func (p *Postgres) ListByState(ctx context.Context, state models.LifecycleState) ([]models.ProvisioningJob, error) {
 	rows, err := p.db.QueryContext(ctx, `
 SELECT id, device_id, profile_ref, state, attempt, phase, percent, last_marker_seq,
-       started_at, updated_at, error, sol_session_id, iso_url, bmc_endpoint
+       started_at, updated_at, error, sol_session_id, iso_url, bmc_endpoint,
+       system_id, credential_ref
 FROM jobs WHERE state = $1`, string(state))
 	if err != nil {
 		return nil, fmt.Errorf("jobstore: list: %w", err)
@@ -103,6 +107,26 @@ WHERE id = $1`, jobID, phase, nullInt(percent), seq, errSoft, now)
 	return nil
 }
 
+// UpdateRuntime persists system_id, sol_session_id, and credential_ref.
+func (p *Postgres) UpdateRuntime(ctx context.Context, jobID string, systemID, solSessionID, credentialRef string) error {
+	now := time.Now().UTC()
+	res, err := p.db.ExecContext(ctx, `
+UPDATE jobs SET
+  system_id = CASE WHEN $2 <> '' THEN $2 ELSE system_id END,
+  sol_session_id = CASE WHEN $3 <> '' THEN $3 ELSE sol_session_id END,
+  credential_ref = CASE WHEN $4 <> '' THEN $4 ELSE credential_ref END,
+  updated_at = $5
+WHERE id = $1`, jobID, systemID, solSessionID, credentialRef, now)
+	if err != nil {
+		return fmt.Errorf("jobstore: update runtime: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // Transition sets lifecycle state.
 func (p *Postgres) Transition(ctx context.Context, jobID string, to models.LifecycleState, errMsg string) error {
 	now := time.Now().UTC()
@@ -129,13 +153,14 @@ type scannable interface {
 func scanJob(row scannable) (models.ProvisioningJob, error) {
 	var j models.ProvisioningJob
 	var state string
-	var phase, errMsg, solSess, iso, bmc sql.NullString
+	var phase, errMsg, solSess, iso, bmc, sysID, credRef sql.NullString
 	var percent sql.NullInt64
 	var started, updated sql.NullTime
 	err := row.Scan(
 		&j.ID, &j.DeviceID, &j.ProfileRef, &state, &j.Attempt,
 		&phase, &percent, &j.LastMarkerSeq,
 		&started, &updated, &errMsg, &solSess, &iso, &bmc,
+		&sysID, &credRef,
 	)
 	if err != nil {
 		return models.ProvisioningJob{}, err
@@ -167,6 +192,12 @@ func scanJob(row scannable) (models.ProvisioningJob, error) {
 	}
 	if bmc.Valid {
 		j.BMCEndpoint = bmc.String
+	}
+	if sysID.Valid {
+		j.SystemID = sysID.String
+	}
+	if credRef.Valid {
+		j.CredentialRef = credRef.String
 	}
 	return j, nil
 }

@@ -12,6 +12,7 @@ import (
 
 	"github.com/mattcburns/shoal/internal/common/config"
 	"github.com/mattcburns/shoal/internal/common/models"
+	"github.com/mattcburns/shoal/internal/common/netbox"
 	"github.com/mattcburns/shoal/internal/common/redfish"
 	"github.com/mattcburns/shoal/internal/common/telemetry"
 	"github.com/mattcburns/shoal/internal/deploy/job"
@@ -104,12 +105,17 @@ func cmdDeployRun(args []string) int {
 		KeyPath: cfg.SerialSSHKey,
 		UseSudo: cfg.SerialSSHSudo,
 	})
+	var nb netbox.LifecycleWriter
+	if cfg.NetBoxURL != "" && cfg.NetBoxToken != "" {
+		nb = netbox.New(cfg.NetBoxURL, cfg.NetBoxToken)
+	}
 	orch := job.NewOrchestrator(job.Options{
 		Log:                 log,
 		Store:               store,
 		Secrets:             secretBackend,
 		NewBMC:              redfish.NewBMC,
 		Watches:             watchSvc,
+		NetBox:              nb,
 		AuthMode:            cfg.RedfishAuthMode,
 		TLSMode:             cfg.RedfishTLSMode,
 		CAFile:              cfg.RedfishCAFile,
@@ -242,12 +248,17 @@ func cmdDeployCancel(args []string) int {
 		KeyPath: cfg.SerialSSHKey,
 		UseSudo: cfg.SerialSSHSudo,
 	})
+	var nb netbox.LifecycleWriter
+	if cfg.NetBoxURL != "" && cfg.NetBoxToken != "" {
+		nb = netbox.New(cfg.NetBoxURL, cfg.NetBoxToken)
+	}
 	orch := job.NewOrchestrator(job.Options{
 		Log:                 log,
 		Store:               store,
 		Secrets:             secretBackend,
 		NewBMC:              redfish.NewBMC,
 		Watches:             watchSvc,
+		NetBox:              nb,
 		AuthMode:            cfg.RedfishAuthMode,
 		TLSMode:             cfg.RedfishTLSMode,
 		CAFile:              cfg.RedfishCAFile,
@@ -260,11 +271,25 @@ func cmdDeployCancel(args []string) int {
 		fmt.Fprintf(os.Stderr, "cancel: %v\n", err)
 		return 1
 	}
-	// Wait briefly for async terminal
-	time.Sleep(300 * time.Millisecond)
-	j, err := store.Get(context.Background(), *jobID)
-	if err == nil {
-		_ = json.NewEncoder(os.Stdout).Encode(j)
+	// Poll until terminal (HandleTerminal is async; cleanup may take tens of seconds).
+	var j models.ProvisioningJob
+	deadline := time.Now().Add(60 * time.Second)
+	for time.Now().Before(deadline) {
+		var err error
+		j, err = store.Get(context.Background(), *jobID)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "get job: %v\n", err)
+			return 1
+		}
+		if j.State != models.StateProvisioning {
+			break
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	_ = json.NewEncoder(os.Stdout).Encode(j)
+	if j.State == models.StateProvisioning {
+		fmt.Fprintln(os.Stderr, "cancel: still provisioning after wait (terminal async may still be running)")
+		return 1
 	}
 	return 0
 }

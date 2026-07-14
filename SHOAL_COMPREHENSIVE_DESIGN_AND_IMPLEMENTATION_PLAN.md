@@ -1590,7 +1590,7 @@ go test ./...
 
 ## Open Questions
 
-**All previously open product decisions are resolved through v2.0.5.** Phase 0–3 are on `master`; Phase 4 (Observe broaden) is next.
+**All previously open product decisions are resolved through v2.0.5.** Phase 0–4 are on `master`; Phase 5 (Deploy harden) is next.
 
 | Topic | Resolution |
 |-------|------------|
@@ -1629,9 +1629,9 @@ go test ./...
 
 ---
 
-**This document (v2.0.5) is the SoT for agents.** Phase 0–3 (incl. dual-model lab + hybrid Discover + few-shot learning) are on `master`.
+**This document (v2.0.5) is the SoT for agents.** Phase 0–4 (Discover hybrid, few-shot, Observe broaden) are on `master`.
 
 Next actions:
-1. Phase 4 Observe broaden (4a Store+SEL landed; 4b poll/status CLI/API)
-2. Later: Phase 5 Deploy harden, packaging
+1. Phase 5 Deploy harden: NetBox lifecycle sync, reliability polish, profile gen+approval, ISO pipeline
+2. Later: packaging (Compose shoal service)
 3. At Phase 6: choose graphics failure-screen OCR approach before implementing
