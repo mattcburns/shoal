@@ -19,6 +19,7 @@ import (
 	"github.com/mattcburns/shoal/internal/common/validate"
 	"github.com/mattcburns/shoal/internal/common/watchport"
 	"github.com/mattcburns/shoal/internal/core/profile"
+	"github.com/mattcburns/shoal/internal/deploy/iso"
 	"github.com/mattcburns/shoal/internal/deploy/jobstore"
 	"github.com/mattcburns/shoal/internal/observe/sol"
 )
@@ -53,6 +54,7 @@ type Orchestrator struct {
 	watches    watchport.WatchRegistrar
 	netbox     netbox.LifecycleWriter // optional; identity lifecycle only
 	profiles   profile.Store          // optional; Phase 5b approval gate
+	isoBaseURL string                 // Phase 5c: resolve profile iso_base → URL
 	authMode   string
 	tlsMode    string
 	caFile     string
@@ -94,6 +96,7 @@ type Options struct {
 	Watches             watchport.WatchRegistrar
 	NetBox              netbox.LifecycleWriter // optional Phase 5 lifecycle sync
 	Profiles            profile.Store          // optional Phase 5b profile load/approval
+	ISOBaseURL          string                 // optional Phase 5c profile → ISO URL resolve
 	AuthMode            string
 	TLSMode             string
 	CAFile              string
@@ -125,6 +128,7 @@ func NewOrchestrator(opts Options) *Orchestrator {
 		watches:    opts.Watches,
 		netbox:     opts.NetBox,
 		profiles:   opts.Profiles,
+		isoBaseURL: opts.ISOBaseURL,
 		authMode:   auth,
 		tlsMode:    tlsMode,
 		caFile:     opts.CAFile,
@@ -183,6 +187,8 @@ func (o *Orchestrator) Get(ctx context.Context, jobID string) (models.Provisioni
 // When NetBox is configured, best-effort lifecycle_state=provisioning is written
 // (failure is logged and does not block BMC actions).
 // Profiles with NeedsApproval/DestructSteps require store approval or ApproveDestruct.
+// When ISOURL is empty and a non-spike profile is loaded, iso_base is resolved via
+// SHOAL_ISO_BASE_URL (Phase 5c).
 func (o *Orchestrator) Start(ctx context.Context, req models.StartJobRequest) (models.ProvisioningJob, error) {
 	if err := validate.StartJobRequest(req); err != nil {
 		return models.ProvisioningJob{}, err
@@ -197,6 +203,12 @@ func (o *Orchestrator) Start(ctx context.Context, req models.StartJobRequest) (m
 	}
 	if err := o.checkProfileApproval(ctx, profileRef, req.ApproveDestruct); err != nil {
 		return models.ProvisioningJob{}, err
+	}
+	if err := o.resolveISOURL(ctx, &req, profileRef); err != nil {
+		return models.ProvisioningJob{}, err
+	}
+	if req.ISOURL == "" {
+		return models.ProvisioningJob{}, fmt.Errorf("job: iso_url is required")
 	}
 
 	jobID := newID()
@@ -593,6 +605,34 @@ func (o *Orchestrator) checkProfileApproval(ctx context.Context, ref string, app
 		return nil
 	}
 	return fmt.Errorf("job: profile %q requires approval (run: shoal profile approve -ref %s, or pass -approve-destruct)", ref, ref)
+}
+
+// resolveISOURL fills req.ISOURL from the profile store when the operator omitted -iso-url.
+func (o *Orchestrator) resolveISOURL(ctx context.Context, req *models.StartJobRequest, profileRef string) error {
+	if req.ISOURL != "" {
+		return nil
+	}
+	if profileRef == "" || profileRef == "spike" {
+		return fmt.Errorf("job: iso_url is required for spike/empty profile_ref")
+	}
+	if o.profiles == nil {
+		return fmt.Errorf("job: cannot resolve iso_url without profile store (set SHOAL_PROFILE_DIR or pass -iso-url)")
+	}
+	rec, err := o.profiles.Get(ctx, profileRef)
+	if err != nil {
+		return fmt.Errorf("job: load profile %q for iso resolve: %w", profileRef, err)
+	}
+	url, err := iso.ResolveFromProfile(rec.Profile.ISOBase, o.isoBaseURL)
+	if err != nil {
+		return fmt.Errorf("job: resolve iso from profile %q: %w (set SHOAL_ISO_BASE_URL or pass -iso-url)", profileRef, err)
+	}
+	req.ISOURL = url
+	o.log.Info("iso resolved from profile",
+		"profile_ref", profileRef,
+		"iso_base", rec.Profile.ISOBase,
+		"iso_url", url,
+	)
+	return nil
 }
 
 // syncNetBoxLifecycle best-effort updates NetBox identity lifecycle_state.

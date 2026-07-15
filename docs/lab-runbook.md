@@ -254,6 +254,39 @@ go run ./cmd/shoal deploy run -profile-ref wipe-me -approve-destruct ...
 `-approve-destruct` is set. AI never auto-executes destruct. Spike / empty
 `profile-ref` still works with `SHOAL_PROFILE_DIR` unset.
 
+### Phase 5c: ISO build / publish / resolve
+
+**Lab default (Ansible):** `SHOAL_ISO_PUBLISH_DIR` = `shoal_iso_server_dir`
+(`/srv/iso`); `SHOAL_ISO_BASE_URL` = BMC-reachable
+`http://{{ shoal_lab_network_gateway }}:8080` (VM nested: `http://192.168.124.1:8080`).
+The `marker_iso` role remains the primary producer of `shoal-marker.iso`.
+
+**Go path (Phase 5c):** wrap the same `build-marker-iso.sh` and publish:
+
+```bash
+# On L1 (or with publish dir reachable) after sourcing lab env:
+export SHOAL_ISO_PUBLISH_DIR=/srv/iso
+export SHOAL_ISO_BASE_URL=http://192.168.124.1:8080
+
+# Build marker ISO (+ optional non-secret payload inject)
+go run ./cmd/shoal deploy iso build -name shoal-marker.iso -publish
+# Or publish a prebuilt file:
+go run ./cmd/shoal deploy iso publish -file ./shoal-marker.iso
+
+# Deploy: omit -iso-url when profile.iso_base resolves via SHOAL_ISO_BASE_URL
+export SHOAL_PROFILE_DIR=./.shoal/profiles
+go run ./cmd/shoal deploy run \
+  -device-id shoal-node-1 \
+  -bmc-url http://192.168.122.100:8001 \
+  -serial-target shoal-node-1 \
+  -profile-ref lab-1-ubuntu \
+  # iso_base e.g. "shoal-marker" → http://192.168.124.1:8080/shoal-marker.iso
+```
+
+Operator-supplied `-iso-url` still wins over profile resolve. Spike profile always
+requires `-iso-url`. Payload inject uses `SHOAL_EMBEDDED_PAYLOAD` / `-payload`
+(never secrets).
+
 ## 2) Fast stop (teardown / clean slate)
 ```bash
 ansible-playbook -i infra/ansible/inventory/lab-vm.yml infra/ansible/playbooks/down.yml

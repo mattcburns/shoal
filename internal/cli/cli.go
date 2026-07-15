@@ -74,12 +74,19 @@ Usage:
 Commands:
   version    Print version and exit
   serve      Run the HTTP API server
-  deploy     Provisioning: run | status | cancel
+  deploy     Provisioning: run | status | cancel | iso
   discover   Assets: ingest | confirm
   observe    Status / poll: status | poll
   profile    Profiles: generate | save | show | list | approve
 
-Phase 5 profile example:
+Phase 5c ISO example:
+  export SHOAL_ISO_BASE_URL=http://192.168.124.1:8080
+  export SHOAL_ISO_PUBLISH_DIR=/srv/iso   # on lab host, or local mirror
+  shoal deploy iso build -name shoal-marker.iso -publish
+  # deploy without -iso-url when profile.iso_base resolves via SHOAL_ISO_BASE_URL
+  shoal deploy run -profile-ref lab-1-ubuntu -bmc-url … -serial-target …
+
+Phase 5b profile example:
   export SHOAL_PROFILE_DIR=./.shoal/profiles
   export SHOAL_AI_PROVIDER=ollama SHOAL_AI_MODEL=llama3.2:3b
   shoal profile generate -os-family ubuntu -hostname lab-1 -save
@@ -206,6 +213,7 @@ func cmdServe(args []string) int {
 			Watches:             watchSvc,
 			NetBox:              nb,
 			Profiles:            profStore,
+			ISOBaseURL:          cfg.ISOBaseURL,
 			AuthMode:            cfg.RedfishAuthMode,
 			TLSMode:             cfg.RedfishTLSMode,
 			CAFile:              cfg.RedfishCAFile,

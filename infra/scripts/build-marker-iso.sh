@@ -14,6 +14,11 @@
 set -euo pipefail
 
 OUT="${1:-${SHOAL_ISO_OUT:-./shoal-marker.iso}}"
+# Optional basename override (Phase 5c Go builder sets SHOAL_ISO_NAME).
+if [[ -n "${SHOAL_ISO_NAME:-}" ]]; then
+  OUT_DIR="$(dirname "$OUT")"
+  OUT="${OUT_DIR%/}/${SHOAL_ISO_NAME}"
+fi
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/shoal-marker-iso.XXXXXX")"
 cleanup() { rm -rf "$WORK"; }
 trap cleanup EXIT
@@ -82,6 +87,16 @@ for app in sh mount umount mkdir sleep cat echo poweroff reboot mkdir ln; do
   ln -sf busybox "$ROOT/bin/$app"
 done
 
+# Optional static base inject (Phase 5c): non-secret payload file inside the image.
+# Prefer SHOAL_PAYLOAD_FILE (path); else SHOAL_EMBEDDED_PAYLOAD (inline text).
+if [[ -n "${SHOAL_PAYLOAD_FILE:-}" && -r "${SHOAL_PAYLOAD_FILE}" ]]; then
+  cp "${SHOAL_PAYLOAD_FILE}" "$ROOT/payload"
+  chmod 644 "$ROOT/payload"
+elif [[ -n "${SHOAL_EMBEDDED_PAYLOAD:-}" ]]; then
+  printf '%s' "${SHOAL_EMBEDDED_PAYLOAD}" > "$ROOT/payload"
+  chmod 644 "$ROOT/payload"
+fi
+
 # Init emits markers then powers off. console=ttyS0 from kernel cmdline.
 cat > "$ROOT/init" << 'INIT'
 #!/bin/busybox sh
@@ -108,7 +123,13 @@ emit() {
 }
 
 # Short Phase-2 demonstration sequence (no real disk write).
-emit BOOT 0 OK "marker live image started"
+# If /payload was injected (Phase 5c), note its size in BOOT detail — never echo secrets.
+boot_detail="marker live image started"
+if [ -f /payload ]; then
+  psz="$(wc -c </payload 2>/dev/null || echo 0)"
+  boot_detail="marker live image started payload_bytes=${psz}"
+fi
+emit BOOT 0 OK "$boot_detail"
 sleep 1
 emit BOOT - HEARTBEAT ""
 sleep 1

@@ -14,6 +14,10 @@ See design §4.3. Reference shell emitter (non-bootable harness):
 
 ## Build + publish
 
+Phase **5c** also exposes a Go wrapper (`shoal deploy iso build|publish`) around
+the same script, with optional `EmbeddedPayload` inject and publish into
+`SHOAL_ISO_PUBLISH_DIR`. Ansible remains the primary lab path.
+
 ### Primary: Ansible on lab VM (L1)
 
 ```bash
