@@ -29,6 +29,8 @@ type Config struct {
 	ISOBaseURL           string // public HTTP prefix for Virtual Media (e.g. http://192.168.124.1:8080)
 	ISOPublishDir        string // filesystem dir served on :8080 (e.g. /srv/iso); Phase 5c publish
 	ISOBuildScript       string // optional path to build-marker-iso.sh
+	// ISODynamic enables build+publish on Start when BuildISO is set or ISOURL empty with profile (Phase 6a).
+	ISODynamic           bool
 	ReconcileFailOrphans bool
 	SecretsDir           string
 	// Serial SSH delegate (VM-hosted lab: nest libvirt on L1).
@@ -82,6 +84,13 @@ func Load() (Config, error) {
 			return Config{}, fmt.Errorf("config: SHOAL_RECONCILE_FAIL_ORPHANS: %w", err)
 		}
 		c.ReconcileFailOrphans = b
+	}
+	if v := os.Getenv("SHOAL_ISO_DYNAMIC"); v != "" {
+		b, err := strconv.ParseBool(v)
+		if err != nil {
+			return Config{}, fmt.Errorf("config: SHOAL_ISO_DYNAMIC: %w", err)
+		}
+		c.ISODynamic = b
 	}
 	if v := os.Getenv("SHOAL_SERIAL_SSH_SUDO"); v != "" {
 		b, err := strconv.ParseBool(v)

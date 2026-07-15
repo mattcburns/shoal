@@ -16,6 +16,7 @@ import (
 	"github.com/mattcburns/shoal/internal/common/redfish"
 	"github.com/mattcburns/shoal/internal/common/telemetry"
 	"github.com/mattcburns/shoal/internal/core/profile"
+	"github.com/mattcburns/shoal/internal/deploy/iso"
 	"github.com/mattcburns/shoal/internal/deploy/job"
 	"github.com/mattcburns/shoal/internal/deploy/jobstore"
 	"github.com/mattcburns/shoal/internal/observe/sol"
@@ -61,6 +62,10 @@ func cmdDeployRun(args []string) int {
 	systemID := fs.String("system-id", "", "optional Redfish system id or name")
 	profileRef := fs.String("profile-ref", "spike", "profile ref (spike = no store; else SHOAL_PROFILE_DIR)")
 	approveDestruct := fs.Bool("approve-destruct", false, "operator consent for NeedsApproval/DestructSteps profiles")
+	buildISO := fs.Bool("build-iso", false, "build+publish live ISO before start (Phase 6a; needs publish dir)")
+	isoPayload := fs.String("iso-payload-file", "", "payload file for -build-iso write mode")
+	isoMode := fs.String("iso-install-mode", "", "simulate|write for -build-iso (default write if payload set)")
+	isoTarget := fs.String("iso-install-target", "", "write target for -build-iso (e.g. /tmp/shoal-install.out)")
 	sshHost := fs.String("serial-ssh-host", cfg.SerialSSHHost, "SSH host for nested libvirt serial (VM mode)")
 	sshUser := fs.String("serial-ssh-user", cfg.SerialSSHUser, "SSH user for serial delegate")
 	sshKey := fs.String("serial-ssh-key", cfg.SerialSSHKey, "SSH private key for serial delegate")
@@ -79,16 +84,20 @@ func cmdDeployRun(args []string) int {
 		dev = *device
 	}
 	req := models.StartJobRequest{
-		DeviceID:        dev,
-		ProfileRef:      *profileRef,
-		ISOURL:          *isoURL,
-		BMCEndpoint:     *bmcURL,
-		BMCUsername:     *bmcUser,
-		BMCPassword:     *bmcPass,
-		SerialTarget:    *serial,
-		SystemID:        *systemID,
-		StallTimeout:    *stallTimeout,
-		ApproveDestruct: *approveDestruct,
+		DeviceID:         dev,
+		ProfileRef:       *profileRef,
+		ISOURL:           *isoURL,
+		BMCEndpoint:      *bmcURL,
+		BMCUsername:      *bmcUser,
+		BMCPassword:      *bmcPass,
+		SerialTarget:     *serial,
+		SystemID:         *systemID,
+		StallTimeout:     *stallTimeout,
+		ApproveDestruct:  *approveDestruct,
+		BuildISO:         *buildISO,
+		ISOPayloadFile:   *isoPayload,
+		ISOInstallMode:   *isoMode,
+		ISOInstallTarget: *isoTarget,
 	}
 
 	store, dbCloser, err := openJobStore(cfg)
@@ -123,6 +132,10 @@ func cmdDeployRun(args []string) int {
 		}
 		profStore = st
 	}
+	var isoBuilder iso.Builder
+	if cfg.ISOPublishDir != "" && cfg.ISOBaseURL != "" {
+		isoBuilder = iso.NewScriptBuilder(cfg.ISOBuildScript, log)
+	}
 	orch := job.NewOrchestrator(job.Options{
 		Log:                 log,
 		Store:               store,
@@ -132,6 +145,9 @@ func cmdDeployRun(args []string) int {
 		NetBox:              nb,
 		Profiles:            profStore,
 		ISOBaseURL:          cfg.ISOBaseURL,
+		ISOBuilder:          isoBuilder,
+		ISOPublishDir:       cfg.ISOPublishDir,
+		ISODynamic:          cfg.ISODynamic,
 		AuthMode:            cfg.RedfishAuthMode,
 		TLSMode:             cfg.RedfishTLSMode,
 		CAFile:              cfg.RedfishCAFile,

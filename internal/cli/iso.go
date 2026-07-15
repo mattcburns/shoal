@@ -43,7 +43,9 @@ func cmdISOBuild(args []string) int {
 	outDir := fs.String("out-dir", "", "local output directory (default: temp or -out parent)")
 	out := fs.String("out", "", "full output path (overrides -name/-out-dir)")
 	payload := fs.String("payload", "", "non-secret embedded payload text")
-	payloadFile := fs.String("payload-file", "", "read non-secret payload from file")
+	payloadFile := fs.String("payload-file", "", "host path copied into image as /payload (binary-safe)")
+	installMode := fs.String("install-mode", "simulate", "simulate|write (Phase 6a real payload write)")
+	installTarget := fs.String("install-target", "", "write target baked into image (e.g. /dev/vda or /tmp/out)")
 	profileRef := fs.String("profile-ref", "", "load iso_base/name/payload hints from profile store")
 	publish := fs.Bool("publish", false, "also publish to SHOAL_ISO_PUBLISH_DIR")
 	if err := fs.Parse(args); err != nil {
@@ -51,21 +53,18 @@ func cmdISOBuild(args []string) int {
 	}
 
 	in := iso.BuildInput{
-		Name:       *name,
-		OutDir:     *outDir,
-		ScriptPath: cfg.ISOBuildScript,
+		Name:          *name,
+		OutDir:        *outDir,
+		ScriptPath:    cfg.ISOBuildScript,
+		InstallMode:   *installMode,
+		InstallTarget: *installTarget,
 	}
 	if *out != "" {
 		in.OutDir = filepath.Dir(*out)
 		in.Name = filepath.Base(*out)
 	}
 	if *payloadFile != "" {
-		b, err := os.ReadFile(*payloadFile)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "payload-file: %v\n", err)
-			return 1
-		}
-		in.EmbeddedPayload = string(b)
+		in.PayloadFile = *payloadFile
 	} else if *payload != "" {
 		in.EmbeddedPayload = *payload
 	}
@@ -91,7 +90,7 @@ func cmdISOBuild(args []string) int {
 			}
 			in.Name = base
 		}
-		if in.EmbeddedPayload == "" && rec.Profile.EmbeddedPayload != "" {
+		if in.PayloadFile == "" && in.EmbeddedPayload == "" && rec.Profile.EmbeddedPayload != "" {
 			in.EmbeddedPayload = rec.Profile.EmbeddedPayload
 		}
 	}

@@ -183,6 +183,15 @@ type StartJobRequest struct {
 	// ApproveDestruct acknowledges NeedsApproval / DestructSteps on the profile (Phase 5b).
 	// Does not bypass a missing profile store entry; only supplies operator consent.
 	ApproveDestruct bool `json:"approve_destruct,omitempty"`
+	// BuildISO requests a dynamic ISO build+publish before Virtual Media (Phase 6a).
+	// Requires orchestrator ISO publish config; resulting URL fills ISOURL when empty.
+	BuildISO bool `json:"build_iso,omitempty"`
+	// ISOPayloadFile is an optional host path for binary install payload (write mode).
+	ISOPayloadFile string `json:"iso_payload_file,omitempty"`
+	// ISOInstallMode is simulate|write for dynamic builds (default simulate).
+	ISOInstallMode string `json:"iso_install_mode,omitempty"`
+	// ISOInstallTarget is optional write target baked into the image (e.g. /dev/vda).
+	ISOInstallTarget string `json:"iso_install_target,omitempty"`
 }
 
 // CancelJobRequest cancels an in-flight provisioning job.

@@ -12,6 +12,12 @@ import (
 	"time"
 )
 
+// Install modes for the live image (Phase 6a).
+const (
+	InstallModeSimulate = "simulate" // Phase 2 marker demo (default)
+	InstallModeWrite    = "write"    // write /payload to target with real SOL progress
+)
+
 // BuildInput describes a live-image build request.
 type BuildInput struct {
 	// Name is the output basename without path (default shoal-marker.iso).
@@ -19,8 +25,15 @@ type BuildInput struct {
 	// OutDir is the directory for the local artifact (default os.TempDir or CWD).
 	OutDir string
 	// EmbeddedPayload is non-secret text written into the image as /payload.
-	// Secrets must never be passed here.
+	// Secrets must never be passed here. Prefer PayloadFile for binary images.
 	EmbeddedPayload string
+	// PayloadFile is a host path copied into the image as /payload (binary-safe).
+	PayloadFile string
+	// InstallMode is simulate (default) or write (Phase 6a real payload write).
+	InstallMode string
+	// InstallTarget is optional block device or file path baked into the image
+	// (overridable via kernel cmdline shoal.target=).
+	InstallTarget string
 	// ScriptPath overrides the marker build script (empty = auto-discover).
 	ScriptPath string
 }
@@ -93,17 +106,40 @@ func (b *ScriptBuilder) Build(ctx context.Context, in BuildInput) (Artifact, err
 	}
 	outPath := filepath.Join(outDir, name)
 
+	mode := strings.TrimSpace(in.InstallMode)
+	if mode == "" {
+		mode = InstallModeSimulate
+	}
+	if mode != InstallModeSimulate && mode != InstallModeWrite {
+		return Artifact{}, fmt.Errorf("iso: invalid install mode %q", mode)
+	}
+
 	cmd := exec.CommandContext(ctx, script, outPath)
 	cmd.Env = os.Environ()
-	// Pass embedded payload without putting secrets into argv (env is still
-	// process-visible; callers must not pass passwords).
-	if p := strings.TrimSpace(in.EmbeddedPayload); p != "" {
+	// Payload: prefer file path (binary-safe); else inline text via env.
+	// Callers must not pass passwords.
+	if pf := strings.TrimSpace(in.PayloadFile); pf != "" {
+		st, err := os.Stat(pf)
+		if err != nil {
+			return Artifact{}, fmt.Errorf("iso: payload file: %w", err)
+		}
+		if st.IsDir() {
+			return Artifact{}, fmt.Errorf("iso: payload file is a directory")
+		}
+		cmd.Env = append(cmd.Env, "SHOAL_PAYLOAD_FILE="+pf)
+	} else if p := strings.TrimSpace(in.EmbeddedPayload); p != "" {
 		if looksSecretPayload(p) {
 			return Artifact{}, fmt.Errorf("iso: embedded_payload must not contain secret-like content")
 		}
 		cmd.Env = append(cmd.Env, "SHOAL_EMBEDDED_PAYLOAD="+p)
 	}
-	cmd.Env = append(cmd.Env, "SHOAL_ISO_NAME="+name)
+	cmd.Env = append(cmd.Env,
+		"SHOAL_ISO_NAME="+name,
+		"SHOAL_INSTALL_MODE="+mode,
+	)
+	if t := strings.TrimSpace(in.InstallTarget); t != "" {
+		cmd.Env = append(cmd.Env, "SHOAL_INSTALL_TARGET="+t)
+	}
 
 	start := time.Now()
 	out, err := cmd.CombinedOutput()
@@ -117,9 +153,23 @@ func (b *ScriptBuilder) Build(ctx context.Context, in BuildInput) (Artifact, err
 	b.Log.Info("iso built",
 		"path", outPath,
 		"size", st.Size(),
+		"mode", mode,
 		"elapsed_ms", time.Since(start).Milliseconds(),
 	)
 	return Artifact{Path: outPath, Name: name, Size: st.Size()}, nil
+}
+
+// BuildAndPublish builds then publishes; returns the public BMC-reachable URL.
+func (b *ScriptBuilder) BuildAndPublish(ctx context.Context, in BuildInput, dest PublishDest) (string, Artifact, error) {
+	art, err := b.Build(ctx, in)
+	if err != nil {
+		return "", Artifact{}, err
+	}
+	url, err := b.Publish(ctx, art, dest)
+	if err != nil {
+		return "", art, err
+	}
+	return url, art, nil
 }
 
 // Publish copies the artifact into dest.Dir and returns BaseURL/name.

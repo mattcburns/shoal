@@ -147,8 +147,9 @@ func StartJobRequest(r models.StartJobRequest) error {
 	}
 	if strings.TrimSpace(r.ISOURL) == "" {
 		ref := strings.TrimSpace(r.ProfileRef)
-		if ref == "" || ref == "spike" {
-			return fmt.Errorf("validate: iso_url is required (or non-spike profile_ref for ISO resolve)")
+		// Phase 5c: non-spike profile may resolve; Phase 6a: BuildISO may produce URL.
+		if (ref == "" || ref == "spike") && !r.BuildISO {
+			return fmt.Errorf("validate: iso_url is required (or non-spike profile_ref / build_iso)")
 		}
 	}
 	if strings.TrimSpace(r.SerialTarget) == "" {

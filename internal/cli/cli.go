@@ -25,6 +25,7 @@ import (
 	"github.com/mattcburns/shoal/internal/core/fewshot"
 	"github.com/mattcburns/shoal/internal/core/profile"
 	"github.com/mattcburns/shoal/internal/core/reconcile"
+	"github.com/mattcburns/shoal/internal/deploy/iso"
 	"github.com/mattcburns/shoal/internal/deploy/job"
 	"github.com/mattcburns/shoal/internal/deploy/jobstore"
 	"github.com/mattcburns/shoal/internal/discover"
@@ -34,7 +35,7 @@ import (
 )
 
 // Version is the application version string (overridable via -ldflags).
-var Version = "0.5.0-phase5"
+var Version = "0.6.0-phase6a"
 
 // Run dispatches subcommands. args should be os.Args[1:].
 func Run(args []string) int {
@@ -205,7 +206,7 @@ func cmdServe(args []string) int {
 				log.Info("profile store enabled", "dir", cfg.ProfileDir)
 			}
 		}
-		orch := job.NewOrchestrator(job.Options{
+		orchOpts := job.Options{
 			Log:                 log,
 			Store:               store,
 			Secrets:             secretBackend,
@@ -214,11 +215,17 @@ func cmdServe(args []string) int {
 			NetBox:              nb,
 			Profiles:            profStore,
 			ISOBaseURL:          cfg.ISOBaseURL,
+			ISOPublishDir:       cfg.ISOPublishDir,
+			ISODynamic:          cfg.ISODynamic,
 			AuthMode:            cfg.RedfishAuthMode,
 			TLSMode:             cfg.RedfishTLSMode,
 			CAFile:              cfg.RedfishCAFile,
 			ReconcileFailOrphan: cfg.ReconcileFailOrphans,
-		})
+		}
+		if cfg.ISOPublishDir != "" && cfg.ISOBaseURL != "" {
+			orchOpts.ISOBuilder = iso.NewScriptBuilder(cfg.ISOBuildScript, log)
+		}
+		orch := job.NewOrchestrator(orchOpts)
 		defer orch.Stop()
 		watchSvc.SetProgress(orch.ProgressPort())
 		srvAPI.WithJobCanceler(orch)

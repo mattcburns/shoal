@@ -18,6 +18,11 @@ Phase **5c** also exposes a Go wrapper (`shoal deploy iso build|publish`) around
 the same script, with optional `EmbeddedPayload` inject and publish into
 `SHOAL_ISO_PUBLISH_DIR`. Ansible remains the primary lab path.
 
+Phase **6a** adds `SHOAL_INSTALL_MODE=write` (or `-install-mode write`): when
+`/payload` is present the live image performs a real write with progressive
+`IMAGE_WRITE` markers (file or block target). Default remains **simulate** for
+the Phase 2 demo.
+
 ### Primary: Ansible on lab VM (L1)
 
 ```bash
