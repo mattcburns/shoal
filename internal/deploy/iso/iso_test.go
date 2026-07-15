@@ -76,6 +76,28 @@ func TestBuildRejectsSecretPayload(t *testing.T) {
 	}
 }
 
+func TestBuildRejectsBadInstallMode(t *testing.T) {
+	b := iso.NewScriptBuilder("/nonexistent-script", slog.New(slog.NewTextHandler(io.Discard, nil)))
+	_, err := b.Build(context.Background(), iso.BuildInput{
+		InstallMode: "explode",
+		OutDir:      t.TempDir(),
+	})
+	if err == nil || !strings.Contains(err.Error(), "install mode") {
+		t.Fatalf("expected mode error, got %v", err)
+	}
+}
+
+func TestBuildRejectsMissingPayloadFile(t *testing.T) {
+	b := iso.NewScriptBuilder("/nonexistent-script", slog.New(slog.NewTextHandler(io.Discard, nil)))
+	_, err := b.Build(context.Background(), iso.BuildInput{
+		PayloadFile: filepath.Join(t.TempDir(), "missing.bin"),
+		OutDir:      t.TempDir(),
+	})
+	if err == nil {
+		t.Fatal("expected payload file error")
+	}
+}
+
 func TestFindBuildScript(t *testing.T) {
 	// From module root this should resolve in normal checkouts.
 	p, err := iso.FindBuildScript()

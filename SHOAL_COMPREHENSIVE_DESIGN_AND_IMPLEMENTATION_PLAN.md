@@ -1331,6 +1331,7 @@ Default VM-hosted endpoints: NetBox `:8000`, sushy `:8001`, ISO HTTP `:8080`, Ol
 | `SHOAL_ISO_BASE_URL` | no | BMC-reachable ISO HTTP prefix (lab nested: `http://192.168.124.1:8080`). Ansible `env.j2` sets gateway + port. Used for profile `iso_base` resolve + publish URL |
 | `SHOAL_ISO_PUBLISH_DIR` | no | Filesystem publish dir (lab: `shoal_iso_server_dir` → `/srv/iso` in `env.j2`) |
 | `SHOAL_ISO_BUILD_SCRIPT` | no | Optional path to `build-marker-iso.sh` |
+| `SHOAL_ISO_DYNAMIC` | no | If `true`, Start may build+publish when ISOURL empty (Phase 6a; needs publish dir + base URL) |
 | `SHOAL_RECONCILE_FAIL_ORPHANS` | no | Default `true` |
 | `SHOAL_FEWSHOT_DIR` | no | Append-only learned few-shot JSONL (Phase 3b confirm). Lab default via Ansible `shoal_fewshot_dir` → `/var/lib/shoal/fewshot` in `env.j2` + mkdir. Empty disables confirm |
 | `SHOAL_PROFILE_DIR` | no | JSON provisioning profiles + approval records (Phase 5b). Lab default via Ansible `shoal_profile_dir` → `/var/lib/shoal/profiles` in `env.j2` + mkdir. Empty disables non-spike profile load; `spike` profile ref always allowed without a store |
@@ -1427,7 +1428,13 @@ Full ISO pipeline, reliability contract polish, profile generation + approval, N
 
 ### Phase 6: Polish
 
-Graphics OCR (**decide approach then**: `os/exec` Tesseract vs cloud vision — neither is pre-committed), dynamic ISO, metrics, TLS/API auth hardening, packaging, record/replay CI.
+Graphics OCR via **Core `CompleteVision`** (not Tesseract-first), dynamic ISO / real payload write, metrics, TLS/API auth hardening, packaging, record/replay CI.
+
+**Phase 6a (dynamic ISO + write path):** `SHOAL_INSTALL_MODE=write` live image writes `/payload` to `shoal.target` / `SHOAL_INSTALL_TARGET` (or `/tmp/shoal-install.out` fallback) with real `IMAGE_WRITE` progress; `simulate` remains Phase 2 demo. Optional `StartJobRequest.BuildISO` / `SHOAL_ISO_DYNAMIC` builds+publishes before Virtual Media. Not a full multi-distro autoinstall product — bounded payload MVP.
+
+### Phase 6 (remaining)
+
+Graphics OCR (CompleteVision failure screens), Compose shoal packaging, API auth + metrics, record/replay CI.
 
 ---
 
@@ -1600,7 +1607,7 @@ go test ./...
 
 ## Open Questions
 
-**All previously open product decisions are resolved through v2.0.5.** Phase 0–4 are on `master`; Phase 5 (Deploy harden) is next.
+**All previously open product decisions are resolved through v2.0.5.** Phase 0–5 are on `master`; Phase 6 (polish) is next.
 
 | Topic | Resolution |
 |-------|------------|
@@ -1615,7 +1622,7 @@ go test ./...
 | **Module path** | **`github.com/mattcburns/shoal`** |
 | **Redfish client** | **gofish day one**, wrapped in `internal/common/redfish` (no thin-client-first path) |
 | **App HTTP port** | **`:8088`** (`shoal_app_http_port` / `SHOAL_HTTP_ADDR`) |
-| **Phase 6 graphics OCR** | **Deferred** — evaluate Tesseract (`os/exec`) vs cloud vision for failure screens; not the same as Phase 3 asset-label OCR |
+| **Phase 6 graphics OCR** | **CompleteVision** (lab Ollama VLM / cloud) for failure screens; not Tesseract-first; not the same as Phase 3 asset-label OCR |
 | **Live image build host** | **Both:** lab VM Ansible role **primary**; developer workstation **alternate** (§8.2 / Appendix I) |
 | **Lab AI text model** | **`SHOAL_AI_MODEL=llama3.2:3b`** (instruct; nested-lab friendly) |
 | **Lab AI vision model** | **`SHOAL_AI_VISION_MODEL=deepseek-ocr`** for asset-label Free OCR; **moondream not AC**; empty skips photo |
@@ -1639,9 +1646,9 @@ go test ./...
 
 ---
 
-**This document (v2.0.5) is the SoT for agents.** Phase 0–4 (Discover hybrid, few-shot, Observe broaden) are on `master`.
+**This document (v2.0.5) is the SoT for agents.** Phase 0–5 (Discover, Observe, Deploy harden) are on `master`.
 
 Next actions:
-1. Phase 5 Deploy harden: NetBox lifecycle sync, reliability polish, profile gen+approval, ISO pipeline
-2. Later: packaging (Compose shoal service)
-3. At Phase 6: choose graphics failure-screen OCR approach before implementing
+1. Phase 6a: dynamic ISO + real payload write (in progress / next)
+2. Phase 6b–d: graphics OCR (CompleteVision), Compose shoal packaging, API auth + metrics + replay CI
+3. Stretch: full distro autoinstall; NetBox device-id binding

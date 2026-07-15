@@ -78,4 +78,12 @@ func TestStartJobRequest(t *testing.T) {
 	if err := validate.StartJobRequest(spike); err == nil {
 		t.Fatal("spike still requires iso_url")
 	}
+	// Phase 6a: BuildISO may omit iso_url
+	build := good
+	build.ISOURL = ""
+	build.ProfileRef = "spike"
+	build.BuildISO = true
+	if err := validate.StartJobRequest(build); err != nil {
+		t.Fatal(err)
+	}
 }

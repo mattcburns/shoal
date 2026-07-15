@@ -287,6 +287,45 @@ Operator-supplied `-iso-url` still wins over profile resolve. Spike profile alwa
 requires `-iso-url`. Payload inject uses `SHOAL_EMBEDDED_PAYLOAD` / `-payload`
 (never secrets).
 
+### Phase 6a: real payload write (install MVP)
+
+Default marker ISO still **simulates** `IMAGE_WRITE`. For a real write of an
+embedded payload (bounded blob — not a full Ubuntu autoinstall product):
+
+```bash
+# Build write-mode ISO with a payload file (binary-safe)
+printf 'golden-rootfs-bytes' > /tmp/payload.bin
+export SHOAL_ISO_PUBLISH_DIR=/srv/iso   # on L1
+export SHOAL_ISO_BASE_URL=http://192.168.124.1:8080
+# Kernel on L1 is often 0600 root — stage a readable copy:
+#   sudo cp /boot/vmlinuz-$(uname -r) /tmp/vmlinuz && sudo chmod 644 /tmp/vmlinuz
+#   export SHOAL_KERNEL=/tmp/vmlinuz
+
+go run ./cmd/shoal deploy iso build \
+  -name shoal-install.iso \
+  -install-mode write \
+  -install-target /tmp/shoal-install.out \
+  -payload-file /tmp/payload.bin \
+  -publish
+
+# Or build at Start time:
+go run ./cmd/shoal deploy run \
+  -device-id shoal-node-1 \
+  -bmc-url http://192.168.122.100:8001 \
+  -serial-target shoal-node-1 \
+  -build-iso \
+  -iso-install-mode write \
+  -iso-payload-file /tmp/payload.bin \
+  -iso-install-target /tmp/shoal-install.out
+```
+
+Write mode emits real `IMAGE_WRITE` percent over SOL. If no block device is
+present, the image falls back to a file target (`/tmp/shoal-install.out` or
+`-install-target`). Nested sushy disks may be limited — document fidelity gaps.
+
+`SHOAL_ISO_DYNAMIC=true` also builds when `-iso-url` is empty and publish
+dir/base URL are set.
+
 ## 2) Fast stop (teardown / clean slate)
 ```bash
 ansible-playbook -i infra/ansible/inventory/lab-vm.yml infra/ansible/playbooks/down.yml

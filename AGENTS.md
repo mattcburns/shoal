@@ -241,6 +241,7 @@ go run ./cmd/shoal deploy run \
 | `SHOAL_ISO_BASE_URL` | BMC-reachable ISO HTTP prefix (lab nested: `http://192.168.124.1:8080`). Used to resolve profile `iso_base` and `deploy iso publish` |
 | `SHOAL_ISO_PUBLISH_DIR` | Filesystem dir served on `:8080` (lab: `/srv/iso`). Phase 5c publish target |
 | `SHOAL_ISO_BUILD_SCRIPT` | Optional path to `build-marker-iso.sh` (auto-discovers from repo) |
+| `SHOAL_ISO_DYNAMIC` | If `true`, Start may build+publish when `ISOURL` empty (needs publish dir + base URL; Phase 6a) |
 | `SHOAL_RECONCILE_FAIL_ORPHANS` | Default `true` |
 | `SHOAL_FEWSHOT_DIR` | Append-only learned few-shot JSONL (confirm learning). Lab Ansible default: `/var/lib/shoal/fewshot` via `shoal_fewshot_dir` + `env.j2`. Empty disables confirm |
 | `SHOAL_PROFILE_DIR` | JSON provisioning profiles + approval records (Phase 5b). Lab Ansible default: `/var/lib/shoal/profiles` via `shoal_profile_dir` + `env.j2`. Empty disables non-spike profile load |
@@ -253,14 +254,12 @@ only (no silent memory fallback). Empty SEL/sensors with exit 0 is valid when th
 BMC has no logs; write failures and Redfish errors fail the poll. Observe never
 imports Deploy (job reads via `jobport.JobQuery`).
 
-**Phase 5 Deploy:** Orchestrator best-effort syncs NetBox `lifecycle_state` on
-Start/HandleTerminal. Profiles under `SHOAL_PROFILE_DIR`; destruct /
-`needs_approval` require approve or `-approve-destruct`. **Phase 5c ISO:**
-`internal/deploy/iso` wraps `build-marker-iso.sh`, publishes to
-`SHOAL_ISO_PUBLISH_DIR`, and Start resolves empty `-iso-url` from profile
-`iso_base` + `SHOAL_ISO_BASE_URL`. Still plain HTTP on mgmt segment; Ansible
-marker_iso remains primary lab producer. Sole lifecycle writer remains
-Orchestrator; JobStore stays pure persistence.
+**Phase 5–6a Deploy:** Orchestrator best-effort syncs NetBox `lifecycle_state`.
+Profiles under `SHOAL_PROFILE_DIR`; destruct needs approve or `-approve-destruct`.
+ISO: publish + profile resolve (5c); **6a** `install-mode write` writes `/payload`
+with real SOL progress; optional `-build-iso` / `SHOAL_ISO_DYNAMIC`. Marker
+`simulate` mode remains the Phase 2 demo. Plain HTTP ISO on mgmt segment.
+Sole lifecycle writer remains Orchestrator; JobStore stays pure persistence.
 
 ---
 

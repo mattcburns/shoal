@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -47,18 +48,21 @@ const (
 
 // Orchestrator owns lifecycle transitions, BMC actions, and cleanup.
 type Orchestrator struct {
-	log        *slog.Logger
-	store      jobstore.Store
-	secrets    secrets.Backend
-	newBMC     redfish.Factory
-	watches    watchport.WatchRegistrar
-	netbox     netbox.LifecycleWriter // optional; identity lifecycle only
-	profiles   profile.Store          // optional; Phase 5b approval gate
-	isoBaseURL string                 // Phase 5c: resolve profile iso_base → URL
-	authMode   string
-	tlsMode    string
-	caFile     string
-	failOrphan bool
+	log           *slog.Logger
+	store         jobstore.Store
+	secrets       secrets.Backend
+	newBMC        redfish.Factory
+	watches       watchport.WatchRegistrar
+	netbox        netbox.LifecycleWriter // optional; identity lifecycle only
+	profiles      profile.Store          // optional; Phase 5b approval gate
+	isoBaseURL    string                 // Phase 5c: resolve profile iso_base → URL
+	isoBuilder    iso.Builder            // optional Phase 6a dynamic build
+	isoPublishDir string
+	isoDynamic    bool // SHOAL_ISO_DYNAMIC: build when ISOURL empty + publish configured
+	authMode      string
+	tlsMode       string
+	caFile        string
+	failOrphan    bool
 
 	mu       sync.Mutex
 	running  map[string]*runState // jobID -> state
@@ -97,6 +101,9 @@ type Options struct {
 	NetBox              netbox.LifecycleWriter // optional Phase 5 lifecycle sync
 	Profiles            profile.Store          // optional Phase 5b profile load/approval
 	ISOBaseURL          string                 // optional Phase 5c profile → ISO URL resolve
+	ISOBuilder          iso.Builder            // optional Phase 6a dynamic build
+	ISOPublishDir       string                 // publish dir for dynamic build
+	ISODynamic          bool                   // build when ISOURL empty (needs builder+publish+base)
 	AuthMode            string
 	TLSMode             string
 	CAFile              string
@@ -121,21 +128,24 @@ func NewOrchestrator(opts Options) *Orchestrator {
 		tlsMode = "off"
 	}
 	o := &Orchestrator{
-		log:        log,
-		store:      opts.Store,
-		secrets:    opts.Secrets,
-		newBMC:     opts.NewBMC,
-		watches:    opts.Watches,
-		netbox:     opts.NetBox,
-		profiles:   opts.Profiles,
-		isoBaseURL: opts.ISOBaseURL,
-		authMode:   auth,
-		tlsMode:    tlsMode,
-		caFile:     opts.CAFile,
-		failOrphan: opts.ReconcileFailOrphan, // composition root passes config default true
-		running:    make(map[string]*runState),
-		terminal:   make(chan terminalEvent, 64),
-		stopCh:     make(chan struct{}),
+		log:           log,
+		store:         opts.Store,
+		secrets:       opts.Secrets,
+		newBMC:        opts.NewBMC,
+		watches:       opts.Watches,
+		netbox:        opts.NetBox,
+		profiles:      opts.Profiles,
+		isoBaseURL:    opts.ISOBaseURL,
+		isoBuilder:    opts.ISOBuilder,
+		isoPublishDir: opts.ISOPublishDir,
+		isoDynamic:    opts.ISODynamic,
+		authMode:      auth,
+		tlsMode:       tlsMode,
+		caFile:        opts.CAFile,
+		failOrphan:    opts.ReconcileFailOrphan, // composition root passes config default true
+		running:       make(map[string]*runState),
+		terminal:      make(chan terminalEvent, 64),
+		stopCh:        make(chan struct{}),
 	}
 	o.wg.Add(1)
 	go o.terminalLoop()
@@ -188,7 +198,8 @@ func (o *Orchestrator) Get(ctx context.Context, jobID string) (models.Provisioni
 // (failure is logged and does not block BMC actions).
 // Profiles with NeedsApproval/DestructSteps require store approval or ApproveDestruct.
 // When ISOURL is empty and a non-spike profile is loaded, iso_base is resolved via
-// SHOAL_ISO_BASE_URL (Phase 5c).
+// SHOAL_ISO_BASE_URL (Phase 5c). Optional BuildISO / SHOAL_ISO_DYNAMIC builds and
+// publishes a live image first (Phase 6a).
 func (o *Orchestrator) Start(ctx context.Context, req models.StartJobRequest) (models.ProvisioningJob, error) {
 	if err := validate.StartJobRequest(req); err != nil {
 		return models.ProvisioningJob{}, err
@@ -202,6 +213,9 @@ func (o *Orchestrator) Start(ctx context.Context, req models.StartJobRequest) (m
 		profileRef = "spike"
 	}
 	if err := o.checkProfileApproval(ctx, profileRef, req.ApproveDestruct); err != nil {
+		return models.ProvisioningJob{}, err
+	}
+	if err := o.maybeBuildISO(ctx, &req, profileRef); err != nil {
 		return models.ProvisioningJob{}, err
 	}
 	if err := o.resolveISOURL(ctx, &req, profileRef); err != nil {
@@ -633,6 +647,96 @@ func (o *Orchestrator) resolveISOURL(ctx context.Context, req *models.StartJobRe
 		"iso_url", url,
 	)
 	return nil
+}
+
+// maybeBuildISO builds and publishes a live image when BuildISO is set, or when
+// ISODynamic is enabled and ISOURL is still empty.
+func (o *Orchestrator) maybeBuildISO(ctx context.Context, req *models.StartJobRequest, profileRef string) error {
+	want := req.BuildISO || (o.isoDynamic && req.ISOURL == "")
+	if !want {
+		return nil
+	}
+	// Explicit URL without BuildISO: skip rebuild.
+	if req.ISOURL != "" && !req.BuildISO {
+		return nil
+	}
+	if o.isoBuilder == nil {
+		if req.BuildISO {
+			return fmt.Errorf("job: build_iso requested but ISO builder not configured")
+		}
+		return nil
+	}
+	if o.isoPublishDir == "" || o.isoBaseURL == "" {
+		return fmt.Errorf("job: dynamic ISO requires SHOAL_ISO_PUBLISH_DIR and SHOAL_ISO_BASE_URL")
+	}
+
+	name := "shoal-install.iso"
+	mode := strings.TrimSpace(req.ISOInstallMode)
+	payloadFile := strings.TrimSpace(req.ISOPayloadFile)
+	target := strings.TrimSpace(req.ISOInstallTarget)
+	embedded := ""
+
+	if profileRef != "" && profileRef != "spike" && o.profiles != nil {
+		if rec, err := o.profiles.Get(ctx, profileRef); err == nil {
+			if rec.Profile.ISOBase != "" {
+				base := rec.Profile.ISOBase
+				// Basename only; strip URL path if operator put a full URL in iso_base.
+				if i := strings.LastIndex(base, "/"); i >= 0 {
+					base = base[i+1:]
+				}
+				if !strings.HasSuffix(strings.ToLower(base), ".iso") {
+					base += ".iso"
+				}
+				name = base
+			}
+			if payloadFile == "" && rec.Profile.EmbeddedPayload != "" {
+				embedded = rec.Profile.EmbeddedPayload
+			}
+		}
+	}
+	if mode == "" {
+		if payloadFile != "" || embedded != "" {
+			mode = iso.InstallModeWrite
+		} else {
+			mode = iso.InstallModeSimulate
+		}
+	}
+
+	in := iso.BuildInput{
+		Name:            name,
+		PayloadFile:     payloadFile,
+		EmbeddedPayload: embedded,
+		InstallMode:     mode,
+		InstallTarget:   target,
+	}
+	url, art, err := buildAndPublish(ctx, o.isoBuilder, in, iso.PublishDest{
+		Dir: o.isoPublishDir, BaseURL: o.isoBaseURL,
+	})
+	if err != nil {
+		return fmt.Errorf("job: dynamic iso build: %w", err)
+	}
+	req.ISOURL = url
+	o.log.Info("iso built dynamically",
+		"profile_ref", profileRef,
+		"path", art.Path,
+		"size", art.Size,
+		"mode", mode,
+		"iso_url", url,
+	)
+	return nil
+}
+
+// buildAndPublish uses ScriptBuilder.BuildAndPublish when available, else Build+Publish.
+func buildAndPublish(ctx context.Context, b iso.Builder, in iso.BuildInput, dest iso.PublishDest) (string, iso.Artifact, error) {
+	if sb, ok := b.(*iso.ScriptBuilder); ok {
+		return sb.BuildAndPublish(ctx, in, dest)
+	}
+	art, err := b.Build(ctx, in)
+	if err != nil {
+		return "", iso.Artifact{}, err
+	}
+	url, err := b.Publish(ctx, art, dest)
+	return url, art, err
 }
 
 // syncNetBoxLifecycle best-effort updates NetBox identity lifecycle_state.
