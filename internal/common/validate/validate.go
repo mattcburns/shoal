@@ -136,6 +136,8 @@ func RawAssetInput(in models.RawAssetInput) error {
 }
 
 // StartJobRequest requires Phase 2 binding fields.
+// ISOURL may be empty when ProfileRef is a non-spike stored profile so Deploy can
+// resolve iso_base via SHOAL_ISO_BASE_URL (Phase 5c); Orchestrator fills it before BMC.
 func StartJobRequest(r models.StartJobRequest) error {
 	if strings.TrimSpace(r.DeviceID) == "" {
 		return fmt.Errorf("validate: device_id is required")
@@ -144,7 +146,10 @@ func StartJobRequest(r models.StartJobRequest) error {
 		return fmt.Errorf("validate: bmc_endpoint is required")
 	}
 	if strings.TrimSpace(r.ISOURL) == "" {
-		return fmt.Errorf("validate: iso_url is required")
+		ref := strings.TrimSpace(r.ProfileRef)
+		if ref == "" || ref == "spike" {
+			return fmt.Errorf("validate: iso_url is required (or non-spike profile_ref for ISO resolve)")
+		}
 	}
 	if strings.TrimSpace(r.SerialTarget) == "" {
 		return fmt.Errorf("validate: serial_target is required")

@@ -23,7 +23,7 @@ import (
 
 func cmdDeploy(args []string) int {
 	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "usage: shoal deploy <run|status|cancel> [flags]")
+		fmt.Fprintln(os.Stderr, "usage: shoal deploy <run|status|cancel|iso> [flags]")
 		return 2
 	}
 	switch args[0] {
@@ -33,6 +33,8 @@ func cmdDeploy(args []string) int {
 		return cmdDeployStatus(args[1:])
 	case "cancel":
 		return cmdDeployCancel(args[1:])
+	case "iso":
+		return cmdDeployISO(args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown deploy subcommand %q\n", args[0])
 		return 2
@@ -55,7 +57,7 @@ func cmdDeployRun(args []string) int {
 	bmcUser := fs.String("bmc-user", cfg.BMCUsername, "BMC username")
 	bmcPass := fs.String("bmc-pass", cfg.BMCPassword, "BMC password (never logged)")
 	serial := fs.String("serial-target", "", "libvirt domain or console path")
-	isoURL := fs.String("iso-url", "", "BMC-reachable ISO URL on lab :8080")
+	isoURL := fs.String("iso-url", "", "BMC-reachable ISO URL (optional if non-spike profile + SHOAL_ISO_BASE_URL)")
 	systemID := fs.String("system-id", "", "optional Redfish system id or name")
 	profileRef := fs.String("profile-ref", "spike", "profile ref (spike = no store; else SHOAL_PROFILE_DIR)")
 	approveDestruct := fs.Bool("approve-destruct", false, "operator consent for NeedsApproval/DestructSteps profiles")
@@ -129,6 +131,7 @@ func cmdDeployRun(args []string) int {
 		Watches:             watchSvc,
 		NetBox:              nb,
 		Profiles:            profStore,
+		ISOBaseURL:          cfg.ISOBaseURL,
 		AuthMode:            cfg.RedfishAuthMode,
 		TLSMode:             cfg.RedfishTLSMode,
 		CAFile:              cfg.RedfishCAFile,

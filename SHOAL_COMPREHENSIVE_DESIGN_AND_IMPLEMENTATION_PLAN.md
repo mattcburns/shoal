@@ -1328,7 +1328,9 @@ Default VM-hosted endpoints: NetBox `:8000`, sushy `:8001`, ISO HTTP `:8080`, Ol
 | `SHOAL_REDFISH_TLS_MODE` | no | `off`\|`insecure`\|`custom_ca` |
 | `SHOAL_REDFISH_CA_FILE` | if custom_ca | Path |
 | `SHOAL_BMC_USERNAME` / `SHOAL_BMC_PASSWORD` | lab only | Existing vault vars — for lab defaults / smoke; production uses secrets backend per device |
-| `SHOAL_ISO_BASE_URL` | no | e.g. `http://192.168.122.100:8080` |
+| `SHOAL_ISO_BASE_URL` | no | BMC-reachable ISO HTTP prefix (lab nested: `http://192.168.124.1:8080`). Ansible `env.j2` sets gateway + port. Used for profile `iso_base` resolve + publish URL |
+| `SHOAL_ISO_PUBLISH_DIR` | no | Filesystem publish dir (lab: `shoal_iso_server_dir` → `/srv/iso` in `env.j2`) |
+| `SHOAL_ISO_BUILD_SCRIPT` | no | Optional path to `build-marker-iso.sh` |
 | `SHOAL_RECONCILE_FAIL_ORPHANS` | no | Default `true` |
 | `SHOAL_FEWSHOT_DIR` | no | Append-only learned few-shot JSONL (Phase 3b confirm). Lab default via Ansible `shoal_fewshot_dir` → `/var/lib/shoal/fewshot` in `env.j2` + mkdir. Empty disables confirm |
 | `SHOAL_PROFILE_DIR` | no | JSON provisioning profiles + approval records (Phase 5b). Lab default via Ansible `shoal_profile_dir` → `/var/lib/shoal/profiles` in `env.j2` + mkdir. Empty disables non-spike profile load; `spike` profile ref always allowed without a store |
@@ -1420,6 +1422,8 @@ SEL/sensor poll, session caps, event normalize, watch mode, CLI status; stretch 
 Full ISO pipeline, reliability contract polish, profile generation + approval, NetBox lifecycle sync.
 
 **Phase 5b (profiles + approval):** Core `Profiler` generates `ProvisioningProfile` via AI + schema validate. Durable store under `SHOAL_PROFILE_DIR` (not NetBox). CLI `shoal profile generate|save|show|list|approve`. Deploy `Start` rejects non-`spike` refs without store entry; `NeedsApproval` / non-empty `DestructSteps` require prior `profile approve` or `StartJobRequest.ApproveDestruct` / `-approve-destruct`. AI never auto-executes destruct.
+
+**Phase 5c (ISO pipeline):** `internal/deploy/iso` `Builder` wraps `infra/scripts/build-marker-iso.sh` (`os/exec`), optional `EmbeddedPayload` → `/payload` in the image, `Publish` to `SHOAL_ISO_PUBLISH_DIR` + `SHOAL_ISO_BASE_URL`. CLI `shoal deploy iso build|publish`. Start fills empty `ISOURL` from profile `iso_base` + base URL. Lab Ansible still primary producer; serve remains nginx `:8080` plain HTTP.
 
 ### Phase 6: Polish
 

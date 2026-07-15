@@ -26,7 +26,9 @@ type Config struct {
 	RedfishCAFile        string
 	BMCUsername          string
 	BMCPassword          string
-	ISOBaseURL           string
+	ISOBaseURL           string // public HTTP prefix for Virtual Media (e.g. http://192.168.124.1:8080)
+	ISOPublishDir        string // filesystem dir served on :8080 (e.g. /srv/iso); Phase 5c publish
+	ISOBuildScript       string // optional path to build-marker-iso.sh
 	ReconcileFailOrphans bool
 	SecretsDir           string
 	// Serial SSH delegate (VM-hosted lab: nest libvirt on L1).
@@ -62,6 +64,8 @@ func Load() (Config, error) {
 		BMCUsername:          os.Getenv("SHOAL_BMC_USERNAME"),
 		BMCPassword:          os.Getenv("SHOAL_BMC_PASSWORD"),
 		ISOBaseURL:           os.Getenv("SHOAL_ISO_BASE_URL"),
+		ISOPublishDir:        os.Getenv("SHOAL_ISO_PUBLISH_DIR"),
+		ISOBuildScript:       os.Getenv("SHOAL_ISO_BUILD_SCRIPT"),
 		ReconcileFailOrphans: true,
 		SecretsDir:           envOr("SHOAL_SECRETS_DIR", ""),
 		SerialSSHHost:        os.Getenv("SHOAL_SERIAL_SSH_HOST"),

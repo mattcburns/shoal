@@ -66,4 +66,16 @@ func TestStartJobRequest(t *testing.T) {
 	if err := validate.StartJobRequest(bad); err == nil {
 		t.Fatal("expected error")
 	}
+	// Phase 5c: non-spike profile may omit iso_url (resolved later).
+	resolve := good
+	resolve.ISOURL = ""
+	resolve.ProfileRef = "lab-1-ubuntu"
+	if err := validate.StartJobRequest(resolve); err != nil {
+		t.Fatal(err)
+	}
+	spike := resolve
+	spike.ProfileRef = "spike"
+	if err := validate.StartJobRequest(spike); err == nil {
+		t.Fatal("spike still requires iso_url")
+	}
 }
