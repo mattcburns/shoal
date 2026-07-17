@@ -1,0 +1,67 @@
+Shoal
+Copyright (c) the Shoal contributors
+
+This product is licensed under the GNU Affero General Public License v3.0.
+See the file LICENSE for the full license text.
+
+This product includes third-party software. The inventory below lists Go
+modules linked into the Shoal binary (./cmd/shoal). Full license texts are
+in docs/third-party-licenses.md. When redistributing binaries or source,
+include LICENSE, this NOTICE, and docs/third-party-licenses.md (or an
+equivalent notice bundle generated from them).
+
+----------------------------------------------------------------------
+Third-party components (runtime)
+----------------------------------------------------------------------
+
+github.com/jackc/pgx/v5
+  Version:  v5.7.4
+  License:  MIT
+  Copyright (c) 2013-2021 Jack Christensen
+
+github.com/jackc/pgpassfile
+  Version:  v1.0.0
+  License:  MIT
+  Copyright (c) 2019 Jack Christensen
+
+github.com/jackc/pgservicefile
+  Version:  v0.0.0-20240606120523-5a60cdf6a761
+  License:  MIT
+  Copyright (c) 2020 Jack Christensen
+
+github.com/jackc/puddle/v2
+  Version:  v2.2.2
+  License:  MIT
+  Copyright (c) 2018 Jack Christensen
+
+github.com/stmcginnis/gofish
+  Version:  v0.20.0
+  License:  BSD-3-Clause
+  Copyright (c) 2019, Sean McGinnis
+
+golang.org/x/crypto
+  Version:  v0.31.0
+  License:  BSD-3-Clause
+  Copyright 2009 The Go Authors.
+  (See also PATENTS grant from The Go Authors.)
+
+golang.org/x/sync
+  Version:  v0.10.0
+  License:  BSD-3-Clause
+  Copyright 2009 The Go Authors.
+  (See also PATENTS grant from The Go Authors.)
+
+golang.org/x/text
+  Version:  v0.21.0
+  License:  BSD-3-Clause
+  Copyright 2009 The Go Authors.
+  (See also PATENTS grant from The Go Authors.)
+
+----------------------------------------------------------------------
+Notes
+----------------------------------------------------------------------
+
+- The Go standard library is not listed; it ships with the Go toolchain.
+- Test-only modules and lab services (NetBox, Postgres, Ollama, sushy-tools,
+  Ansible) are not linked into the Shoal binary and are not listed here.
+- Keep this file in sync with the runtime module graph; see AGENTS.md §9.1.

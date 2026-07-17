@@ -70,10 +70,12 @@ These encode the core design decisions. Violating one is a bug, even if tests pa
     on the Observe path.
 12. **Stdlib-first (documented exceptions only).** Prefer the Go standard
     library. External modules must be on the design doc §7.1 allow-list; adding
-    one requires updating §7.1 in the same change. Current allow-list:
-    `gofish`, `pgx` (default Postgres), optional `modernc.org/sqlite` (demo),
-    `staticcheck` (toolchain). Rejected for MVP: Cobra, Gin/Echo/Chi, LiteLLM /
-    provider SDKs, ORMs, greenfield thin Redfish client.
+    one requires updating §7.1, **`NOTICE`**, and **`docs/third-party-licenses.md`**
+    in the same change (see §9.1 for AGPL-compatible licenses and attribution).
+    Current allow-list: `gofish`, `pgx` (default Postgres), optional
+    `modernc.org/sqlite` (demo), `staticcheck` (toolchain). Rejected for MVP:
+    Cobra, Gin/Echo/Chi, LiteLLM / provider SDKs, ORMs, greenfield thin Redfish
+    client.
 
 ---
 
@@ -115,7 +117,10 @@ shoal/                                    # module: github.com/mattcburns/shoal
     redfish/                              # record/replay corpus
   infra/ansible/                          # lab automation (language-agnostic)
   docs/
+    third-party-licenses.md               # full texts of runtime Go dep licenses
   go.mod
+  LICENSE                                 # AGPLv3 (Shoal)
+  NOTICE                                  # third-party inventory + copyrights
   AGENTS.md
   SHOAL_COMPREHENSIVE_DESIGN_AND_IMPLEMENTATION_PLAN.md
 ```
@@ -429,6 +434,51 @@ go test ./internal/core/... -run Reconcile
 - The Shoal host holds fleet BMC credentials — treat it as high-value; keep
   credential access auditable; secret files mode `0600`.
 
+### 9.1 Licensing & third-party attribution
+
+Shoal is **AGPL-3.0** (`LICENSE`). Third-party code linked into the binary must
+stay **license-compatible** with that choice, and notices must stay accurate.
+
+**Files (keep all three in repo and in any release artifact):**
+
+| File | Role |
+|------|------|
+| `LICENSE` | Full AGPLv3 text for **Shoal** |
+| `NOTICE` | Short inventory: module path, version, SPDX id, copyright lines |
+| `docs/third-party-licenses.md` | Full license texts (and `PATENTS` where present) for runtime deps |
+
+**What counts as a runtime dep:** anything in the import graph of `./cmd/shoal`
+(not test-only packages, not separate lab containers/services). Derive the list:
+
+```bash
+go list -deps -f '{{if not .Standard}}{{.Module.Path}} {{.Module.Version}}{{end}}' ./cmd/shoal | sort -u
+```
+
+**When adding or upgrading a Go module (same PR as the `go.mod` change):**
+
+1. Confirm the license is **compatible with AGPLv3** for static linking into an
+   AGPL program. Safe defaults for this project: **MIT**, **BSD-2/3-Clause**,
+   **ISC**, **Apache-2.0**. Do **not** add GPL-2.0-only, proprietary, or
+   "source-available / no commercial use" modules without an explicit human
+   decision and design-doc note.
+2. Update design doc **§7.1** allow-list (already required by Golden Rule 12).
+3. Update **`NOTICE`** (module, version, SPDX, copyright from upstream LICENSE).
+4. Update **`docs/third-party-licenses.md`** with the full upstream LICENSE text
+   (and `PATENTS` if the module ships one, e.g. `golang.org/x/*`). Prefer
+   copying from the module cache:
+   `$(go env GOMODCACHE)/<module>@<version>/LICENSE`.
+5. Drop rows for modules that leave the `./cmd/shoal` graph.
+
+**Binary / release packaging:** ship `LICENSE`, `NOTICE`, and
+`docs/third-party-licenses.md` next to the binary (or equivalent notice bundle).
+Do not strip notices from redistributed builds. Lab images that **redistribute**
+NetBox, Postgres, Ollama, etc. are a separate license surface — document those
+when packaging Compose images; they are not covered by `NOTICE`.
+
+**Optional check:** `go install github.com/google/go-licenses@latest` then
+`go-licenses report ./cmd/shoal` can flag unexpected licenses; the committed
+source of truth remains `NOTICE` + `docs/third-party-licenses.md`.
+
 ---
 
 ## 10. Git & Pull Requests
@@ -440,7 +490,8 @@ go test ./internal/core/... -run Reconcile
 - **Don't commit unless asked** to by the human driving the work.
 - **PR description:** what changed, which phase/acceptance criteria it advances,
   how it was tested (note lab vs real-hardware), and any design-doc updates.
-- **New dependencies:** only with design §7.1 allow-list update in the same PR.
+- **New dependencies:** only with design §7.1 allow-list update **and**
+  `NOTICE` + `docs/third-party-licenses.md` updates in the same PR (§9.1).
 
 ---
 
@@ -460,6 +511,9 @@ A change is done when:
 - Component boundaries, import rules, and the Golden Rules (§1) are intact —
   especially: no observe↔deploy imports, no gofish leakage, Core AI-only,
   JobStore pure persistence.
+- If `go.mod` / the `./cmd/shoal` module graph changed: `NOTICE` and
+  `docs/third-party-licenses.md` match the runtime deps and licenses remain
+  AGPL-compatible (§9.1).
 
 ---
 

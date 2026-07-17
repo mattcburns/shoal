@@ -1,5 +1,15 @@
-# Shoal Lab Management
-This repository currently contains the **Phase 0 lab automation** for Shoal, with primary support for a **VM-hosted lab mode** (nested virtualization). The lab is driven entirely by **Ansible** — there is no Makefile.
+# Shoal
+
+> **Experimental / not production-ready.**  
+> This project is **highly experimental**. It has been developed and exercised primarily
+> against a **nested lab** (sushy-tools, libvirt, local Ollama). It is **largely untested
+> on real hardware** and should **not** be relied on to manage production fleets without
+> your own validation. Expect breaking changes, incomplete features, and lab-only paths.
+> Use at your own risk.
+
+This repository contains the Shoal Go application and **lab automation** for a
+**VM-hosted lab mode** (nested virtualization). The lab is driven entirely by
+**Ansible** — there is no Makefile.
 
 The lab topology is:
 
@@ -161,3 +171,13 @@ Actions:
 
 ## Current implementation note
 Both direct-host and VM-hosted inventories are present. VM-hosted mode remains the recommended default for isolation.
+
+## License
+
+This project is licensed under the **GNU Affero General Public License v3.0**
+(AGPL-3.0). See [LICENSE](./LICENSE) for the full text.
+
+Third-party Go libraries linked into the Shoal binary are listed in
+[NOTICE](./NOTICE); full license texts are in
+[docs/third-party-licenses.md](./docs/third-party-licenses.md). Binary and
+source distributions should include `LICENSE`, `NOTICE`, and that notice file.
