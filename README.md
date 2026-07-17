@@ -176,3 +176,8 @@ Both direct-host and VM-hosted inventories are present. VM-hosted mode remains t
 
 This project is licensed under the **GNU Affero General Public License v3.0**
 (AGPL-3.0). See [LICENSE](./LICENSE) for the full text.
+
+Third-party Go libraries linked into the Shoal binary are listed in
+[NOTICE](./NOTICE); full license texts are in
+[docs/third-party-licenses.md](./docs/third-party-licenses.md). Binary and
+source distributions should include `LICENSE`, `NOTICE`, and that notice file.
