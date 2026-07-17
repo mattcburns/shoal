@@ -35,7 +35,7 @@ import (
 )
 
 // Version is the application version string (overridable via -ldflags).
-var Version = "0.6.0-phase6a"
+var Version = "0.6.0-phase6b"
 
 // Run dispatches subcommands. args should be os.Args[1:].
 func Run(args []string) int {
@@ -77,7 +77,8 @@ Commands:
   serve      Run the HTTP API server
   deploy     Provisioning: run | status | cancel | iso
   discover   Assets: ingest | confirm
-  observe    Status / poll: status | poll
+  observe    Status / poll / ocr (failure-screen graphics OCR)
+
   profile    Profiles: generate | save | show | list | approve
 
 Phase 5c ISO example:

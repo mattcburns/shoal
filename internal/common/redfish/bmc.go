@@ -28,6 +28,10 @@ type BMC interface {
 	// ListSensors returns thermal/power sensor samples for chassis related to systemID.
 	// Best-effort: missing Thermal/Power yield empty slice or partial results.
 	ListSensors(ctx context.Context, systemID string) ([]SensorSample, error)
+	// CaptureScreenshot attempts OEM/documented console frame capture (Dell, Supermicro first).
+	// File/operator capture is preferred in lab; this path is for real BMC hardware.
+	// On failure, returned Screenshot.Debug (and error text) include probe steps without secrets.
+	CaptureScreenshot(ctx context.Context, systemID string, kind ScreenshotKind) (Screenshot, error)
 }
 
 // Factory constructs a BMC from config (composition root injects this).

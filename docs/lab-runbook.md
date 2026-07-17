@@ -326,6 +326,46 @@ present, the image falls back to a file target (`/tmp/shoal-install.out` or
 `SHOAL_ISO_DYNAMIC=true` also builds when `-iso-url` is empty and publish
 dir/base URL are set.
 
+### Phase 6b: graphics failure-screen OCR
+
+SOL remains the primary progress channel. Graphics OCR is **diagnostic only**.
+
+```bash
+export SHOAL_AI_PROVIDER=ollama
+export SHOAL_AI_VISION_MODEL=deepseek-ocr   # or other vision model
+export SHOAL_OLLAMA_URL=http://192.168.122.100:11434
+export SHOAL_TELEMETRY_DATABASE_URL='postgres://…@192.168.122.100:5433/shoal_telemetry?sslmode=disable'
+
+# Lab / fixtures: operator or fixture PNG/JPEG
+go run ./cmd/shoal observe ocr \
+  -device-id shoal-node-1 \
+  -file ./testdata/ocr/failure_screen.png
+
+# Real hardware: OEM screenshot capture (Dell / Supermicro first)
+# Emits detailed debug steps (URL, status, body preview) on failure — no secrets.
+go run ./cmd/shoal observe ocr \
+  -device-id pe-r640 \
+  -bmc-url https://idrac.example \
+  -bmc-user root -bmc-pass '…' \
+  -screenshot-kind current   # or last_crash
+```
+
+sushy-tools has no screenshot API — expect **unsupported** with a multi-step
+debug trace (system pick, manufacturer, managers listed) and use `-file`.
+Events with `event_type=graphics_ocr` land in telemetry Postgres when
+`-persist` (default) and DSN is set.
+
+**Smoke (unit + lab):**
+
+```bash
+go test ./internal/observe/ -run OCR -count=1
+go test ./internal/observe/ -tags=integration -count=1 -timeout 10m \
+  -run 'TestLabOCR'
+# CLI file path (needs lab Ollama vision):
+go run ./cmd/shoal observe ocr -device-id lab-ocr-smoke \
+  -file testdata/ocr/failure_screen.png
+```
+
 ## 2) Fast stop (teardown / clean slate)
 ```bash
 ansible-playbook -i infra/ansible/inventory/lab-vm.yml infra/ansible/playbooks/down.yml

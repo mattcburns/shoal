@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "FailureScreenOCR",
+  "type": "object",
+  "required": ["raw_text", "summary", "category", "confidence"],
+  "additionalProperties": true,
+  "properties": {
+    "raw_text": { "type": "string" },
+    "summary": { "type": "string" },
+    "category": {
+      "type": "string",
+      "enum": [
+        "boot_error",
+        "media_error",
+        "hardware_error",
+        "auth_error",
+        "network_error",
+        "installer_error",
+        "unknown"
+      ]
+    },
+    "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+    "evidence": { "type": "string" }
+  }
+}

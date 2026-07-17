@@ -6,19 +6,22 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/mattcburns/shoal/internal/common/config"
 	"github.com/mattcburns/shoal/internal/common/models"
 	"github.com/mattcburns/shoal/internal/common/redfish"
 	"github.com/mattcburns/shoal/internal/common/telemetry"
+	"github.com/mattcburns/shoal/internal/core/ai"
+	"github.com/mattcburns/shoal/internal/core/ocr"
 	"github.com/mattcburns/shoal/internal/observe"
 	"github.com/mattcburns/shoal/internal/observe/poll"
 )
 
 func cmdObserve(args []string) int {
 	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "usage: shoal observe <status|poll> [flags]")
+		fmt.Fprintln(os.Stderr, "usage: shoal observe <status|poll|ocr> [flags]")
 		return 2
 	}
 	switch args[0] {
@@ -26,6 +29,8 @@ func cmdObserve(args []string) int {
 		return cmdObserveStatus(args[1:])
 	case "poll":
 		return cmdObservePoll(args[1:])
+	case "ocr":
+		return cmdObserveOCR(args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown observe subcommand %q\n", args[0])
 		return 2
@@ -194,6 +199,130 @@ func cmdObservePoll(args []string) int {
 		return 1
 	}
 	_ = json.NewEncoder(os.Stdout).Encode(out)
+	return 0
+}
+
+func cmdObserveOCR(args []string) int {
+	cfg, err := config.Load()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "config: %v\n", err)
+		return 1
+	}
+	fs := flag.NewFlagSet("observe ocr", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	deviceID := fs.String("device-id", "", "device id (required)")
+	file := fs.String("file", "", "screenshot file (png/jpeg); preferred for lab")
+	jobID := fs.String("job-id", "", "optional job id for correlation only")
+	bmcURL := fs.String("bmc-url", "", "Redfish base URL for vendor screenshot capture (Dell/Supermicro)")
+	bmcUser := fs.String("bmc-user", cfg.BMCUsername, "BMC username")
+	bmcPass := fs.String("bmc-pass", cfg.BMCPassword, "BMC password")
+	systemID := fs.String("system-id", "", "Redfish system id")
+	kind := fs.String("screenshot-kind", "current", "current|last_crash (vendor-dependent)")
+	persist := fs.Bool("persist", true, "write graphics_ocr telemetry event when DSN set")
+	noPersist := fs.Bool("no-persist", false, "skip telemetry write even if DSN set")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if *deviceID == "" {
+		fmt.Fprintln(os.Stderr, "observe ocr: -device-id required")
+		return 2
+	}
+	if *file == "" && *bmcURL == "" {
+		fmt.Fprintln(os.Stderr, "observe ocr: provide -file and/or -bmc-url")
+		return 2
+	}
+
+	log := newLogger(cfg.LogLevel)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
+	llm, err := ai.NewFromConfig(cfg)
+	if err != nil || llm == nil {
+		fmt.Fprintf(os.Stderr, "observe ocr: AI required (SHOAL_AI_PROVIDER / vision model): %v\n", err)
+		return 1
+	}
+	ocrSvc, err := ocr.New(llm, log)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ocr: %v\n", err)
+		return 1
+	}
+
+	doPersist := *persist && !*noPersist
+	var telem telemetry.Store
+	var closer func()
+	if doPersist {
+		telem, closer, err = openTelemetryStore(ctx, cfg, false)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "telemetry: %v\n", err)
+			return 1
+		}
+		if closer != nil {
+			defer closer()
+		}
+		if telem == nil {
+			log.Warn("persist requested but SHOAL_TELEMETRY_DATABASE_URL unset; skipping event write")
+			doPersist = false
+		}
+	}
+
+	in := observe.OCRInput{
+		DeviceID: *deviceID,
+		JobID:    *jobID,
+		Persist:  doPersist,
+	}
+	if *file != "" {
+		b, err := os.ReadFile(*file)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "read file: %v\n", err)
+			return 1
+		}
+		in.Image = b
+		lower := strings.ToLower(*file)
+		switch {
+		case strings.HasSuffix(lower, ".png"):
+			in.MediaType = "image/png"
+		case strings.HasSuffix(lower, ".jpg"), strings.HasSuffix(lower, ".jpeg"):
+			in.MediaType = "image/jpeg"
+		}
+	}
+	if *bmcURL != "" && len(in.Image) == 0 {
+		bmc, err := redfish.NewBMC(redfish.Config{
+			BaseURL:  *bmcURL,
+			Username: *bmcUser,
+			Password: *bmcPass,
+			AuthMode: cfg.RedfishAuthMode,
+			TLSMode:  cfg.RedfishTLSMode,
+			CAFile:   cfg.RedfishCAFile,
+		})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "bmc: %v\n", err)
+			return 1
+		}
+		if err := bmc.Open(ctx); err != nil {
+			fmt.Fprintf(os.Stderr, "bmc open: %v\n", err)
+			return 1
+		}
+		defer func() { _ = bmc.Close(context.Background()) }()
+		in.BMC = bmc
+		in.SystemID = *systemID
+		switch strings.ToLower(*kind) {
+		case "last_crash", "crash":
+			in.Kind = redfish.ScreenshotLastCrash
+		default:
+			in.Kind = redfish.ScreenshotCurrent
+		}
+	}
+
+	svc := observe.New(log, nil, telem, nil)
+	out, err := svc.OCRFailureScreen(ctx, ocrSvc, in)
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	_ = enc.Encode(out)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ocr: %v\n", err)
+		// Capture debug already in JSON when redfish path used.
+		return 1
+	}
 	return 0
 }
 
