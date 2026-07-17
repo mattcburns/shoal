@@ -26,6 +26,14 @@ func BuildProvisioningProfilePrompt(template, schema, fewshot, assetJSON, reqJSO
 	return s
 }
 
+// BuildFailureScreenOCRPrompt fills the graphics failure-screen OCR template.
+func BuildFailureScreenOCRPrompt(template, schema, fewshot string) string {
+	s := template
+	s = strings.ReplaceAll(s, "{{SCHEMA}}", schema)
+	s = strings.ReplaceAll(s, "{{FEWSHOT}}", fewshot)
+	return s
+}
+
 // LoadPromptAssets loads embedded prompts from the prompts package.
 func LoadPromptAssets() (prompts.Assets, error) {
 	return prompts.Load()

@@ -27,6 +27,10 @@ type Fake struct {
 	// ListSELErr / ListSensorsErr force errors when set.
 	ListSELErr     error
 	ListSensorsErr error
+
+	// Screenshot is returned by CaptureScreenshot when set.
+	Screenshot    *Screenshot
+	ScreenshotErr error
 }
 
 // NewFake returns a Fake with one system and one CD virtual media slot.
@@ -206,6 +210,33 @@ func (f *Fake) ListSensors(_ context.Context, _ string) ([]SensorSample, error) 
 	out := make([]SensorSample, len(f.Sensors))
 	copy(out, f.Sensors)
 	return out, nil
+}
+
+func (f *Fake) CaptureScreenshot(_ context.Context, _ string, kind ScreenshotKind) (Screenshot, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.ScreenshotErr != nil {
+		return Screenshot{
+			Kind: kind,
+			Debug: []CaptureDebugStep{{
+				Phase: "fake", OK: false, Message: f.ScreenshotErr.Error(),
+			}},
+		}, f.ScreenshotErr
+	}
+	if f.Screenshot != nil {
+		s := *f.Screenshot
+		if s.Kind == "" {
+			s.Kind = kind
+		}
+		return s, nil
+	}
+	return Screenshot{
+		Kind: kind,
+		Debug: []CaptureDebugStep{{
+			Phase: "fake", OK: false,
+			Message: "fake BMC has no screenshot (set Fake.Screenshot for tests)",
+		}},
+	}, fmt.Errorf("fake: screenshot not configured")
 }
 
 // MediaInserted reports whether any media is inserted (test helper).

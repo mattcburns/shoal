@@ -1432,9 +1432,11 @@ Graphics OCR via **Core `CompleteVision`** (not Tesseract-first), dynamic ISO / 
 
 **Phase 6a (dynamic ISO + write path):** `SHOAL_INSTALL_MODE=write` live image writes `/payload` to `shoal.target` / `SHOAL_INSTALL_TARGET` (or `/tmp/shoal-install.out` fallback) with real `IMAGE_WRITE` progress; `simulate` remains Phase 2 demo. Optional `StartJobRequest.BuildISO` / `SHOAL_ISO_DYNAMIC` builds+publishes before Virtual Media. Not a full multi-distro autoinstall product — bounded payload MVP.
 
+**Phase 6b (graphics OCR):** Core `CompleteVision` + versioned `failure_screen_ocr.v1` prompt. Image sources: operator file (lab AC) or `BMC.CaptureScreenshot` with **Dell** and **Supermicro** OEM adapters (public docs; rich `CaptureDebugStep` traces). sushy has no capture — unsupported error + file path. Telemetry `events.event_type=graphics_ocr`. SOL remains primary; OCR does not commit lifecycle.
+
 ### Phase 6 (remaining)
 
-Graphics OCR (CompleteVision failure screens), Compose shoal packaging, API auth + metrics, record/replay CI.
+Compose shoal packaging, API auth + metrics, record/replay CI; more vendor screenshot adapters as hardware is tested.
 
 ---
 

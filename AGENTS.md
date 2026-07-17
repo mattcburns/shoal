@@ -349,8 +349,10 @@ Sole lifecycle writer remains Orchestrator; JobStore stays pure persistence.
   `SHOAL_FEWSHOT_DIR`). Cloud API key lives in vault — never in `defaults.yml`
   or a log. Nested lab Ollama is often CPU-bound; text stays small
   (`llama3.2:3b`), vision OCR uses `deepseek-ocr` (~6.7GB). Hybrid pipeline
-  keeps most inputs off vision. **Graphics failure-screen OCR** remains
-  **Phase 6** (Tesseract vs cloud) — separate from Phase 3 asset-label OCR.
+  keeps most inputs off vision. **Graphics failure-screen OCR** (Phase 6b):
+  Core `CompleteVision` + `observe ocr`; image from `-file` (lab) or Redfish OEM
+  capture (Dell / Supermicro first, rich debug). Separate from Phase 3
+  asset-label OCR. SOL remains primary progress.
 
 ---
 
