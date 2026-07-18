@@ -44,14 +44,15 @@ func New(cfg config.Config, log *slog.Logger) *Server {
 	return s
 }
 
-// Handler returns the root handler.
+// Handler returns the root handler (metrics + optional API auth wrappers).
 func (s *Server) Handler() http.Handler {
-	return s.mux
+	return s.withAPIAuth(withHTTPMetrics(s.mux))
 }
 
 func (s *Server) routes() {
 	s.mux.HandleFunc("GET /healthz", s.handleHealthz)
 	s.mux.HandleFunc("GET /readyz", s.handleReadyz)
+	s.mux.HandleFunc("GET /metrics", s.handleMetrics)
 	s.mux.HandleFunc("POST /v1/jobs", s.handleStartJob)
 	s.mux.HandleFunc("GET /v1/jobs/{id}", s.handleGetJob)
 	s.mux.HandleFunc("POST /v1/jobs/{id}/cancel", s.handleCancelJob)

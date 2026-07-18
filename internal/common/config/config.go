@@ -43,6 +43,8 @@ type Config struct {
 	FewShotDir string
 	// ProfileDir is JSON profile store for Phase 5b (empty disables profile load/approve).
 	ProfileDir string
+	// APIToken protects /v1/* when non-empty (Bearer). Empty = open (lab MVP default).
+	APIToken string
 }
 
 // Load reads SHOAL_* environment variables with Phase 1-friendly defaults.
@@ -76,6 +78,7 @@ func Load() (Config, error) {
 		SerialSSHSudo:        true,
 		FewShotDir:           os.Getenv("SHOAL_FEWSHOT_DIR"),
 		ProfileDir:           os.Getenv("SHOAL_PROFILE_DIR"),
+		APIToken:             os.Getenv("SHOAL_API_TOKEN"),
 	}
 
 	if v := os.Getenv("SHOAL_RECONCILE_FAIL_ORPHANS"); v != "" {

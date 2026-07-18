@@ -2,6 +2,63 @@
 # Deploy and configure Docker Compose stack
 # This role deploys NetBox, PostgreSQL, Redis, Ollama, and HTTP server
 
+# Phase 6d: build CGO-free binary on the controller, stage on the lab host.
+- name: Ensure local staging dir for shoal binary (controller)
+  ansible.builtin.file:
+    path: "{{ playbook_dir }}/../../../.shoal/lab-build"
+    state: directory
+    mode: '0755'
+  delegate_to: localhost
+  become: false
+  when: shoal_compose_app | default(true) | bool
+  tags: [config, shoal]
+
+- name: Build shoal binary on controller (linux/amd64, CGO-free)
+  ansible.builtin.command:
+    argv:
+      - go
+      - build
+      - -trimpath
+      - -ldflags
+      - -s -w
+      - -o
+      - "{{ playbook_dir }}/../../../.shoal/lab-build/shoal"
+      - ./cmd/shoal
+  environment:
+    CGO_ENABLED: "0"
+    GOOS: linux
+    GOARCH: "{{ shoal_compose_app_goarch | default('amd64') }}"
+  args:
+    chdir: "{{ playbook_dir }}/../../.."
+  delegate_to: localhost
+  become: false
+  when: shoal_compose_app | default(true) | bool
+  tags: [config, shoal]
+
+- name: Ensure shoal image build context on lab host
+  file:
+    path: "{{ shoal_compose_dir }}/shoal-build"
+    state: directory
+    mode: '0755'
+  when: shoal_compose_app | default(true) | bool
+  tags: [config, shoal]
+
+- name: Copy shoal binary to lab host build context
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../../../.shoal/lab-build/shoal"
+    dest: "{{ shoal_compose_dir }}/shoal-build/shoal"
+    mode: '0755'
+  when: shoal_compose_app | default(true) | bool
+  tags: [config, shoal]
+
+- name: Install Dockerfile for shoal lab image
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../../../deploy/docker/Dockerfile"
+    dest: "{{ shoal_compose_dir }}/shoal-build/Dockerfile"
+    mode: '0644'
+  when: shoal_compose_app | default(true) | bool
+  tags: [config, shoal]
+
 - name: Copy Docker Compose file
   template:
     src: docker-compose.lab.yml.j2
@@ -114,13 +171,14 @@
 - name: Start Docker Compose stack
   shell: |
     cd {{ shoal_compose_dir }}
-    docker compose -f docker-compose.lab.yml up -d
+    docker compose -f docker-compose.lab.yml up -d --build
   register: compose_up
   changed_when: >
     'Creating' in ((compose_up.stdout | default('')) ~ (compose_up.stderr | default('')))
     or 'Starting' in ((compose_up.stdout | default('')) ~ (compose_up.stderr | default('')))
     or 'Recreating' in ((compose_up.stdout | default('')) ~ (compose_up.stderr | default('')))
     or 'Pulling' in ((compose_up.stdout | default('')) ~ (compose_up.stderr | default('')))
+    or 'Building' in ((compose_up.stdout | default('')) ~ (compose_up.stderr | default('')))
   tags: [start]
 
 - name: Wait for PostgreSQL to be healthy
@@ -223,4 +281,6 @@
         models: {{ shoal_ollama_models_to_pull | join(', ') }}
       - HTTP Server: http://{{ ansible_host }}:{{ shoal_iso_server_port }}
       - Telemetry DB: localhost:5433 (shoal_telemetry)
+      {% if shoal_compose_app | default(true) | bool %}- Shoal app: http://{{ shoal_service_host | default(ansible_host) }}:{{ shoal_app_http_port }}/healthz
+      {% endif %}
   tags: [status]

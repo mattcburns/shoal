@@ -34,6 +34,7 @@ release builds: `./scripts/build-release.sh` (see Phase 6c).
 - [Lab Setup Checklist (First-Time)](docs/lab-setup-checklist.md)
 - [Operator host: macOS](docs/operator-macos.md)
 - [Phase 6c plan (packaging + L0 hosts)](docs/phase-6c-plan.md)
+- [Phase 6d plan (Compose app + auth + metrics)](docs/phase-6d-plan.md)
 
 ## Prerequisites (L0 host)
 Install and verify:

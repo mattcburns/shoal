@@ -4,7 +4,7 @@ This file is the canonical guide for how to work in this repository. It covers
 project conventions, commands, and style. For **architecture, data models, and
 the phased plan**, the source of truth is
 [`SHOAL_COMPREHENSIVE_DESIGN_AND_IMPLEMENTATION_PLAN.md`](./SHOAL_COMPREHENSIVE_DESIGN_AND_IMPLEMENTATION_PLAN.md)
-(**v2.0.6**, Go stack). When this file and the design doc disagree, fix one of
+(**v2.0.7**, Go stack). When this file and the design doc disagree, fix one of
 them in the same change — they must stay consistent.
 
 > **Read order for any task:** (1) this file, (2) the relevant Chapter 4 section
@@ -123,6 +123,8 @@ shoal/                                    # module: github.com/mattcburns/shoal
     third-party-licenses.md               # full texts of runtime Go dep licenses
     operator-macos.md                     # Mac = operator only (Phase 6c)
     phase-6c-plan.md                      # packaging + L0 host profiles checklist
+    phase-6d-plan.md                      # compose app + auth + metrics + fixtures
+  deploy/docker/Dockerfile                # minimal runtime image for lab Compose
   go.mod
   LICENSE                                 # AGPLv3 (Shoal)
   NOTICE                                  # third-party inventory + copyrights
@@ -274,6 +276,8 @@ go run ./cmd/shoal deploy run \
 | `SHOAL_RECONCILE_FAIL_ORPHANS` | Default `true` |
 | `SHOAL_FEWSHOT_DIR` | Append-only learned few-shot JSONL (confirm learning). Lab Ansible default: `/var/lib/shoal/fewshot` via `shoal_fewshot_dir` + `env.j2`. Empty disables confirm |
 | `SHOAL_PROFILE_DIR` | JSON provisioning profiles + approval records (Phase 5b). Lab Ansible default: `/var/lib/shoal/profiles` via `shoal_profile_dir` + `env.j2`. Empty disables non-spike profile load |
+| `SHOAL_API_TOKEN` | Phase 6d: if non-empty, require `Authorization: Bearer …` for `/v1/*`. Empty = open (lab default). Never log. |
+
 
 Full table and Ansible extension points: design doc §8.1.
 

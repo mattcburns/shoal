@@ -71,6 +71,7 @@ func (s *Server) handleStartJob(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
+	metricJobsStarted.Add(1)
 	writeJSON(w, http.StatusCreated, j)
 }
 
@@ -128,6 +129,7 @@ func (s *Server) handleCancelJob(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error()})
 		return
 	}
+	metricJobsCancel.Add(1)
 	// Async terminal — poll briefly for updated state
 	j, err := s.jobs.Get(r.Context(), id)
 	if err != nil {
