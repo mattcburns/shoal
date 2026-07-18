@@ -346,8 +346,12 @@ func (o *Orchestrator) provision(ctx context.Context, job models.ProvisioningJob
 	if err := bmc.SetBootOverrideOnceCD(ctx, sys.ID); err != nil {
 		return fmt.Errorf("boot override: %w", err)
 	}
-	if err := bmc.Power(ctx, sys.ID, "On"); err != nil {
-		return fmt.Errorf("power on: %w", err)
+	// Prefer ForceRestart so an already-on system reboots into the new media.
+	// Fall back to On for powered-off domains (sushy maps both onto libvirt).
+	if err := bmc.Power(ctx, sys.ID, "ForceRestart"); err != nil {
+		if err2 := bmc.Power(ctx, sys.ID, "On"); err2 != nil {
+			return fmt.Errorf("power on/restart: %w (also: %v)", err2, err)
+		}
 	}
 
 	_ = o.store.UpdateProgress(ctx, job.ID, "WAITING_SOL", nil, 0, "")

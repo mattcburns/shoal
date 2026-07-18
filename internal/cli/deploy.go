@@ -67,7 +67,8 @@ func cmdDeployRun(args []string) int {
 	isoPayload := fs.String("iso-payload-file", "", "payload file for -build-iso write mode")
 	isoMode := fs.String("iso-install-mode", "", "simulate|write|autoinstall for -build-iso")
 	isoTarget := fs.String("iso-install-target", "", "write target for -build-iso (e.g. /tmp/shoal-install.out)")
-	ubuntuISO := fs.String("ubuntu-iso", os.Getenv("SHOAL_UBUNTU_ISO"), "Ubuntu Server live-server ISO for autoinstall build")
+	ubuntuISO := fs.String("ubuntu-iso", os.Getenv("SHOAL_UBUNTU_ISO"), "Ubuntu live-server ISO (legacy remaster)")
+	cloudImg := fs.String("ubuntu-cloud-img", os.Getenv("SHOAL_UBUNTU_CLOUD_IMG"), "Ubuntu cloud image for autoinstall build (preferred)")
 	isoHostname := fs.String("iso-hostname", "", "autoinstall hostname when building")
 	sshHost := fs.String("serial-ssh-host", cfg.SerialSSHHost, "SSH host for nested libvirt serial (VM mode)")
 	sshUser := fs.String("serial-ssh-user", cfg.SerialSSHUser, "SSH user for serial delegate")
@@ -82,17 +83,17 @@ func cmdDeployRun(args []string) int {
 	cfg.SerialSSHUser = *sshUser
 	cfg.SerialSSHKey = *sshKey
 
-	// Phase 7a: full Ubuntu install is long; raise defaults when autoinstall unless overridden.
+	// Phase 7a: full Ubuntu install; raise defaults when autoinstall unless overridden.
 	mode := strings.TrimSpace(*isoMode)
-	if mode == iso.InstallModeAutoinstall || strings.TrimSpace(*ubuntuISO) != "" {
+	if mode == iso.InstallModeAutoinstall || strings.TrimSpace(*ubuntuISO) != "" || strings.TrimSpace(*cloudImg) != "" {
 		if mode == "" {
 			mode = iso.InstallModeAutoinstall
 		}
 		if *stallTimeout == 3*time.Minute {
-			*stallTimeout = 45 * time.Minute
+			*stallTimeout = 15 * time.Minute // cloud-image write is faster than live autoinstall
 		}
 		if *waitTimeout == 30*time.Minute {
-			*waitTimeout = 90 * time.Minute
+			*waitTimeout = 45 * time.Minute
 		}
 	}
 
@@ -117,6 +118,10 @@ func cmdDeployRun(args []string) int {
 		ISOInstallTarget: *isoTarget,
 		ISOUbuntuBase:    *ubuntuISO,
 		ISOHostname:      *isoHostname,
+	}
+	// Cloud image is passed via env for the builder (StartJobRequest has no field yet for 7a.1).
+	if strings.TrimSpace(*cloudImg) != "" {
+		_ = os.Setenv("SHOAL_UBUNTU_CLOUD_IMG", strings.TrimSpace(*cloudImg))
 	}
 
 	store, dbCloser, err := openJobStore(cfg)

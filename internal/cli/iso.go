@@ -46,9 +46,10 @@ func cmdISOBuild(args []string) int {
 	payloadFile := fs.String("payload-file", "", "host path copied into image as /payload (binary-safe)")
 	installMode := fs.String("install-mode", "simulate", "simulate|write|autoinstall (6a write; 7a Ubuntu autoinstall)")
 	installTarget := fs.String("install-target", "", "write target baked into image (e.g. /dev/vda or /tmp/out)")
-	ubuntuISO := fs.String("ubuntu-iso", os.Getenv("SHOAL_UBUNTU_ISO"), "official Ubuntu Server live-server ISO path (autoinstall)")
+	ubuntuISO := fs.String("ubuntu-iso", os.Getenv("SHOAL_UBUNTU_ISO"), "Ubuntu live-server ISO (legacy remaster path)")
+	cloudImg := fs.String("ubuntu-cloud-img", os.Getenv("SHOAL_UBUNTU_CLOUD_IMG"), "Ubuntu cloud image .img (preferred nested-lab autoinstall)")
 	hostname := fs.String("hostname", "", "autoinstall hostname (Phase 7a)")
-	username := fs.String("username", "", "autoinstall username (Phase 7a; default shoal)")
+	username := fs.String("username", "", "autoinstall username (Phase 7a; default ubuntu for cloud)")
 	profileRef := fs.String("profile-ref", "", "load iso_base/name/payload hints from profile store")
 	publish := fs.Bool("publish", false, "also publish to SHOAL_ISO_PUBLISH_DIR")
 	if err := fs.Parse(args); err != nil {
@@ -56,14 +57,15 @@ func cmdISOBuild(args []string) int {
 	}
 
 	in := iso.BuildInput{
-		Name:          *name,
-		OutDir:        *outDir,
-		ScriptPath:    cfg.ISOBuildScript,
-		InstallMode:   *installMode,
-		InstallTarget: *installTarget,
-		UbuntuBaseISO: *ubuntuISO,
-		Hostname:      *hostname,
-		Username:      *username,
+		Name:           *name,
+		OutDir:         *outDir,
+		ScriptPath:     cfg.ISOBuildScript,
+		InstallMode:    *installMode,
+		InstallTarget:  *installTarget,
+		UbuntuBaseISO:  *ubuntuISO,
+		UbuntuCloudImg: *cloudImg,
+		Hostname:       *hostname,
+		Username:       *username,
 	}
 	if *installMode == iso.InstallModeAutoinstall && *name == "shoal-marker.iso" {
 		in.Name = "shoal-ubuntu-autoinstall.iso"

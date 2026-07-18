@@ -35,13 +35,17 @@ type BuildInput struct {
 	// InstallTarget is optional block device or file path baked into the image
 	// (overridable via kernel cmdline shoal.target=). Write mode only.
 	InstallTarget string
-	// UbuntuBaseISO is the official Ubuntu Server live-server ISO path (autoinstall).
+	// UbuntuBaseISO is the official Ubuntu Server live-server ISO path (legacy remaster path).
 	// May also be supplied via SHOAL_UBUNTU_ISO in the environment.
 	UbuntuBaseISO string
+	// UbuntuCloudImg is an Ubuntu cloud image (.img) used for the reliable
+	// Phase 7a nested-lab path: prepare raw payload + marker write ISO.
+	// May also be supplied via SHOAL_UBUNTU_CLOUD_IMG.
+	UbuntuCloudImg string
 	// Hostname for autoinstall identity (default shoal-node).
 	Hostname string
-	// Username for autoinstall identity (default shoal). Lab-only password is
-	// set via SHOAL_AUTOINSTALL_PASSWORD in the build script (not logged by Go).
+	// Username for autoinstall identity (default ubuntu for cloud images).
+	// Lab-only password via SHOAL_AUTOINSTALL_PASSWORD (not logged by Go).
 	Username string
 	// ScriptPath overrides the build script (empty = auto-discover by mode).
 	ScriptPath string
@@ -94,21 +98,6 @@ func (b *ScriptBuilder) Build(ctx context.Context, in BuildInput) (Artifact, err
 		return Artifact{}, fmt.Errorf("iso: invalid install mode %q (want simulate|write|autoinstall)", mode)
 	}
 
-	script := in.ScriptPath
-	if script == "" {
-		script = b.ScriptPath
-	}
-	if script == "" {
-		var err error
-		if mode == InstallModeAutoinstall {
-			script, err = FindUbuntuAutoinstallScript()
-		} else {
-			script, err = FindBuildScript()
-		}
-		if err != nil {
-			return Artifact{}, err
-		}
-	}
 	name := strings.TrimSpace(in.Name)
 	if name == "" {
 		if mode == InstallModeAutoinstall {
@@ -131,12 +120,67 @@ func (b *ScriptBuilder) Build(ctx context.Context, in BuildInput) (Artifact, err
 	}
 	outPath := filepath.Join(outDir, name)
 
-	// Autoinstall remasters multi-GB ISOs; allow a long deadline when none set.
+	// Autoinstall builds (prepare + pack) can be slow.
 	if mode == InstallModeAutoinstall {
 		if _, ok := ctx.Deadline(); !ok {
 			var cancel context.CancelFunc
 			ctx, cancel = context.WithTimeout(ctx, 45*time.Minute)
 			defer cancel()
+		}
+	}
+
+	// Phase 7a preferred path: Ubuntu cloud image → customized raw.gz → marker write ISO.
+	// Nested sushy/libvirt boots our marker ISO reliably; live-server remaster often does not.
+	cloudImg := strings.TrimSpace(in.UbuntuCloudImg)
+	if cloudImg == "" {
+		cloudImg = strings.TrimSpace(os.Getenv("SHOAL_UBUNTU_CLOUD_IMG"))
+	}
+	payloadFile := strings.TrimSpace(in.PayloadFile)
+	if mode == InstallModeAutoinstall && payloadFile == "" && cloudImg != "" {
+		prep, err := FindCloudPrepareScript()
+		if err != nil {
+			return Artifact{}, err
+		}
+		rawOut := filepath.Join(outDir, "ubuntu-cloud-payload.raw")
+		prepCmd := exec.CommandContext(ctx, prep, rawOut)
+		prepCmd.Env = append(os.Environ(),
+			"SHOAL_UBUNTU_CLOUD_IMG="+cloudImg,
+			"SHOAL_CLOUD_PAYLOAD_GZIP=1",
+		)
+		if h := strings.TrimSpace(in.Hostname); h != "" {
+			prepCmd.Env = append(prepCmd.Env, "SHOAL_AUTOINSTALL_HOSTNAME="+h)
+		}
+		if u := strings.TrimSpace(in.Username); u != "" {
+			prepCmd.Env = append(prepCmd.Env, "SHOAL_AUTOINSTALL_USERNAME="+u)
+		}
+		b.Log.Info("preparing ubuntu cloud payload", "img", cloudImg, "out", rawOut)
+		if out, err := prepCmd.CombinedOutput(); err != nil {
+			return Artifact{}, fmt.Errorf("iso: prepare cloud payload: %w\n%s", err, truncate(string(out), 2<<10))
+		}
+		gz := rawOut + ".gz"
+		if st, err := os.Stat(gz); err == nil && !st.IsDir() {
+			payloadFile = gz
+		} else {
+			payloadFile = rawOut
+		}
+	}
+
+	script := in.ScriptPath
+	if script == "" {
+		script = b.ScriptPath
+	}
+	useLiveRemaster := mode == InstallModeAutoinstall && payloadFile == "" &&
+		(strings.TrimSpace(in.UbuntuBaseISO) != "" || strings.TrimSpace(os.Getenv("SHOAL_UBUNTU_ISO")) != "")
+	if script == "" {
+		var err error
+		if useLiveRemaster && payloadFile == "" {
+			script, err = FindUbuntuAutoinstallScript()
+		} else {
+			// autoinstall with cloud payload, write, simulate → marker ISO builder
+			script, err = FindBuildScript()
+		}
+		if err != nil {
+			return Artifact{}, err
 		}
 	}
 
@@ -146,13 +190,13 @@ func (b *ScriptBuilder) Build(ctx context.Context, in BuildInput) (Artifact, err
 		"SHOAL_INSTALL_MODE="+mode,
 	)
 
-	if mode == InstallModeAutoinstall {
+	if useLiveRemaster && payloadFile == "" {
 		base := strings.TrimSpace(in.UbuntuBaseISO)
 		if base == "" {
 			base = strings.TrimSpace(os.Getenv("SHOAL_UBUNTU_ISO"))
 		}
 		if base == "" {
-			return Artifact{}, fmt.Errorf("iso: autoinstall requires Ubuntu base ISO (BuildInput.UbuntuBaseISO or SHOAL_UBUNTU_ISO)")
+			return Artifact{}, fmt.Errorf("iso: autoinstall requires SHOAL_UBUNTU_CLOUD_IMG (preferred) or SHOAL_UBUNTU_ISO")
 		}
 		if st, err := os.Stat(base); err != nil || st.IsDir() {
 			return Artifact{}, fmt.Errorf("iso: ubuntu base ISO not readable: %s", base)
@@ -165,17 +209,20 @@ func (b *ScriptBuilder) Build(ctx context.Context, in BuildInput) (Artifact, err
 			cmd.Env = append(cmd.Env, "SHOAL_AUTOINSTALL_USERNAME="+u)
 		}
 	} else {
+		if mode == InstallModeAutoinstall && payloadFile == "" {
+			return Artifact{}, fmt.Errorf("iso: autoinstall requires SHOAL_UBUNTU_CLOUD_IMG (preferred nested-lab path) or payload-file or SHOAL_UBUNTU_ISO")
+		}
 		// Payload: prefer file path (binary-safe); else inline text via env.
 		// Callers must not pass passwords.
-		if pf := strings.TrimSpace(in.PayloadFile); pf != "" {
-			st, err := os.Stat(pf)
+		if payloadFile != "" {
+			st, err := os.Stat(payloadFile)
 			if err != nil {
 				return Artifact{}, fmt.Errorf("iso: payload file: %w", err)
 			}
 			if st.IsDir() {
 				return Artifact{}, fmt.Errorf("iso: payload file is a directory")
 			}
-			cmd.Env = append(cmd.Env, "SHOAL_PAYLOAD_FILE="+pf)
+			cmd.Env = append(cmd.Env, "SHOAL_PAYLOAD_FILE="+payloadFile)
 		} else if p := strings.TrimSpace(in.EmbeddedPayload); p != "" {
 			if looksSecretPayload(p) {
 				return Artifact{}, fmt.Errorf("iso: embedded_payload must not contain secret-like content")
@@ -184,6 +231,11 @@ func (b *ScriptBuilder) Build(ctx context.Context, in BuildInput) (Artifact, err
 		}
 		if t := strings.TrimSpace(in.InstallTarget); t != "" {
 			cmd.Env = append(cmd.Env, "SHOAL_INSTALL_TARGET="+t)
+		} else if mode == InstallModeAutoinstall {
+			cmd.Env = append(cmd.Env, "SHOAL_INSTALL_TARGET=/dev/vda")
+		}
+		if mode == InstallModeAutoinstall {
+			cmd.Env = append(cmd.Env, "SHOAL_INSTALL_REBOOT=1")
 		}
 	}
 
@@ -304,6 +356,17 @@ func FindUbuntuAutoinstallScript() (string, error) {
 		return "", fmt.Errorf("iso: SHOAL_UBUNTU_AUTOINSTALL_SCRIPT not found: %s", p)
 	}
 	return findScript("build-ubuntu-autoinstall-iso.sh", "SHOAL_UBUNTU_AUTOINSTALL_SCRIPT")
+}
+
+// FindCloudPrepareScript locates infra/scripts/prepare-ubuntu-cloud-payload.sh.
+func FindCloudPrepareScript() (string, error) {
+	if p := os.Getenv("SHOAL_CLOUD_PREPARE_SCRIPT"); p != "" {
+		if st, err := os.Stat(p); err == nil && !st.IsDir() {
+			return p, nil
+		}
+		return "", fmt.Errorf("iso: SHOAL_CLOUD_PREPARE_SCRIPT not found: %s", p)
+	}
+	return findScript("prepare-ubuntu-cloud-payload.sh", "SHOAL_CLOUD_PREPARE_SCRIPT")
 }
 
 func findScript(basename, envHint string) (string, error) {

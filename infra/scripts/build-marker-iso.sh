@@ -85,14 +85,25 @@ fi
 
 INSTALL_MODE="${SHOAL_INSTALL_MODE:-simulate}"
 case "$INSTALL_MODE" in
-  simulate|write) ;;
+  simulate|write|autoinstall) ;;
   *)
-    echo "error: SHOAL_INSTALL_MODE must be simulate or write (got $INSTALL_MODE)" >&2
+    echo "error: SHOAL_INSTALL_MODE must be simulate|write|autoinstall (got $INSTALL_MODE)" >&2
     exit 1
     ;;
 esac
+# autoinstall is write-to-disk of an OS image payload (Phase 7a cloud image path).
+if [[ "$INSTALL_MODE" == "autoinstall" ]]; then
+  INSTALL_MODE="write"
+  # Prefer reboot into installed OS after write.
+  SHOAL_INSTALL_REBOOT="${SHOAL_INSTALL_REBOOT:-1}"
+  # Prefer first block device for real install.
+  if [[ -z "${SHOAL_INSTALL_TARGET:-}" ]]; then
+    SHOAL_INSTALL_TARGET="/dev/vda"
+  fi
+fi
 # Baked default target for write mode (can be overridden by kernel cmdline shoal.target=).
 INSTALL_TARGET_DEFAULT="${SHOAL_INSTALL_TARGET:-}"
+INSTALL_REBOOT="${SHOAL_INSTALL_REBOOT:-0}"
 
 echo "kernel:  $KERNEL"
 echo "busybox: $BUSYBOX"
@@ -106,15 +117,19 @@ mkdir -p "$ROOT"/{bin,dev,proc,sys,tmp}
 cp "$BUSYBOX" "$ROOT/bin/busybox"
 chmod 755 "$ROOT/bin/busybox"
 # Install common applets used by /init
-for app in sh mount umount mkdir sleep cat echo poweroff reboot mkdir ln dd wc rm sync; do
+for app in sh mount umount mkdir sleep cat echo poweroff reboot mkdir ln dd wc rm sync gunzip zcat gzip; do
   ln -sf busybox "$ROOT/bin/$app"
 done
 
-# Optional payload (Phase 5c text / Phase 6a binary image).
+# Optional payload (Phase 5c text / Phase 6a binary image / Phase 7a OS raw|gz).
 # Prefer SHOAL_PAYLOAD_FILE (path); else SHOAL_EMBEDDED_PAYLOAD (inline text).
 if [[ -n "${SHOAL_PAYLOAD_FILE:-}" && -r "${SHOAL_PAYLOAD_FILE}" ]]; then
   cp "${SHOAL_PAYLOAD_FILE}" "$ROOT/payload"
   chmod 644 "$ROOT/payload"
+  # Preserve gzip marker for init (name ends with .gz or content magic).
+  if [[ "${SHOAL_PAYLOAD_FILE}" == *.gz ]] || gzip -t "$ROOT/payload" 2>/dev/null; then
+    printf '1\n' > "$ROOT/payload_gzip"
+  fi
 elif [[ -n "${SHOAL_EMBEDDED_PAYLOAD:-}" ]]; then
   printf '%s' "${SHOAL_EMBEDDED_PAYLOAD}" > "$ROOT/payload"
   chmod 644 "$ROOT/payload"
@@ -123,6 +138,7 @@ fi
 # Bake install defaults for init (read by the shell script below).
 printf '%s\n' "$INSTALL_MODE" > "$ROOT/install_mode"
 printf '%s\n' "$INSTALL_TARGET_DEFAULT" > "$ROOT/install_target_default"
+printf '%s\n' "$INSTALL_REBOOT" > "$ROOT/install_reboot"
 
 # Init emits markers then powers off. console=ttyS0 from kernel cmdline.
 cat > "$ROOT/init" << 'INIT'
@@ -174,7 +190,13 @@ emit BOOT 0 OK "$boot_detail"
 sleep 1
 emit BOOT - HEARTBEAT ""
 
+REBOOT="0"
+if [ -f /install_reboot ]; then
+  REBOOT="$(cat /install_reboot 2>/dev/null | tr -d '\n' || echo 0)"
+fi
+
 if [ "$MODE" = "write" ] && [ -f /payload ]; then
+  emit DISK_PREP 5 OK "resolving install target"
   # Resolve write target.
   if [ -z "$TARGET" ]; then
     for cand in /dev/vda /dev/sda /dev/nvme0n1; do
@@ -194,40 +216,64 @@ if [ "$MODE" = "write" ] && [ -f /payload ]; then
     while true; do sleep 3600; done
   fi
 
-  emit IMAGE_WRITE 0 OK "write start target=${TARGET} bytes=${total}"
-  # Chunked copy for progress (1 MiB blocks).
-  bs=1048576
-  # shell arithmetic: number of full blocks
-  blocks=$(( total / bs ))
-  rem=$(( total % bs ))
-  written=0
-  i=0
-  while [ "$i" -lt "$blocks" ]; do
-    dd if=/payload of="$TARGET" bs="$bs" count=1 skip="$i" seek="$i" conv=notrunc 2>/dev/null || {
-      emit ERROR 0 ERROR "dd failed at block ${i}"
+  GZIP=0
+  if [ -f /payload_gzip ]; then GZIP=1; fi
+
+  emit IMAGE_WRITE 0 OK "write start target=${TARGET} bytes=${total} gzip=${GZIP}"
+  if [ "$GZIP" = "1" ]; then
+    # Stream-decompress OS image to disk (Phase 7a cloud image path).
+    # Progress heartbeats while gunzip|dd runs (no fine-grained percent).
+    (
+      while true; do
+        sleep 20
+        emit IMAGE_WRITE - HEARTBEAT "gunzip|dd in progress target=${TARGET}"
+      done
+    ) &
+    HBPID=$!
+    if gunzip -c /payload 2>/dev/null | dd of="$TARGET" bs=4M conv=fsync 2>/dev/null; then
+      kill "$HBPID" 2>/dev/null || true
+      emit IMAGE_WRITE 100 OK "gzip write complete target=${TARGET}"
+    else
+      kill "$HBPID" 2>/dev/null || true
+      emit ERROR 0 ERROR "gunzip|dd failed target=${TARGET}"
       sleep 2
       /bin/busybox poweroff -f 2>/dev/null || true
       while true; do sleep 3600; done
-    }
-    written=$(( written + bs ))
-    pct=$(( written * 100 / total ))
-    if [ "$pct" -gt 99 ]; then pct=99; fi
-    emit IMAGE_WRITE "$pct" OK "wrote ${written}/${total}"
-    i=$(( i + 1 ))
-  done
-  if [ "$rem" -gt 0 ]; then
-    dd if=/payload of="$TARGET" bs=1 count="$rem" skip="$written" seek="$written" conv=notrunc 2>/dev/null || {
-      emit ERROR 0 ERROR "dd failed on remainder"
-      sleep 2
-      /bin/busybox poweroff -f 2>/dev/null || true
-      while true; do sleep 3600; done
-    }
-    written=$(( written + rem ))
+    fi
+  else
+    # Chunked copy for progress (1 MiB blocks).
+    bs=1048576
+    blocks=$(( total / bs ))
+    rem=$(( total % bs ))
+    written=0
+    i=0
+    while [ "$i" -lt "$blocks" ]; do
+      dd if=/payload of="$TARGET" bs="$bs" count=1 skip="$i" seek="$i" conv=notrunc 2>/dev/null || {
+        emit ERROR 0 ERROR "dd failed at block ${i}"
+        sleep 2
+        /bin/busybox poweroff -f 2>/dev/null || true
+        while true; do sleep 3600; done
+      }
+      written=$(( written + bs ))
+      pct=$(( written * 100 / total ))
+      if [ "$pct" -gt 99 ]; then pct=99; fi
+      emit IMAGE_WRITE "$pct" OK "wrote ${written}/${total}"
+      i=$(( i + 1 ))
+    done
+    if [ "$rem" -gt 0 ]; then
+      dd if=/payload of="$TARGET" bs=1 count="$rem" skip="$written" seek="$written" conv=notrunc 2>/dev/null || {
+        emit ERROR 0 ERROR "dd failed on remainder"
+        sleep 2
+        /bin/busybox poweroff -f 2>/dev/null || true
+        while true; do sleep 3600; done
+      }
+      written=$(( written + rem ))
+    fi
+    emit IMAGE_WRITE 100 OK "write complete target=${TARGET}"
   fi
   sync 2>/dev/null || true
-  emit IMAGE_WRITE 100 OK "write complete target=${TARGET}"
-  # Verify size on target when it is a regular file.
-  if [ -f "$TARGET" ]; then
+  # Verify size on target when it is a regular file (not for gzip→block).
+  if [ -f "$TARGET" ] && [ "$GZIP" != "1" ]; then
     tsz="$(wc -c <"$TARGET" 2>/dev/null || echo 0)"
     if [ "$tsz" = "$total" ]; then
       emit VERIFY 100 OK "size match bytes=${total}"
@@ -240,6 +286,7 @@ if [ "$MODE" = "write" ] && [ -f /payload ]; then
   else
     emit VERIFY 100 OK "write finished target=${TARGET}"
   fi
+  emit POSTINSTALL 100 OK "payload installed"
   emit DONE 100 OK "install write complete"
 else
   # Phase-2 demonstration sequence (no real disk write).
@@ -256,7 +303,13 @@ else
 fi
 
 sleep 1
-/bin/busybox poweroff -f 2>/dev/null || /bin/busybox reboot -f 2>/dev/null || true
+if [ "${REBOOT:-0}" = "1" ]; then
+  emit BOOT 100 OK "rebooting into installed system"
+  sleep 1
+  /bin/busybox reboot -f 2>/dev/null || /bin/busybox poweroff -f 2>/dev/null || true
+else
+  /bin/busybox poweroff -f 2>/dev/null || /bin/busybox reboot -f 2>/dev/null || true
+fi
 while true; do sleep 3600; done
 INIT
 chmod 755 "$ROOT/init"

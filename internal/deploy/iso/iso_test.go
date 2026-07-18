@@ -87,15 +87,19 @@ func TestBuildRejectsBadInstallMode(t *testing.T) {
 	}
 }
 
-func TestBuildAutoinstallRequiresUbuntuISO(t *testing.T) {
+func TestBuildAutoinstallRequiresCloudOrISO(t *testing.T) {
 	b := iso.NewScriptBuilder("/nonexistent-script", slog.New(slog.NewTextHandler(io.Discard, nil)))
 	t.Setenv("SHOAL_UBUNTU_ISO", "")
+	t.Setenv("SHOAL_UBUNTU_CLOUD_IMG", "")
 	_, err := b.Build(context.Background(), iso.BuildInput{
 		InstallMode: iso.InstallModeAutoinstall,
 		OutDir:      t.TempDir(),
 	})
-	if err == nil || !strings.Contains(err.Error(), "Ubuntu base ISO") {
-		t.Fatalf("expected ubuntu iso error, got %v", err)
+	if err == nil {
+		t.Fatal("expected autoinstall input error")
+	}
+	if !strings.Contains(err.Error(), "CLOUD") && !strings.Contains(err.Error(), "payload") && !strings.Contains(err.Error(), "UBUNTU") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
