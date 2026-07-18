@@ -4,7 +4,7 @@ This file is the canonical guide for how to work in this repository. It covers
 project conventions, commands, and style. For **architecture, data models, and
 the phased plan**, the source of truth is
 [`SHOAL_COMPREHENSIVE_DESIGN_AND_IMPLEMENTATION_PLAN.md`](./SHOAL_COMPREHENSIVE_DESIGN_AND_IMPLEMENTATION_PLAN.md)
-(**v2.0.8**, Go stack). When this file and the design doc disagree, fix one of
+(**v2.0.9**, Go stack). When this file and the design doc disagree, fix one of
 them in the same change — they must stay consistent.
 
 > **Read order for any task:** (1) this file, (2) the relevant Chapter 4 section
