@@ -112,6 +112,23 @@ func (m *Memory) UpdateRuntime(_ context.Context, jobID string, systemID, solSes
 	return nil
 }
 
+// UpdateStages persists stage runner metadata.
+func (m *Memory) UpdateStages(_ context.Context, jobID string, currentStage, installStrategy string, stages []models.JobStage) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	j, ok := m.jobs[jobID]
+	if !ok {
+		return ErrNotFound
+	}
+	j.CurrentStage = currentStage
+	j.InstallStrategy = installStrategy
+	j.Stages = cloneStages(stages)
+	now := time.Now().UTC()
+	j.UpdatedAt = &now
+	m.jobs[jobID] = j
+	return nil
+}
+
 // Transition sets lifecycle state and optional error message.
 func (m *Memory) Transition(_ context.Context, jobID string, to models.LifecycleState, errMsg string) error {
 	m.mu.Lock()
@@ -144,5 +161,15 @@ func cloneJob(j models.ProvisioningJob) models.ProvisioningJob {
 		t := *j.UpdatedAt
 		out.UpdatedAt = &t
 	}
+	out.Stages = cloneStages(j.Stages)
+	return out
+}
+
+func cloneStages(in []models.JobStage) []models.JobStage {
+	if in == nil {
+		return nil
+	}
+	out := make([]models.JobStage, len(in))
+	copy(out, in)
 	return out
 }

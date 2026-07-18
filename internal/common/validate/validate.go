@@ -160,6 +160,18 @@ func StartJobRequest(r models.StartJobRequest) error {
 	if !hasUserPass && !hasRef {
 		return fmt.Errorf("validate: bmc credentials or credential_ref is required")
 	}
+	if s := strings.TrimSpace(r.InstallStrategy); s != "" {
+		switch s {
+		case models.InstallStrategySimulate, models.InstallStrategyImageWrite,
+			models.InstallStrategyScriptedISO, models.InstallStrategyOperatorISO:
+			// ok (scripted/operator reserved; expand may reject later)
+		default:
+			return fmt.Errorf("validate: unknown install_strategy %q", s)
+		}
+	}
+	if p := strings.TrimSpace(strings.ToLower(r.Prep)); p != "" && p != "skip" {
+		return fmt.Errorf("validate: prep %q not implemented (M1 allows only skip)", r.Prep)
+	}
 	return nil
 }
 

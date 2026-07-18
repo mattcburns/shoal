@@ -241,23 +241,34 @@ func (o *Orchestrator) Start(ctx context.Context, req models.StartJobRequest) (m
 		return models.ProvisioningJob{}, fmt.Errorf("job: resolve credentials: %w", err)
 	}
 
+	stages, err := expandStages(req)
+	if err != nil {
+		return models.ProvisioningJob{}, err
+	}
+	strategy := ""
+	if len(stages) > 0 {
+		strategy = stages[0].Strategy
+	}
+
 	profile := profileRef
 	now := time.Now().UTC()
 	sessionID := "sol-" + jobID
 	job := models.ProvisioningJob{
-		ID:            jobID,
-		DeviceID:      req.DeviceID,
-		ProfileRef:    profile,
-		State:         models.StateProvisioning,
-		Attempt:       1,
-		Phase:         "STARTING",
-		StartedAt:     &now,
-		UpdatedAt:     &now,
-		ISOURL:        req.ISOURL,
-		BMCEndpoint:   req.BMCEndpoint,
-		SystemID:      req.SystemID,
-		CredentialRef: credRef,
-		SOLSessionID:  sessionID,
+		ID:              jobID,
+		DeviceID:        req.DeviceID,
+		ProfileRef:      profile,
+		State:           models.StateProvisioning,
+		Attempt:         1,
+		Phase:           "STARTING",
+		StartedAt:       &now,
+		UpdatedAt:       &now,
+		ISOURL:          req.ISOURL,
+		BMCEndpoint:     req.BMCEndpoint,
+		SystemID:        req.SystemID,
+		CredentialRef:   credRef,
+		SOLSessionID:    sessionID,
+		InstallStrategy: strategy,
+		Stages:          stages,
 	}
 	if err := o.store.Insert(ctx, job); err != nil {
 		return models.ProvisioningJob{}, err
@@ -293,7 +304,66 @@ func (o *Orchestrator) Start(ctx context.Context, req models.StartJobRequest) (m
 	return out, nil
 }
 
+// provision runs the multi-stage job loop. M1 always has one os_install stage
+// (image_write/simulate media attach). Later slices add prep media swap.
 func (o *Orchestrator) provision(ctx context.Context, job models.ProvisioningJob, req models.StartJobRequest, cred secrets.Credential, rs *runState) error {
+	stages := job.Stages
+	if len(stages) == 0 {
+		var err error
+		stages, err = expandStages(req)
+		if err != nil {
+			return err
+		}
+	}
+	strategy := job.InstallStrategy
+	if strategy == "" && len(stages) > 0 {
+		strategy = stages[0].Strategy
+	}
+
+	for i := range stages {
+		st := stages[i]
+		stages = setStageState(stages, st.ID, models.JobStageStateRunning, "STARTING", "")
+		if err := o.store.UpdateStages(ctx, job.ID, st.ID, strategy, stages); err != nil {
+			return fmt.Errorf("persist stages: %w", err)
+		}
+		o.log.Info("stage start",
+			"job_id", job.ID,
+			"stage", st.ID,
+			"kind", st.Kind,
+			"strategy", st.Strategy,
+		)
+
+		var stageErr error
+		switch st.Kind {
+		case models.JobStageKindOSInstall:
+			stageErr = o.runOSInstallStage(ctx, job, req, cred, rs, st)
+		default:
+			stageErr = fmt.Errorf("job: stage kind %q not implemented", st.Kind)
+		}
+		if stageErr != nil {
+			stages = setStageState(stages, st.ID, models.JobStageStateFailed, "ERROR", stageErr.Error())
+			_ = o.store.UpdateStages(ctx, job.ID, st.ID, strategy, stages)
+			return stageErr
+		}
+		// M1: os_install returns after SOL watch is registered; terminal DONE is async.
+		// Mark stage running with WAITING_SOL; HandleTerminal finalizes the job.
+		stages = setStageState(stages, st.ID, models.JobStageStateRunning, "WAITING_SOL", "")
+		_ = o.store.UpdateStages(ctx, job.ID, st.ID, strategy, stages)
+	}
+	return nil
+}
+
+// runOSInstallStage attaches Virtual Media, boots once from CD, and registers SOL watch.
+// Terminal DONE is handled asynchronously via ApplyMarker → HandleTerminal (M1: job-terminal).
+func (o *Orchestrator) runOSInstallStage(ctx context.Context, job models.ProvisioningJob, req models.StartJobRequest, cred secrets.Credential, rs *runState, stage models.JobStage) error {
+	mediaURL := strings.TrimSpace(stage.MediaURL)
+	if mediaURL == "" {
+		mediaURL = strings.TrimSpace(req.ISOURL)
+	}
+	if mediaURL == "" {
+		return fmt.Errorf("os_install: media_url is empty")
+	}
+
 	bmc, err := o.newBMC(redfish.Config{
 		BaseURL:       req.BMCEndpoint,
 		Username:      cred.Username,
@@ -340,7 +410,7 @@ func (o *Orchestrator) provision(ctx context.Context, job models.ProvisioningJob
 	if mediaURI == "" {
 		return fmt.Errorf("no CD-capable virtual media slot")
 	}
-	if err := bmc.InsertVirtualMedia(ctx, mediaURI, req.ISOURL); err != nil {
+	if err := bmc.InsertVirtualMedia(ctx, mediaURI, mediaURL); err != nil {
 		return fmt.Errorf("insert media: %w", err)
 	}
 	if err := bmc.SetBootOverrideOnceCD(ctx, sys.ID); err != nil {
@@ -370,10 +440,6 @@ func (o *Orchestrator) provision(ctx context.Context, job models.ProvisioningJob
 		StartedAt:    time.Now().UTC(),
 		StallTimeout: stall,
 	}
-	// Persist sol session id via progress soft field isn't ideal; update job through transition is wrong.
-	// Use UpdateProgress for phase only; SOLSessionID stored in runState + optional store field via re-insert not available.
-	// Patch: store Transition doesn't set sol_session_id. Memory/Postgres need a SetSession helper or we encode in running map only.
-	// For status API, re-read job won't show session — acceptable for Phase 2 if we UpdateProgress detail.
 	_ = o.store.UpdateProgress(ctx, job.ID, "WAITING_SOL", nil, 0, "")
 
 	if err := o.watches.Register(ctx, session); err != nil {
@@ -384,7 +450,9 @@ func (o *Orchestrator) provision(ctx context.Context, job models.ProvisioningJob
 		"job_id", job.ID,
 		"device_id", job.DeviceID,
 		"bmc", req.BMCEndpoint,
-		"iso_url", req.ISOURL,
+		"iso_url", mediaURL,
+		"stage", stage.ID,
+		"strategy", stage.Strategy,
 		// never log password
 	)
 	return nil
