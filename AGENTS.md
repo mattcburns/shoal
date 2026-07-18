@@ -124,7 +124,7 @@ shoal/                                    # module: github.com/mattcburns/shoal
     operator-macos.md                     # Mac = operator only (Phase 6c)
     phase-6c-plan.md                      # packaging + L0 host profiles checklist
     phase-6d-plan.md                      # compose app + auth + metrics + fixtures
-    phase-7-plan.md                       # full OS autoinstall (Phase 7)
+    phase-7-plan.md                       # full OS install Phase 7 (7a complete; 7b/7c deferred)
   deploy/docker/Dockerfile                # minimal runtime image for lab Compose
   go.mod
   LICENSE                                 # AGPLv3 (Shoal)
@@ -274,8 +274,9 @@ go run ./cmd/shoal deploy run \
 | `SHOAL_ISO_PUBLISH_DIR` | Filesystem dir served on `:8080` (lab: `/srv/iso`). Phase 5c publish target |
 | `SHOAL_ISO_BUILD_SCRIPT` | Optional path to `build-marker-iso.sh` (auto-discovers from repo) |
 | `SHOAL_ISO_DYNAMIC` | If `true`, Start may build+publish when `ISOURL` empty (needs publish dir + base URL; Phase 6a) |
-| `SHOAL_UBUNTU_ISO` | Phase 7a: path to official Ubuntu Server live-server ISO for `autoinstall` remaster |
-| `SHOAL_AUTOINSTALL_HOSTNAME` / `USERNAME` / `PASSWORD` | Build-time identity for autoinstall ISO (lab default password `shoal-lab`; not for production) |
+| `SHOAL_UBUNTU_CLOUD_IMG` | Phase 7a preferred: Ubuntu cloud image for prepare → marker write ISO |
+| `SHOAL_UBUNTU_ISO` | Phase 7a alternate: live-server ISO for autoinstall remaster (stretch) |
+| `SHOAL_AUTOINSTALL_HOSTNAME` / `USERNAME` / `PASSWORD` | Build-time identity for cloud prepare / autoinstall (lab default password `shoal-lab`; not for production) |
 | `SHOAL_RECONCILE_FAIL_ORPHANS` | Default `true` |
 | `SHOAL_FEWSHOT_DIR` | Append-only learned few-shot JSONL (confirm learning). Lab Ansible default: `/var/lib/shoal/fewshot` via `shoal_fewshot_dir` + `env.j2`. Empty disables confirm |
 | `SHOAL_PROFILE_DIR` | JSON provisioning profiles + approval records (Phase 5b). Lab Ansible default: `/var/lib/shoal/profiles` via `shoal_profile_dir` + `env.j2`. Empty disables non-spike profile load |
@@ -297,11 +298,13 @@ with real SOL progress; optional `-build-iso` / `SHOAL_ISO_DYNAMIC`. Marker
 `simulate` mode remains the Phase 2 demo. Plain HTTP ISO on mgmt segment.
 Sole lifecycle writer remains Orchestrator; JobStore stays pure persistence.
 
-**Phase 7 (full OS autoinstall):** real OS install over BMC Virtual Media + SOL
-(not the 6a payload MVP). **7a:** remaster Ubuntu Server ISO
-(`install-mode autoinstall`, `SHOAL_UBUNTU_ISO`); markers in autoinstall
-user-data; raise SOL stall for long installs. **7b/7c:** profiles + second
-path (later). Design § Phase 7 and [`docs/phase-7-plan.md`](./docs/phase-7-plan.md).
+**Phase 7 (full OS install):** real OS on disk over BMC Virtual Media + SOL
+(not the 6a payload MVP). **7a complete (v2.0.9):** preferred nested-lab path is
+Ubuntu **cloud image-write** (`prepare-ubuntu-cloud-payload.sh` + marker ISO with
+`payload.gz` on ISO root; `install-mode autoinstall` maps to write+reboot).
+Live-server remaster (`SHOAL_UBUNTU_ISO`) is alternate/stretch. **7b/7c deferred**
+(multi-stage + OS matrix = separate design). See design § Phase 7 and
+[`docs/phase-7-plan.md`](./docs/phase-7-plan.md).
 
 ---
 

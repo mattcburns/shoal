@@ -1,6 +1,6 @@
-# Phase 7 — Full OS autoinstall
+# Phase 7 — Full OS install (BMC + SOL)
 
-Executable checklist for design **v2.0.8** § Phase 7. Design SoT:
+Executable checklist for design **v2.0.9** § Phase 7. Design SoT:
 [`SHOAL_COMPREHENSIVE_DESIGN_AND_IMPLEMENTATION_PLAN.md`](../SHOAL_COMPREHENSIVE_DESIGN_AND_IMPLEMENTATION_PLAN.md).
 
 ## Goal
@@ -19,69 +19,71 @@ lifecycle rules intact.
 - Orchestrator sole lifecycle writer; JobStore pure persistence
 - Secrets never in published ISO, SOL logs, slog, or LLM payloads
 - Mandatory Virtual Media eject + boot override clear on all terminals
+  (sushy Continuous/Hdd after clear is OK)
 
 ## Sub-phases
 
-### 7a — Ubuntu autoinstall E2E
+### 7a — Ubuntu nested-lab E2E — **COMPLETE**
 
-| # | Task | AC |
-|---|------|----|
-| A1 | Install/autoinstall media pipeline (Ubuntu Server train) | `build-ubuntu-autoinstall-iso.sh` + `deploy iso build -install-mode autoinstall` |
-| A2 | SOL producer markers through install + heartbeats | Template early/late-commands + 45s heartbeats |
-| A3 | Deploy job: attach media, boot, watch markers, cleanup | Existing orchestrator + longer stall defaults |
-| A4 | Lab: nested libvirt guest with real disk | Documented; operator E2E with `SHOAL_UBUNTU_ISO` |
-| A5 | Regression: `simulate` + 6a `write` still pass | Unit tests + modes unchanged |
+| # | Task | AC | Status |
+|---|------|-----|--------|
+| A1 | Media pipeline for full Ubuntu on disk | Marker ISO + cloud payload **or** live-server remaster | **Done** (preferred: cloud image-write) |
+| A2 | SOL producer markers + heartbeats | Marker `/init` write path markers | **Done** |
+| A3 | Deploy job: attach, boot, watch, cleanup | Orchestrator + ForceRestart + post-check | **Done** |
+| A4 | Lab: nested libvirt guest with real disk | Documented E2E; bootable Ubuntu + login | **Done** |
+| A5 | Regression: `simulate` + 6a `write` | Unit tests / modes unchanged | **Done** |
 
-**7a code status:** media pipeline, Go mode, CLI, and docs land in the Phase 7a
-implementation PR. Full guest install still requires a downloaded Ubuntu ISO
-and a long lab run (not CI-default).
+**Preferred nested-lab path (shipped):**
 
-### 7b — Profile + artifact model
+1. `prepare-ubuntu-cloud-payload.sh` — customize Ubuntu cloud image → `.raw.gz`
+2. `build-marker-iso.sh` with `SHOAL_INSTALL_MODE=autoinstall` + large payload on ISO root
+3. Publish to `/srv/iso`, attach via sushy Virtual Media (`http://192.168.124.1:8080/…`)
+4. Guest: mount CD → `gunzip|dd` → `/dev/vda` → SOL `DONE` → reboot
+5. Job state **`provisioned`**
 
-| # | Task | AC |
-|---|------|----|
-| B1 | Extend `ProvisioningProfile` for install fields | Schema + validate |
-| B2 | Profile → ISO resolve / build (5c/6a patterns) | Start without hand `-iso-url` happy path |
-| B3 | Install mode distinct from `simulate` / `write` | Documented contract |
-| B4 | Approval gates for destruct/wipe (5b) | Still enforced |
+**Alternate / stretch:** `build-ubuntu-autoinstall-iso.sh` live-server remaster (autoinstall
+user-data). Unreliable under nested sushy; keep for future hardware / better media fidelity.
 
-### 7c — Second path + identity polish
+**Operator docs:** [`lab-runbook.md`](./lab-runbook.md) § Phase 7a.
 
-| # | Task | AC |
-|---|------|----|
-| C1 | Second family (kickstart) **or** image-write path | Lab-demonstrated or design defer note |
-| C2 | NetBox device identity binding after success | Lifecycle + identity consistent |
-| C3 | Failure paths still cleanup | No stuck media/override |
+### 7b — Profile + artifact model — **DEFERRED**
 
-## Non-goals (7.0)
+Original B1–B4 (install profiles, resolve ISO without hand flags) deferred pending the
+**multi-stage provisioning + OS matrix** design document. Do not implement under this
+checklist without that design.
 
-- Windows
+### 7c — Second family + identity polish — **DEFERRED**
+
+Original C1–C3 deferred for the same reason. Image-write for Ubuntu is already the 7a
+path; further families (kickstart, Ignition, Windows) belong in the new design.
+
+## Non-goals (7.0 / remaining)
+
+- Multi-stage prep (wipe/RAID/firmware) then OS installer — **new design**
+- Windows, ESXi, Flatcar as Phase 7 deliverables
 - PXE-required topology
-- Full distro matrix on day one
 - OCR as install progress loop
 
-## Suggested PR split
+## PR history
 
-1. **PR18 (docs):** design v2.0.8 + this plan (this change)
-2. **PR19+:** 7a implementation
-3. Later: 7b, 7c
+1. **PR18:** design v2.0.8 + this plan (initial Phase 7)
+2. **PR19:** 7a implementation + v2.0.9 closeout (image-write preferred)
 
-## Verify (after implementation)
+## Verify
 
 ```bash
-# Unit / lint
 gofmt -l .
 go vet ./...
 staticcheck ./...
 go test ./...
 
-# Lab (shape — exact CLI flags land in 7a PR)
-ansible-playbook -i infra/ansible/inventory/lab-vm.yml \
-  infra/ansible/playbooks/smoke.yml
-# then Phase 7a deploy autoinstall job against a nested guest with a disk
+# Lab E2E shape (see lab-runbook Phase 7a):
+# prepare cloud payload → build marker ISO → deploy run -iso-url … -wait
 ```
 
 ## Done when
 
-Phase 7 section ACs in the design doc are met for the slice under implementation;
-6a and Phase 2 spike paths remain green; Golden Rules §1 intact.
+- **7a:** ACs above met (this closeout).  
+- **7b/7c:** Not required to call Phase 7 “fully product-complete”; tracked via deferred
+  rows + future multi-stage design.  
+- Golden Rules §1 intact; 6a / Phase 2 paths remain green.
