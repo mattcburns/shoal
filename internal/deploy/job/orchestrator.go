@@ -674,6 +674,8 @@ func (o *Orchestrator) maybeBuildISO(ctx context.Context, req *models.StartJobRe
 	mode := strings.TrimSpace(req.ISOInstallMode)
 	payloadFile := strings.TrimSpace(req.ISOPayloadFile)
 	target := strings.TrimSpace(req.ISOInstallTarget)
+	ubuntuBase := strings.TrimSpace(req.ISOUbuntuBase)
+	hostname := strings.TrimSpace(req.ISOHostname)
 	embedded := ""
 
 	if profileRef != "" && profileRef != "spike" && o.profiles != nil {
@@ -695,11 +697,16 @@ func (o *Orchestrator) maybeBuildISO(ctx context.Context, req *models.StartJobRe
 		}
 	}
 	if mode == "" {
-		if payloadFile != "" || embedded != "" {
+		if ubuntuBase != "" {
+			mode = iso.InstallModeAutoinstall
+		} else if payloadFile != "" || embedded != "" {
 			mode = iso.InstallModeWrite
 		} else {
 			mode = iso.InstallModeSimulate
 		}
+	}
+	if mode == iso.InstallModeAutoinstall && name == "shoal-install.iso" {
+		name = "shoal-ubuntu-autoinstall.iso"
 	}
 
 	in := iso.BuildInput{
@@ -708,6 +715,8 @@ func (o *Orchestrator) maybeBuildISO(ctx context.Context, req *models.StartJobRe
 		EmbeddedPayload: embedded,
 		InstallMode:     mode,
 		InstallTarget:   target,
+		UbuntuBaseISO:   ubuntuBase,
+		Hostname:        hostname,
 	}
 	url, art, err := buildAndPublish(ctx, o.isoBuilder, in, iso.PublishDest{
 		Dir: o.isoPublishDir, BaseURL: o.isoBaseURL,

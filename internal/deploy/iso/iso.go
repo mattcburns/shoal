@@ -12,10 +12,11 @@ import (
 	"time"
 )
 
-// Install modes for the live image (Phase 6a).
+// Install modes for the live / install image.
 const (
-	InstallModeSimulate = "simulate" // Phase 2 marker demo (default)
-	InstallModeWrite    = "write"    // write /payload to target with real SOL progress
+	InstallModeSimulate    = "simulate"    // Phase 2 marker demo (default)
+	InstallModeWrite       = "write"       // Phase 6a: write /payload with real SOL progress
+	InstallModeAutoinstall = "autoinstall" // Phase 7a: Ubuntu autoinstall remaster
 )
 
 // BuildInput describes a live-image build request.
@@ -29,12 +30,20 @@ type BuildInput struct {
 	EmbeddedPayload string
 	// PayloadFile is a host path copied into the image as /payload (binary-safe).
 	PayloadFile string
-	// InstallMode is simulate (default) or write (Phase 6a real payload write).
+	// InstallMode is simulate (default), write (Phase 6a), or autoinstall (Phase 7a).
 	InstallMode string
 	// InstallTarget is optional block device or file path baked into the image
-	// (overridable via kernel cmdline shoal.target=).
+	// (overridable via kernel cmdline shoal.target=). Write mode only.
 	InstallTarget string
-	// ScriptPath overrides the marker build script (empty = auto-discover).
+	// UbuntuBaseISO is the official Ubuntu Server live-server ISO path (autoinstall).
+	// May also be supplied via SHOAL_UBUNTU_ISO in the environment.
+	UbuntuBaseISO string
+	// Hostname for autoinstall identity (default shoal-node).
+	Hostname string
+	// Username for autoinstall identity (default shoal). Lab-only password is
+	// set via SHOAL_AUTOINSTALL_PASSWORD in the build script (not logged by Go).
+	Username string
+	// ScriptPath overrides the build script (empty = auto-discover by mode).
 	ScriptPath string
 }
 
@@ -75,22 +84,38 @@ func NewScriptBuilder(scriptPath string, log *slog.Logger) *ScriptBuilder {
 	return &ScriptBuilder{ScriptPath: scriptPath, Log: log}
 }
 
-// Build runs the marker ISO script (xorriso/busybox host tools required).
+// Build runs the marker or Ubuntu autoinstall ISO script (host tools required).
 func (b *ScriptBuilder) Build(ctx context.Context, in BuildInput) (Artifact, error) {
+	mode := strings.TrimSpace(in.InstallMode)
+	if mode == "" {
+		mode = InstallModeSimulate
+	}
+	if mode != InstallModeSimulate && mode != InstallModeWrite && mode != InstallModeAutoinstall {
+		return Artifact{}, fmt.Errorf("iso: invalid install mode %q (want simulate|write|autoinstall)", mode)
+	}
+
 	script := in.ScriptPath
 	if script == "" {
 		script = b.ScriptPath
 	}
 	if script == "" {
 		var err error
-		script, err = FindBuildScript()
+		if mode == InstallModeAutoinstall {
+			script, err = FindUbuntuAutoinstallScript()
+		} else {
+			script, err = FindBuildScript()
+		}
 		if err != nil {
 			return Artifact{}, err
 		}
 	}
 	name := strings.TrimSpace(in.Name)
 	if name == "" {
-		name = "shoal-marker.iso"
+		if mode == InstallModeAutoinstall {
+			name = "shoal-ubuntu-autoinstall.iso"
+		} else {
+			name = "shoal-marker.iso"
+		}
 	}
 	if !strings.HasSuffix(strings.ToLower(name), ".iso") {
 		name += ".iso"
@@ -106,39 +131,60 @@ func (b *ScriptBuilder) Build(ctx context.Context, in BuildInput) (Artifact, err
 	}
 	outPath := filepath.Join(outDir, name)
 
-	mode := strings.TrimSpace(in.InstallMode)
-	if mode == "" {
-		mode = InstallModeSimulate
-	}
-	if mode != InstallModeSimulate && mode != InstallModeWrite {
-		return Artifact{}, fmt.Errorf("iso: invalid install mode %q", mode)
+	// Autoinstall remasters multi-GB ISOs; allow a long deadline when none set.
+	if mode == InstallModeAutoinstall {
+		if _, ok := ctx.Deadline(); !ok {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithTimeout(ctx, 45*time.Minute)
+			defer cancel()
+		}
 	}
 
 	cmd := exec.CommandContext(ctx, script, outPath)
-	cmd.Env = os.Environ()
-	// Payload: prefer file path (binary-safe); else inline text via env.
-	// Callers must not pass passwords.
-	if pf := strings.TrimSpace(in.PayloadFile); pf != "" {
-		st, err := os.Stat(pf)
-		if err != nil {
-			return Artifact{}, fmt.Errorf("iso: payload file: %w", err)
-		}
-		if st.IsDir() {
-			return Artifact{}, fmt.Errorf("iso: payload file is a directory")
-		}
-		cmd.Env = append(cmd.Env, "SHOAL_PAYLOAD_FILE="+pf)
-	} else if p := strings.TrimSpace(in.EmbeddedPayload); p != "" {
-		if looksSecretPayload(p) {
-			return Artifact{}, fmt.Errorf("iso: embedded_payload must not contain secret-like content")
-		}
-		cmd.Env = append(cmd.Env, "SHOAL_EMBEDDED_PAYLOAD="+p)
-	}
-	cmd.Env = append(cmd.Env,
+	cmd.Env = append(os.Environ(),
 		"SHOAL_ISO_NAME="+name,
 		"SHOAL_INSTALL_MODE="+mode,
 	)
-	if t := strings.TrimSpace(in.InstallTarget); t != "" {
-		cmd.Env = append(cmd.Env, "SHOAL_INSTALL_TARGET="+t)
+
+	if mode == InstallModeAutoinstall {
+		base := strings.TrimSpace(in.UbuntuBaseISO)
+		if base == "" {
+			base = strings.TrimSpace(os.Getenv("SHOAL_UBUNTU_ISO"))
+		}
+		if base == "" {
+			return Artifact{}, fmt.Errorf("iso: autoinstall requires Ubuntu base ISO (BuildInput.UbuntuBaseISO or SHOAL_UBUNTU_ISO)")
+		}
+		if st, err := os.Stat(base); err != nil || st.IsDir() {
+			return Artifact{}, fmt.Errorf("iso: ubuntu base ISO not readable: %s", base)
+		}
+		cmd.Env = append(cmd.Env, "SHOAL_UBUNTU_ISO="+base)
+		if h := strings.TrimSpace(in.Hostname); h != "" {
+			cmd.Env = append(cmd.Env, "SHOAL_AUTOINSTALL_HOSTNAME="+h)
+		}
+		if u := strings.TrimSpace(in.Username); u != "" {
+			cmd.Env = append(cmd.Env, "SHOAL_AUTOINSTALL_USERNAME="+u)
+		}
+	} else {
+		// Payload: prefer file path (binary-safe); else inline text via env.
+		// Callers must not pass passwords.
+		if pf := strings.TrimSpace(in.PayloadFile); pf != "" {
+			st, err := os.Stat(pf)
+			if err != nil {
+				return Artifact{}, fmt.Errorf("iso: payload file: %w", err)
+			}
+			if st.IsDir() {
+				return Artifact{}, fmt.Errorf("iso: payload file is a directory")
+			}
+			cmd.Env = append(cmd.Env, "SHOAL_PAYLOAD_FILE="+pf)
+		} else if p := strings.TrimSpace(in.EmbeddedPayload); p != "" {
+			if looksSecretPayload(p) {
+				return Artifact{}, fmt.Errorf("iso: embedded_payload must not contain secret-like content")
+			}
+			cmd.Env = append(cmd.Env, "SHOAL_EMBEDDED_PAYLOAD="+p)
+		}
+		if t := strings.TrimSpace(in.InstallTarget); t != "" {
+			cmd.Env = append(cmd.Env, "SHOAL_INSTALL_TARGET="+t)
+		}
 	}
 
 	start := time.Now()
@@ -246,16 +292,30 @@ func FindBuildScript() (string, error) {
 		}
 		return "", fmt.Errorf("iso: SHOAL_ISO_BUILD_SCRIPT not found: %s", p)
 	}
-	candidates := []string{
-		"infra/scripts/build-marker-iso.sh",
-		"./infra/scripts/build-marker-iso.sh",
-		"../infra/scripts/build-marker-iso.sh",
-		"../../infra/scripts/build-marker-iso.sh",
+	return findScript("build-marker-iso.sh", "SHOAL_ISO_BUILD_SCRIPT")
+}
+
+// FindUbuntuAutoinstallScript locates infra/scripts/build-ubuntu-autoinstall-iso.sh.
+func FindUbuntuAutoinstallScript() (string, error) {
+	if p := os.Getenv("SHOAL_UBUNTU_AUTOINSTALL_SCRIPT"); p != "" {
+		if st, err := os.Stat(p); err == nil && !st.IsDir() {
+			return p, nil
+		}
+		return "", fmt.Errorf("iso: SHOAL_UBUNTU_AUTOINSTALL_SCRIPT not found: %s", p)
 	}
-	// Walk up from cwd a few levels.
+	return findScript("build-ubuntu-autoinstall-iso.sh", "SHOAL_UBUNTU_AUTOINSTALL_SCRIPT")
+}
+
+func findScript(basename, envHint string) (string, error) {
+	candidates := []string{
+		filepath.Join("infra/scripts", basename),
+		filepath.Join("./infra/scripts", basename),
+		filepath.Join("../infra/scripts", basename),
+		filepath.Join("../../infra/scripts", basename),
+	}
 	wd, _ := os.Getwd()
 	for i := 0; i < 6 && wd != ""; i++ {
-		candidates = append(candidates, filepath.Join(wd, "infra/scripts/build-marker-iso.sh"))
+		candidates = append(candidates, filepath.Join(wd, "infra/scripts", basename))
 		parent := filepath.Dir(wd)
 		if parent == wd {
 			break
@@ -271,7 +331,7 @@ func FindBuildScript() (string, error) {
 			return abs, nil
 		}
 	}
-	return "", fmt.Errorf("iso: build-marker-iso.sh not found (set SHOAL_ISO_BUILD_SCRIPT)")
+	return "", fmt.Errorf("iso: %s not found (set %s)", basename, envHint)
 }
 
 func copyFile(src, dst string) error {

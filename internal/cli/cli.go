@@ -35,7 +35,7 @@ import (
 )
 
 // Version is the application version string (overridable via -ldflags).
-var Version = "0.6.0-phase6d"
+var Version = "0.7.0-phase7a"
 
 // Run dispatches subcommands. args should be os.Args[1:].
 func Run(args []string) int {

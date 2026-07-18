@@ -274,6 +274,8 @@ go run ./cmd/shoal deploy run \
 | `SHOAL_ISO_PUBLISH_DIR` | Filesystem dir served on `:8080` (lab: `/srv/iso`). Phase 5c publish target |
 | `SHOAL_ISO_BUILD_SCRIPT` | Optional path to `build-marker-iso.sh` (auto-discovers from repo) |
 | `SHOAL_ISO_DYNAMIC` | If `true`, Start may build+publish when `ISOURL` empty (needs publish dir + base URL; Phase 6a) |
+| `SHOAL_UBUNTU_ISO` | Phase 7a: path to official Ubuntu Server live-server ISO for `autoinstall` remaster |
+| `SHOAL_AUTOINSTALL_HOSTNAME` / `USERNAME` / `PASSWORD` | Build-time identity for autoinstall ISO (lab default password `shoal-lab`; not for production) |
 | `SHOAL_RECONCILE_FAIL_ORPHANS` | Default `true` |
 | `SHOAL_FEWSHOT_DIR` | Append-only learned few-shot JSONL (confirm learning). Lab Ansible default: `/var/lib/shoal/fewshot` via `shoal_fewshot_dir` + `env.j2`. Empty disables confirm |
 | `SHOAL_PROFILE_DIR` | JSON provisioning profiles + approval records (Phase 5b). Lab Ansible default: `/var/lib/shoal/profiles` via `shoal_profile_dir` + `env.j2`. Empty disables non-spike profile load |
@@ -296,10 +298,10 @@ with real SOL progress; optional `-build-iso` / `SHOAL_ISO_DYNAMIC`. Marker
 Sole lifecycle writer remains Orchestrator; JobStore stays pure persistence.
 
 **Phase 7 (full OS autoinstall):** real OS install over BMC Virtual Media + SOL
-(not the 6a payload MVP). Planned slices: **7a** Ubuntu autoinstall E2E, **7b**
-profile/artifact model, **7c** second path + NetBox identity polish. Design §
-Phase 7 and [`docs/phase-7-plan.md`](./docs/phase-7-plan.md). Do not treat 6a
-`write` as full autoinstall.
+(not the 6a payload MVP). **7a:** remaster Ubuntu Server ISO
+(`install-mode autoinstall`, `SHOAL_UBUNTU_ISO`); markers in autoinstall
+user-data; raise SOL stall for long installs. **7b/7c:** profiles + second
+path (later). Design § Phase 7 and [`docs/phase-7-plan.md`](./docs/phase-7-plan.md).
 
 ---
 

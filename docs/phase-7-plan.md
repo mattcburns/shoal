@@ -26,11 +26,15 @@ lifecycle rules intact.
 
 | # | Task | AC |
 |---|------|----|
-| A1 | Install/autoinstall media pipeline (Ubuntu Server train) | Published ISO on lab `:8080` |
-| A2 | SOL producer markers through install + heartbeats | Parseable by existing SOL path |
-| A3 | Deploy job: attach media, boot, watch markers, cleanup | Terminal + BMC cleanup |
-| A4 | Lab: nested libvirt guest with real disk | Bootable Ubuntu after job |
-| A5 | Regression: `simulate` + 6a `write` still pass | No break |
+| A1 | Install/autoinstall media pipeline (Ubuntu Server train) | `build-ubuntu-autoinstall-iso.sh` + `deploy iso build -install-mode autoinstall` |
+| A2 | SOL producer markers through install + heartbeats | Template early/late-commands + 45s heartbeats |
+| A3 | Deploy job: attach media, boot, watch markers, cleanup | Existing orchestrator + longer stall defaults |
+| A4 | Lab: nested libvirt guest with real disk | Documented; operator E2E with `SHOAL_UBUNTU_ISO` |
+| A5 | Regression: `simulate` + 6a `write` still pass | Unit tests + modes unchanged |
+
+**7a code status:** media pipeline, Go mode, CLI, and docs land in the Phase 7a
+implementation PR. Full guest install still requires a downloaded Ubuntu ISO
+and a long lab run (not CI-default).
 
 ### 7b — Profile + artifact model
 

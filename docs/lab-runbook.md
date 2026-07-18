@@ -326,6 +326,70 @@ present, the image falls back to a file target (`/tmp/shoal-install.out` or
 `SHOAL_ISO_DYNAMIC=true` also builds when `-iso-url` is empty and publish
 dir/base URL are set.
 
+### Phase 7a: Ubuntu autoinstall (full OS)
+
+Phase **6a** writes a bounded `/payload` only. Phase **7a** remasters an official
+**Ubuntu Server live-server** ISO with cloud-init autoinstall and emits `SHOAL|…`
+markers on serial (`BOOT` → `DISK_PREP` → heartbeats → `POSTINSTALL` → `VERIFY` → `DONE`).
+
+**Prerequisites**
+
+1. Nested guest with a **real disk** (lab nodes: 20G qcow2) and ≥2 GiB RAM.
+2. Official Ubuntu Server ISO on a path the build host can read (download once):
+
+```bash
+# Example on L1 or operator host used for -build-iso:
+wget -O /var/tmp/ubuntu-22.04.5-live-server-amd64.iso \
+  https://releases.ubuntu.com/22.04/ubuntu-22.04.5-live-server-amd64.iso
+export SHOAL_UBUNTU_ISO=/var/tmp/ubuntu-22.04.5-live-server-amd64.iso
+export SHOAL_ISO_PUBLISH_DIR=/srv/iso
+export SHOAL_ISO_BASE_URL=http://192.168.124.1:8080
+```
+
+**Build + publish autoinstall ISO**
+
+```bash
+go run ./cmd/shoal deploy iso build \
+  -name shoal-ubuntu-autoinstall.iso \
+  -install-mode autoinstall \
+  -ubuntu-iso "$SHOAL_UBUNTU_ISO" \
+  -hostname lab-node-1 \
+  -publish
+```
+
+**Deploy (long job — raise stall/wait)**
+
+```bash
+go run ./cmd/shoal deploy run \
+  -device-id shoal-node-1 \
+  -bmc-url http://192.168.122.100:8001 \
+  -serial-target shoal-node-1 \
+  -serial-ssh-host 192.168.122.100 \
+  -build-iso \
+  -iso-install-mode autoinstall \
+  -ubuntu-iso "$SHOAL_UBUNTU_ISO" \
+  -iso-hostname lab-node-1
+# autoinstall defaults stall to 45m and wait to 90m when mode/ubuntu-iso set
+```
+
+Or attach a prebuilt URL:
+
+```bash
+go run ./cmd/shoal deploy run \
+  -device-id shoal-node-1 \
+  -bmc-url http://192.168.122.100:8001 \
+  -serial-target shoal-node-1 \
+  -iso-url http://192.168.124.1:8080/shoal-ubuntu-autoinstall.iso \
+  -stall-timeout 45m \
+  -wait-timeout 90m
+```
+
+**Lab login (default template):** user `shoal`, password `shoal-lab` (lab-only;
+change via `SHOAL_AUTOINSTALL_PASSWORD` at build time for anything beyond lab).
+
+**Fidelity:** sushy-tools still only emulates BMC; install runs on the nested
+libvirt disk. First install can take 20–60+ minutes on nested CPU.
+
 ### Phase 6b: graphics failure-screen OCR
 
 SOL remains the primary progress channel. Graphics OCR is **diagnostic only**.
