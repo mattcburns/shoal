@@ -132,8 +132,8 @@ secrets never to logs/LLM, mandatory media cleanup).
 
 | Strategy | Media / disk effect | Use when |
 |----------|---------------------|----------|
-| **`operator_iso`** | Attach operator-supplied bootable ISO as-is | **ESXi v1**; likely **Windows v1**; any pre-baked media |
-| **`scripted_iso`** | Attach installer ISO **plus** Shoal-delivered offline seed (second media or config-drive) | **Ubuntu / Flatcar** when not using image-write |
+| **`operator_iso`** | Attach operator-supplied bootable ISO as-is | **ESXi + Windows v1**; any pre-baked media |
+| **`scripted_iso`** | Attach installer ISO **plus** Shoal-delivered offline seed (§4.3.0 order) | **Ubuntu / Flatcar** when not using image-write |
 | **`image_write`** | Marker live + `payload.gz` on ISO → `gunzip\|dd` | Golden/cloud images (7a Ubuntu) |
 | **`simulate`** | Marker demo | Phase 2 regression |
 
