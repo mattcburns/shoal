@@ -593,10 +593,29 @@ func (o *Orchestrator) postCheckClean(ctx context.Context, bmcURL, credRef, syst
 	if err != nil {
 		return fmt.Errorf("get boot post-check: %w", err)
 	}
-	if boot.OverrideEnabled != "" && boot.OverrideEnabled != "Disabled" && boot.OverrideEnabled != "disabled" {
+	// Clean = Disabled, empty, or sushy-tools steady state Continuous/Hdd
+	// (ClearBootOverride falls back to Continuous+Hdd when Disabled is rejected).
+	if !bootOverrideCleared(boot) {
 		return fmt.Errorf("boot override still set (%s/%s)", boot.OverrideEnabled, boot.OverrideTarget)
 	}
 	return nil
+}
+
+// bootOverrideCleared reports whether the BMC boot source is in a post-cleanup state
+// (no one-time CD/USB override left active).
+func bootOverrideCleared(boot redfish.BootInfo) bool {
+	en := strings.TrimSpace(boot.OverrideEnabled)
+	tgt := strings.TrimSpace(boot.OverrideTarget)
+	switch {
+	case en == "" || strings.EqualFold(en, "Disabled"):
+		return true
+	case strings.EqualFold(en, "Continuous") &&
+		(tgt == "" || strings.EqualFold(tgt, "None") || strings.EqualFold(tgt, "Hdd") || strings.EqualFold(tgt, "Disk") || strings.EqualFold(tgt, "Hd")):
+		// sushy-tools maps "clear override" onto Continuous + Hdd boot order.
+		return true
+	default:
+		return false
+	}
 }
 
 // checkProfileApproval enforces Phase 5b human gate before any BMC action.
