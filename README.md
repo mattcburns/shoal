@@ -13,9 +13,13 @@ This repository contains the Shoal Go application and **lab automation** for a
 
 The lab topology is:
 
-- **L0**: your developer machine (runs libvirt/KVM)
+- **L0**: Linux hypervisor (libvirt/KVM) — classic distros or **Fedora secureblue**; **not macOS**
 - **L1**: dedicated lab VM (runs Ansible target host, Docker, libvirt, sushy-tools)
 - **L2**: virtual Redfish/BMC nodes (emulated by libvirt + exposed via sushy-tools)
+
+**macOS operators** use a prebuilt/darwin binary (or `go build`) against a remote
+Linux lab — see [docs/operator-macos.md](docs/operator-macos.md). Multi-platform
+release builds: `./scripts/build-release.sh` (see Phase 6c).
 
 ## What's in this repo
 - `ansible.cfg` - project-local Ansible config
@@ -28,6 +32,8 @@ The lab topology is:
 ## Lab docs
 - [Lab Runbook (Quick Ops)](docs/lab-runbook.md)
 - [Lab Setup Checklist (First-Time)](docs/lab-setup-checklist.md)
+- [Operator host: macOS](docs/operator-macos.md)
+- [Phase 6c plan (packaging + L0 hosts)](docs/phase-6c-plan.md)
 
 ## Prerequisites (L0 host)
 Install and verify:

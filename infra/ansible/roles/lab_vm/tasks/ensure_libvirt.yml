@@ -1,0 +1,82 @@
+---
+# Ensure system libvirt is usable for qemu:///system on L0.
+# Classic hosts usually already run libvirtd; secureblue uses modular daemons
+# (enable via sockets or document ujust set-libvirt-daemons).
+
+- name: Probe virsh against system URI
+  ansible.builtin.command:
+    argv:
+      - virsh
+      - -c
+      - "{{ shoal_libvirt_uri }}"
+      - version
+  register: lab_vm_virsh_probe
+  changed_when: false
+  failed_when: false
+  become: true
+
+- name: Enable modular libvirt sockets when present (Atomic / modern Fedora)
+  when:
+    - lab_vm_virsh_probe.rc != 0
+    - shoal_l0_profile == "secureblue" or shoal_lab_vm_try_modular_libvirt | bool
+  block:
+    - name: Check which modular libvirt sockets exist
+      ansible.builtin.stat:
+        path: "/usr/lib/systemd/system/{{ item }}"
+      loop: "{{ shoal_lab_vm_modular_libvirt_units }}"
+      register: lab_vm_modular_units
+
+    - name: Enable and start modular libvirt sockets
+      ansible.builtin.systemd:
+        name: "{{ item.item }}"
+        state: started
+        enabled: true
+      loop: "{{ lab_vm_modular_units.results }}"
+      when: item.stat.exists | default(false)
+      failed_when: false
+
+- name: Enable monolithic libvirtd when present and virsh still down
+  when: lab_vm_virsh_probe.rc != 0
+  block:
+    - name: Stat libvirtd.service
+      ansible.builtin.stat:
+        path: /usr/lib/systemd/system/libvirtd.service
+      register: lab_vm_libvirtd_unit
+
+    - name: Start libvirtd
+      ansible.builtin.systemd:
+        name: libvirtd
+        state: started
+        enabled: true
+      when: lab_vm_libvirtd_unit.stat.exists | default(false)
+      failed_when: false
+
+- name: Re-probe virsh after enablement attempts
+  ansible.builtin.command:
+    argv:
+      - virsh
+      - -c
+      - "{{ shoal_libvirt_uri }}"
+      - version
+  register: lab_vm_virsh_probe2
+  changed_when: false
+  failed_when: false
+  become: true
+
+- name: Fail if system libvirt is still not usable
+  ansible.builtin.fail:
+    msg: |
+      Cannot talk to libvirt at {{ shoal_libvirt_uri }}.
+
+      {% if shoal_l0_profile == 'secureblue' %}
+      On Fedora secureblue, enable system libvirt daemons then re-run:
+        ujust set-libvirt-daemons
+      Use the QEMU/KVM *system* session (not user session) so the lab can
+      create the management bridge network. See:
+        https://secureblue.dev/faq#libvirt
+        docs/lab-setup-checklist.md (L0 secureblue)
+      {% else %}
+      Ensure libvirt and QEMU/KVM are installed and the system daemon is running:
+        virsh -c {{ shoal_libvirt_uri }} list --all
+      {% endif %}
+  when: (lab_vm_virsh_probe2.rc | default(lab_vm_virsh_probe.rc)) != 0

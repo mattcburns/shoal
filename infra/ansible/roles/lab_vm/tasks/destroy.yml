@@ -61,33 +61,8 @@
   when: shoal_mgmt_network_name in (lab_vm_networks.list_nets | default([]))
   failed_when: false
 
-- name: Check host ufw status
-  ansible.builtin.command: ufw status
-  register: lab_vm_ufw_status
-  changed_when: false
-  failed_when: false
-
-- name: Remove ufw input rule for the management bridge
-  community.general.ufw:
-    rule: allow
-    direction: in
-    interface: "{{ shoal_mgmt_network_bridge }}"
-    delete: true
-  when:
-    - lab_vm_ufw_status.rc == 0
-    - "'Status: active' in lab_vm_ufw_status.stdout"
-  failed_when: false
-
-- name: Remove ufw routed rule for the management bridge
-  community.general.ufw:
-    rule: allow
-    route: true
-    interface_in: "{{ shoal_mgmt_network_bridge }}"
-    delete: true
-  when:
-    - lab_vm_ufw_status.rc == 0
-    - "'Status: active' in lab_vm_ufw_status.stdout"
-  failed_when: false
+- name: Tear down host firewall rules for management bridge
+  ansible.builtin.include_tasks: firewall_teardown.yml
 
 - name: Remove generated work directory
   ansible.builtin.file:

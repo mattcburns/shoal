@@ -19,3 +19,6 @@ infra/cloud-init-seed.iso
 coverage.out
 vendor/
 .shoal/
+
+# Release build output
+/dist/

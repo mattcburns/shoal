@@ -2,22 +2,55 @@
 First-time setup of the Shoal lab. All steps use Ansible directly; there is no Makefile.
 
 ## 1) Host prerequisites (L0)
-- [ ] `libvirt` / `virsh` installed and `libvirtd` running
-- [ ] `qemu-system-x86`, `qemu-img`, `genisoimage` installed
-- [ ] `ansible-playbook` installed
+
+L0 is the **Linux hypervisor** that runs the lab VM. **macOS is not a valid L0**
+(operator-only — see [operator-macos.md](./operator-macos.md)). Classic Linux and
+**Fedora secureblue** are supported for VM-hosted mode.
+
+### All Linux L0
+- [ ] `libvirt` / `virsh` usable with **`qemu:///system`** (system session)
+- [ ] `qemu-img` installed; QEMU/KVM stack present
+- [ ] Seed ISO tool: `genisoimage` **or** `mkisofs` **or** `xorriso`
+- [ ] `ansible-playbook` installed (on L0 or a controller that SSHs to L0)
 - [ ] `ssh` / `scp` installed
 - [ ] `/dev/kvm` exists on host
 - [ ] CPU virtualization flags present (`vmx` or `svm`)
+- [ ] **Nested virtualization** enabled on L0 (required for L2 sushy nodes)
 
 Quick checks:
 ```bash
 ls -l /dev/kvm
 grep -E '(vmx|svm)' /proc/cpuinfo | head
+cat /sys/module/kvm_intel/parameters/nested 2>/dev/null \
+  || cat /sys/module/kvm_amd/parameters/nested 2>/dev/null
+virsh -c qemu:///system version
 ```
 
 > The L0 management network (`shoal-mgmt-net`, `192.168.122.0/24`) is created
 > automatically by `up.yml`. You do **not** need to pre-create libvirt's
 > `default` network.
+
+### L0 on Fedora secureblue (optional profile)
+
+secureblue ships libvirt/QEMU/virt-manager on desktop images. Before `up.yml`:
+
+- [ ] Desktop secureblue image (virt stack preinstalled)
+- [ ] Enable **system** libvirt daemons:
+  ```bash
+  ujust set-libvirt-daemons
+  ```
+  Prefer the QEMU/KVM **system** session (bridge/NAT for the lab network). Do
+  **not** rely on the user session alone. Avoid adding your user to the
+  `libvirt` group for passwordless root-equivalent access; authenticate as needed.
+- [ ] Nested KVM enabled (same `modprobe.d` steps as classic Linux if nested is off)
+- [ ] Seed ISO tool available (`brew install xorriso` / `cdrtools`, or layer RPM)
+- [ ] Ansible available (`brew install ansible` or run playbooks from another host)
+- [ ] Optional: expect **SMT** may be disabled (secureblue mitigations) → slower nested lab / Ollama
+
+The `lab_vm` role detects secureblue/Atomic, tries modular libvirt sockets, opens
+**firewalld** for the management bridge (and still supports **ufw** on classic hosts).
+
+Direct-host lab mode (`lab.yml`) on secureblue is **not** a supported target.
 
 ## 2) Install Ansible collections
 - [ ] Run once:

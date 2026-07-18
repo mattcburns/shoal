@@ -1,0 +1,56 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: build and publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22.x"
+          cache: true
+
+      - name: Build multi-platform binaries
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          chmod +x scripts/build-release.sh
+          ./scripts/build-release.sh
+
+      - name: Package archives
+        run: |
+          set -euo pipefail
+          cd dist
+          for f in shoal_*; do
+            case "$f" in
+              checksums.txt|LICENSE|NOTICE|*.md) continue ;;
+            esac
+            archive="${f}.tar.gz"
+            tar -czf "$archive" "$f" LICENSE NOTICE third-party-licenses.md THIRD_PARTY_LICENSES.md
+          done
+          ls -la
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            dist/*.tar.gz
+            dist/checksums.txt
+            dist/LICENSE
+            dist/NOTICE
+            dist/third-party-licenses.md
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

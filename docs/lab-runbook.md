@@ -420,8 +420,16 @@ ansible-playbook -i infra/ansible/inventory/lab.yml infra/ansible/playbooks/down
 ```bash
 ls -l /dev/kvm
 grep -E '(vmx|svm)' /proc/cpuinfo | head
+cat /sys/module/kvm_intel/parameters/nested 2>/dev/null \
+  || cat /sys/module/kvm_amd/parameters/nested 2>/dev/null
+virsh -c qemu:///system version
 ```
 If missing, enable nested virtualization and reboot/reload KVM modules.
+
+**L0 profiles (Phase 6c):** classic Linux (ufw-aware) and **Fedora secureblue**
+(firewalld + modular libvirt). **macOS is not L0** — see
+[operator-macos.md](./operator-macos.md) and
+[lab-setup-checklist.md](./lab-setup-checklist.md) (L0 secureblue section).
 
 ### B) VM boots but SSH fails
 ```bash

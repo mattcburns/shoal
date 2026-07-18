@@ -6,7 +6,10 @@
 # artifacts (SSH key, downloads, rendered cloud-init, seed ISO) run become:false
 # so they stay owned by the operator.
 
-# ----- Prerequisites -----
+# ----- Profile + prerequisites -----
+- name: Detect L0 host profile
+  ansible.builtin.include_tasks: detect_profile.yml
+
 - name: Verify /dev/kvm present
   ansible.builtin.stat:
     path: /dev/kvm
@@ -15,7 +18,14 @@
 
 - name: Fail if /dev/kvm is missing on L0
   ansible.builtin.fail:
-    msg: "/dev/kvm not found on the L0 host. Ensure CPU virtualization is enabled in firmware and the kvm module is loaded."
+    msg: |
+      /dev/kvm not found on the L0 host.
+      Ensure CPU virtualization is enabled in firmware and the kvm module is loaded.
+      {% if shoal_l0_profile == 'secureblue' %}
+      On secureblue, also enroll the secureblue Secure Boot key if kernel modules
+      fail to load (ujust enroll-secureblue-secure-boot-key) and whitelist modules
+      if needed (ujust override-enable-module …).
+      {% endif %}
   when: not lab_vm_kvm.stat.exists
 
 # Nested virtualization must be enabled on L0 so the L1 lab VM (host-passthrough)
@@ -49,14 +59,68 @@
     success_msg: "Nested virtualization is enabled on L0 (nested={{ lab_vm_nested.stdout | trim }})."
   become: false
 
-- name: Verify required commands present
-  # 'command' is a shell builtin, not an executable, so it must run via the
-  # shell module -- ansible.builtin.command would try to exec a binary named
-  # 'command' and fail with "[Errno 2] No such file or directory: b'command'".
+- name: Verify required commands present (virsh, qemu-img, curl)
   ansible.builtin.shell: "command -v {{ item }}"
-  loop: [virsh, qemu-img, genisoimage, curl]
+  loop: [virsh, qemu-img, curl]
   changed_when: false
   become: false
+
+- name: Resolve seed-ISO tool (genisoimage | mkisofs | xorriso)
+  ansible.builtin.shell: |
+    for c in genisoimage mkisofs xorriso; do
+      if command -v "$c" >/dev/null 2>&1; then
+        echo "$c"
+        exit 0
+      fi
+    done
+    exit 1
+  register: lab_vm_seed_tool
+  changed_when: false
+  failed_when: false
+  become: false
+
+- name: Fail if no seed-ISO tool is available
+  ansible.builtin.fail:
+    msg: |
+      Need one of genisoimage, mkisofs, or xorriso to build the cloud-init seed ISO.
+      {% if shoal_l0_profile == 'secureblue' %}
+      On secureblue, install via Homebrew (brew install cdrtools or xorriso) or
+      layer an RPM (rpm-ostree install genisoimage / xorriso) and reboot.
+      {% else %}
+      Install genisoimage (Debian/Ubuntu), genisoimage/cdrkit, or xorriso.
+      {% endif %}
+  when: lab_vm_seed_tool.rc != 0
+
+- name: Record seed-ISO tool name
+  ansible.builtin.set_fact:
+    shoal_lab_vm_seed_iso_tool: "{{ lab_vm_seed_tool.stdout | trim }}"
+  become: false
+
+- name: Optional warning when SMT appears disabled (nested lab is CPU-heavy)
+  ansible.builtin.shell: |
+    if [ -r /sys/devices/system/cpu/smt/active ]; then
+      cat /sys/devices/system/cpu/smt/active
+    else
+      echo unknown
+    fi
+  register: lab_vm_smt
+  changed_when: false
+  failed_when: false
+  become: false
+
+- name: Warn if SMT is off
+  ansible.builtin.debug:
+    msg: |
+      SMT appears disabled on this L0 host (smt/active={{ lab_vm_smt.stdout | default('?') | trim }}).
+      Nested lab + Ollama inside L1 will be slower. On secureblue this is often
+      intentional (mitigations). Re-enable only if you accept the security tradeoff.
+  when:
+    - lab_vm_smt.stdout is defined
+    - (lab_vm_smt.stdout | trim) == "0"
+  become: false
+
+- name: Ensure system libvirt is usable
+  ansible.builtin.include_tasks: ensure_libvirt.yml
 
 # ----- SSH keypair (operator-owned) -----
 - name: Ensure SSH key directory exists
@@ -116,37 +180,9 @@
     name: "{{ shoal_mgmt_network_name }}"
     uri: "{{ shoal_libvirt_uri }}"
 
-# ----- Host firewall (ufw) -----
-# A libvirt NAT network only works if the host allows the VM's forwarded TCP/UDP
-# and its DNS/DHCP queries to the host's dnsmasq. ufw ships default-deny FORWARD
-# and INPUT policies and only whitelists ICMP echo, so an active ufw lets the VM
-# ping out but silently blocks DNS and package downloads -- cloud-init then fails
-# in its apt/snap phase. When ufw is active, open the management bridge.
-- name: Check host ufw status
-  ansible.builtin.command: ufw status
-  register: lab_vm_ufw_status
-  changed_when: false
-  failed_when: false
-
-- name: Open management bridge in ufw (input to host dnsmasq for DNS/DHCP)
-  community.general.ufw:
-    rule: allow
-    direction: in
-    interface: "{{ shoal_mgmt_network_bridge }}"
-  when:
-    - shoal_lab_vm_manage_ufw | bool
-    - lab_vm_ufw_status.rc == 0
-    - "'Status: active' in lab_vm_ufw_status.stdout"
-
-- name: Allow routed egress from the management bridge in ufw (VM -> internet via NAT)
-  community.general.ufw:
-    rule: allow
-    route: true
-    interface_in: "{{ shoal_mgmt_network_bridge }}"
-  when:
-    - shoal_lab_vm_manage_ufw | bool
-    - lab_vm_ufw_status.rc == 0
-    - "'Status: active' in lab_vm_ufw_status.stdout"
+# ----- Host firewall (ufw and/or firewalld) -----
+- name: Configure host firewall for management bridge
+  ansible.builtin.include_tasks: firewall.yml
 
 # ----- Base image + overlay disk -----
 - name: Download base cloud image (skip if already present)
@@ -200,10 +236,10 @@
     mode: "0644"
   become: false
 
-- name: Build cloud-init seed ISO
+- name: Build cloud-init seed ISO (genisoimage/mkisofs)
   ansible.builtin.command:
     argv:
-      - genisoimage
+      - "{{ shoal_lab_vm_seed_iso_tool }}"
       - -output
       - "{{ shoal_lab_vm_seed_iso }}"
       - -volid
@@ -215,6 +251,26 @@
       - "{{ shoal_lab_vm_work_dir }}/network-config"
   become: true
   changed_when: true
+  when: shoal_lab_vm_seed_iso_tool in ["genisoimage", "mkisofs"]
+
+- name: Build cloud-init seed ISO (xorriso)
+  ansible.builtin.command:
+    argv:
+      - xorriso
+      - -as
+      - mkisofs
+      - -output
+      - "{{ shoal_lab_vm_seed_iso }}"
+      - -volid
+      - cidata
+      - -joliet
+      - -rock
+      - "{{ shoal_lab_vm_work_dir }}/user-data"
+      - "{{ shoal_lab_vm_work_dir }}/meta-data"
+      - "{{ shoal_lab_vm_work_dir }}/network-config"
+  become: true
+  changed_when: true
+  when: shoal_lab_vm_seed_iso_tool == "xorriso"
 
 # ----- VM domain -----
 - name: Render VM domain XML
