@@ -120,6 +120,64 @@ services:
     networks:
       - shoal-lab
 
+{% if shoal_compose_app | default(true) | bool %}
+  # Phase 6d: Shoal application. host network so lab BMC/sushy IPs and published
+  # compose ports (NetBox/Ollama/telemetry) are reachable without extra routes.
+  shoal:
+    build:
+      context: {{ shoal_compose_dir }}/shoal-build
+    image: shoal:lab
+    container_name: shoal-app
+    network_mode: host
+    environment:
+      - SHOAL_HTTP_ADDR=:{{ shoal_app_http_port }}
+      - SHOAL_LOG_LEVEL={{ shoal_log_level | default('info') }}
+      - SHOAL_TELEMETRY_DATABASE_URL=postgresql://{{ shoal_telemetry_db_user }}:{{ shoal_telemetry_db_password }}@127.0.0.1:{{ shoal_telemetry_db_port }}/{{ shoal_telemetry_db_name }}
+      - SHOAL_NETBOX_URL=http://127.0.0.1:{{ shoal_netbox_port }}
+      - SHOAL_NETBOX_TOKEN={{ shoal_netbox_api_token }}
+      - SHOAL_AI_PROVIDER={{ shoal_ai_provider }}
+      - SHOAL_AI_MODEL={{ shoal_ai_model }}
+      - SHOAL_AI_VISION_MODEL={{ shoal_ai_vision_model | default('') }}
+      - SHOAL_OLLAMA_URL=http://127.0.0.1:{{ shoal_ollama_port }}
+      - SHOAL_CLOUD_AI_BASE_URL={{ shoal_cloud_ai_base_url | default('') }}
+      - SHOAL_CLOUD_AI_API_KEY={{ shoal_cloud_ai_api_key | default('') }}
+      - SHOAL_REDFISH_AUTH_MODE={{ shoal_redfish_auth_mode | default('basic') }}
+      - SHOAL_REDFISH_TLS_MODE={{ shoal_redfish_tls_mode | default('off') }}
+      - SHOAL_BMC_USERNAME={{ shoal_bmc_username }}
+      - SHOAL_BMC_PASSWORD={{ shoal_bmc_password }}
+      - SHOAL_ISO_PUBLISH_DIR=/srv/iso
+      - SHOAL_ISO_BASE_URL=http://{{ shoal_lab_network_gateway }}:{{ shoal_iso_server_port }}
+      - SHOAL_API_TOKEN={{ shoal_api_token | default('') }}
+{% if (shoal_fewshot_dir | default('') | length) > 0 %}
+      - SHOAL_FEWSHOT_DIR=/var/lib/shoal/fewshot
+{% endif %}
+{% if (shoal_profile_dir | default('') | length) > 0 %}
+      - SHOAL_PROFILE_DIR=/var/lib/shoal/profiles
+{% endif %}
+    volumes:
+      - {{ shoal_iso_server_dir }}:/srv/iso
+{% if (shoal_fewshot_dir | default('') | length) > 0 %}
+      - {{ shoal_fewshot_dir }}:/var/lib/shoal/fewshot
+{% endif %}
+{% if (shoal_profile_dir | default('') | length) > 0 %}
+      - {{ shoal_profile_dir }}:/var/lib/shoal/profiles
+{% endif %}
+    depends_on:
+      telemetry-db:
+        condition: service_healthy
+      netbox:
+        condition: service_healthy
+      ollama:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:{{ shoal_app_http_port }}/healthz"]
+      interval: 15s
+      timeout: 3s
+      retries: 10
+      start_period: 20s
+    restart: unless-stopped
+{% endif %}
+
 volumes:
   netbox-media:
   netbox-reports:

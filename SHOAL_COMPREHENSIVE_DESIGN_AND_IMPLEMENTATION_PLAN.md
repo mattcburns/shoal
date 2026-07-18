@@ -1,6 +1,6 @@
 # Shoal: Comprehensive Design Document & Phased Implementation Plan
 
-**Version:** 2.0.6  
+**Version:** 2.0.7  
 **Date:** July 2026  
 **Status:** Draft (post-review; open questions resolved)  
 **Author:** (architect / AI agent)  
@@ -28,11 +28,11 @@ This is a **language/stack revision** of the v1.1 product design — not a green
 
 ---
 
-## Changes in v2.0 / v2.0.1 / v2.0.2 / v2.0.3 / v2.0.4 / v2.0.5 / v2.0.6
+## Changes in v2.0 / v2.0.1 / v2.0.2 / v2.0.3 / v2.0.4 / v2.0.5 / v2.0.6 / v2.0.7
 
 Full stack rewrite of the **application** from Python to **Go (Golang)**, maximizing the Go standard library **except where Redfish complexity justifies gofish**.
 
-| Area | v1.1 (Python) | v2.0.6 (Go) |
+| Area | v1.1 (Python) | v2.0.7 (Go) |
 |------|---------------|-------------|
 | Language | Python 3.11+ | Go 1.22+ (prefer latest stable) |
 | Module path | n/a | **`github.com/mattcburns/shoal`** |
@@ -63,6 +63,8 @@ Full stack rewrite of the **application** from Python to **Go (Golang)**, maximi
 **v2.0.5 (photo vision model):** lab vision default is **`deepseek-ocr`** (Free OCR on asset labels; parse SERIAL/VENDOR/MODEL). Rejects placeholder serials. **`moondream` is not AC-grade** for inventory OCR. Text hybrid remains `llama3.2:3b` — do **not** use `deepseek-ocr` as the text model. Phase 6 graphics failure-screen OCR remains deferred (Tesseract vs cloud vision).
 
 **v2.0.6 (Phase 6c packaging + L0 hosts):** multi-platform **CGO-free** release binaries (linux/darwin amd64/arm64) via scripts + GHA; ship `LICENSE`/`NOTICE`/`docs/third-party-licenses.md` with artifacts; **macOS is an operator host** (binary + remote/Linux lab) — not an L0 nested hypervisor. **L0 VM-hosted lab** supports classic Linux and **Fedora secureblue** (detect profile, modular libvirt, firewalld; keep ufw path). Direct-host lab on secureblue and nested lab on macOS remain **out of scope**. Compose `shoal` service image, API auth, metrics, record/replay CI → **Phase 6d+**.
+
+**v2.0.7 (Phase 6d ops packaging):** optional **Compose `shoal` service** in the lab stack (binary image, env from Ansible); **Bearer API token** auth for `/v1/*` when `SHOAL_API_TOKEN` set (health/ready/metrics remain open); **stdlib Prometheus text `/metrics`** (job + HTTP counters, no new deps); **record/replay fixture tests** under `testdata/redfish/` wired into unit CI. Extra OEM screenshot adapters remain hardware-driven.
 
 **Preserved (product decisions, not language):**
 
@@ -1337,6 +1339,8 @@ Default VM-hosted endpoints: NetBox `:8000`, sushy `:8001`, ISO HTTP `:8080`, Ol
 | `SHOAL_RECONCILE_FAIL_ORPHANS` | no | Default `true` |
 | `SHOAL_FEWSHOT_DIR` | no | Append-only learned few-shot JSONL (Phase 3b confirm). Lab default via Ansible `shoal_fewshot_dir` → `/var/lib/shoal/fewshot` in `env.j2` + mkdir. Empty disables confirm |
 | `SHOAL_PROFILE_DIR` | no | JSON provisioning profiles + approval records (Phase 5b). Lab default via Ansible `shoal_profile_dir` → `/var/lib/shoal/profiles` in `env.j2` + mkdir. Empty disables non-spike profile load; `spike` profile ref always allowed without a store |
+| `SHOAL_API_TOKEN` | no | Phase 6d: Bearer token for `/v1/*` when set; empty = open API (lab default). Never log. Lab Ansible: `shoal_api_token` (vault optional) |
+| `shoal_compose_app` (Ansible) | — | Phase 6d: when true (lab default), stage binary + Dockerfile and run Compose service `shoal` (`network_mode: host`, port `shoal_app_http_port` / 8088) |
 
 **Ansible extensions (when packaging app service):**
 - `compose_stack` templates: add `shoal` service (static binary image), publish `SHOAL_HTTP_ADDR` port, inject table above into `env.j2`
@@ -1493,11 +1497,68 @@ Operator machines and release artifacts diverge by role. The **lab topology is u
 6. `lab_vm` on Darwin localhost: fails with operator-only guidance (no partial VM create).
 7. AGENTS.md documents packaging + L0 profiles; design §7.1 unchanged unless a new Go dep is added (prefer none).
 
-### Phase 6d+ (later)
+### Phase 6d (Compose shoal + auth + metrics + replay CI) — detailed plan
 
-Compose `shoal` service packaging; API auth + metrics; record/replay CI; more vendor screenshot adapters as hardware is tested.
+#### 6d.1 Compose `shoal` service
 
-Executable checklist: [`docs/phase-6c-plan.md`](./docs/phase-6c-plan.md).
+| Item | Decision |
+|------|----------|
+| Enable | `shoal_compose_app: true` (default **true** in lab) |
+| Image | Local build: minimal Dockerfile copies CGO-free `shoal` binary (Ansible builds on target or controller and stages binary + Dockerfile under compose dir) |
+| Ports | host `shoal_app_http_port` (default **8088**) → container `:8088` |
+| Env | Rendered into compose service from lab vars: telemetry DSN (in-network host `telemetry-db`), NetBox URL/token, Ollama, AI models, ISO paths, BMC lab defaults, `SHOAL_API_TOKEN`, fewshot/profile dirs as volumes |
+| Volumes | ISO publish dir, fewshot dir, profile dir (rw as needed) |
+| Health | `GET /healthz` |
+
+Not a second orchestration model — same binary as release builds; Compose is lab convenience.
+
+#### 6d.2 API auth
+
+| Item | Decision |
+|------|----------|
+| Env | `SHOAL_API_TOKEN` — empty = **open** (MVP lab default); non-empty = require `Authorization: Bearer <token>` |
+| Protected | all `/v1/*` routes |
+| Open | `/healthz`, `/readyz`, `/metrics` |
+| Compare | constant-time; never log the token |
+
+CLI continues to talk to services without HTTP API for most ops; when calling API, operators pass the token via curl/env docs.
+
+#### 6d.3 Metrics
+
+| Item | Decision |
+|------|----------|
+| Endpoint | `GET /metrics` Prometheus **text exposition** (hand-written; **no** prometheus client library) |
+| Series | `shoal_http_requests_total{method,code,path}`, `shoal_jobs_started_total`, `shoal_jobs_cancel_total` |
+| Deps | stdlib only (`sync/atomic`) |
+
+#### 6d.4 Record/replay CI
+
+| Item | Decision |
+|------|----------|
+| Corpus | `testdata/redfish/*.json` (sushy-shaped System + root samples) |
+| Tests | Unit tests map fixtures → `SystemInfo` / parse helpers without live BMC |
+| CI | Covered by existing `go test ./...` in GHA |
+
+#### 6d non-goals
+
+- Full mTLS / OAuth OIDC  
+- OpenTelemetry traces  
+- Pushing images to a public registry (local compose build only)  
+- New OEM screenshot vendors without hardware  
+
+#### 6d acceptance criteria
+
+1. With `shoal_compose_app`, `up.yml` deploys `shoal` container; `GET :8088/healthz` succeeds (smoke optional when enabled).  
+2. With `SHOAL_API_TOKEN` set, `/v1/*` returns 401 without Bearer; healthz stays 200.  
+3. `/metrics` exposes job + HTTP counters.  
+4. Fixture tests under `testdata/redfish` pass in CI.  
+5. No new Go module deps (allow-list unchanged).  
+
+Executable checklist: [`docs/phase-6d-plan.md`](./docs/phase-6d-plan.md). Phase 6c checklist remains [`docs/phase-6c-plan.md`](./docs/phase-6c-plan.md).
+
+### Phase 6e+ (later)
+
+Additional vendor screenshot adapters as hardware is tested; optional image registry publish; richer tracing.
 
 ---
 
@@ -1664,6 +1725,7 @@ go test ./...
 | PR14 | `chore: Compose shoal service + Ansible env contract` | `compose_stack`, group_vars | PR1+ | Binary image; `env.j2` NetBox token + DSN + HTTP port |
 | PR15 | `feat: Phase 6 polish` | OCR (choose approach), metrics, API auth, TLS CA | MVP | Evaluate OCR options then implement; other hardening |
 | PR16 | `feat: Phase 6c packaging + L0 host profiles` | `scripts/build-release.sh`, GHA, `lab_vm`, docs | Phase 6a–b on master | Multi-platform CGO-free binaries + NOTICE; macOS operator docs; secureblue L0 + firewalld; keep classic L0 |
+| PR17 | `feat: Phase 6d compose shoal + auth + metrics + replay` | compose_stack, `api`, config, fixtures | 6c on master | Lab Compose app service; Bearer token; `/metrics`; redfish fixture CI |
 
 **High-level order:** Docs → skeleton → models/secrets → **Postgres jobs** → Redfish + SOL + **live image** → Deploy orchestrator → **Phase 2 spike** → **AI** → Discover hybrid → Observe broaden → Deploy harden → Compose package → Phase 6.
 
@@ -1671,7 +1733,7 @@ go test ./...
 
 ## Open Questions
 
-**All previously open product decisions are resolved through v2.0.6.** Phase 0–5 and 6a–6b are on `master`; Phase **6c** (packaging + L0 hosts) is next; **6d+** remains later polish.
+**All previously open product decisions are resolved through v2.0.7.** Phase 0–6c on `master`; Phase **6d** is next ops packaging.
 
 | Topic | Resolution |
 |-------|------------|
@@ -1693,11 +1755,13 @@ go test ./...
 | **Complete vs CompleteVision** | Text Discover → `Complete` + text model; photo → `CompleteVision` (`Free OCR.`) + parse SERIAL/VENDOR/MODEL; missing serial → **fail** (no synthetic IDs) |
 | **Phase 6c packaging** | Multi-platform CGO-free binaries + GHA release; license bundle; macOS = **operator only** |
 | **Phase 6c L0 hosts** | Classic Linux + **secureblue/Atomic** for VM-hosted lab; Darwin L0 nested lab **unsupported** |
-| **Compose shoal / API auth / metrics / replay CI** | **Phase 6d+** (after 6c) |
+| **Compose shoal / API auth / metrics / replay CI** | **Phase 6d** (v2.0.7) |
+| **Phase 6d API auth** | Optional Bearer `SHOAL_API_TOKEN`; open if empty; protects `/v1/*` only |
+| **Phase 6d metrics** | Stdlib Prometheus text `/metrics`; no new deps |
 
-**Deferred until Phase 6d+ (not blocking 6c):**
+**Deferred until Phase 6e+:**
 
-- Compose `shoal` service image; API auth; metrics/tracing; record/replay CI; additional vendor screenshot adapters.
+- Additional vendor screenshot adapters; registry image publish; distributed tracing.
 
 ---
 
@@ -1713,9 +1777,9 @@ go test ./...
 
 ---
 
-**This document (v2.0.6) is the SoT for agents.** Phase 0–5 and 6a–6b are on `master`.
+**This document (v2.0.7) is the SoT for agents.** Phase 0–6c are on `master`.
 
 Next actions:
-1. Phase **6c**: multi-platform packaging + macOS operator docs + L0 secureblue/classic lab_vm profiles ([`docs/phase-6c-plan.md`](./docs/phase-6c-plan.md))
-2. Phase **6d+**: Compose shoal service, API auth, metrics, record/replay CI; more vendor screenshot adapters
+1. Phase **6d**: Compose shoal + API auth + metrics + redfish fixture CI ([`docs/phase-6d-plan.md`](./docs/phase-6d-plan.md))
+2. Phase **6e+**: more vendor screenshot adapters; optional registry publish
 3. Stretch: full distro autoinstall; NetBox device-id binding

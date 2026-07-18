@@ -111,6 +111,28 @@
       failed_when: false
       changed_when: false
 
+    - name: Check Shoal app healthz (Phase 6d Compose, when enabled)
+      ansible.builtin.uri:
+        url: "http://{{ shoal_service_host }}:{{ shoal_app_http_port | default(8088) }}/healthz"
+        method: GET
+        status_code: [200]
+        timeout: 10
+      register: smoke_shoal
+      failed_when: false
+      changed_when: false
+      when: shoal_compose_app | default(true) | bool
+
+    - name: Check Shoal app metrics (Phase 6d)
+      ansible.builtin.uri:
+        url: "http://{{ shoal_service_host }}:{{ shoal_app_http_port | default(8088) }}/metrics"
+        method: GET
+        status_code: [200]
+        timeout: 10
+      register: smoke_shoal_metrics
+      failed_when: false
+      changed_when: false
+      when: shoal_compose_app | default(true) | bool
+
     - name: Check each node serial console
       ansible.builtin.command: "virsh ttyconsole {{ node.name }}"
       loop: "{{ shoal_bmc_nodes }}"
@@ -145,14 +167,20 @@
           - smoke_redfish_systems.status == 200
           - smoke_ollama.status == 200
           - smoke_iso.status in [200, 403, 404]
+          - >-
+            (not (shoal_compose_app | default(true) | bool))
+            or (smoke_shoal.status | default(0) == 200
+                and smoke_shoal_metrics.status | default(0) == 200)
         fail_msg: >-
           Smoke checks failed --
           NetBox={{ smoke_netbox.status | default('err') }},
           Redfish root={{ smoke_redfish_root.status | default('err') }},
           Redfish Systems={{ smoke_redfish_systems.status | default('err') }},
           Ollama={{ smoke_ollama.status | default('err') }},
-          ISO HTTP={{ smoke_iso.status | default('err') }}.
+          ISO HTTP={{ smoke_iso.status | default('err') }},
+          Shoal healthz={{ smoke_shoal.status | default('skipped') }},
+          Shoal metrics={{ smoke_shoal_metrics.status | default('skipped') }}.
           (200/403/404 are acceptable for the ISO server.)
         success_msg: >-
           All HTTP smoke checks passed: NetBox, Redfish root, Redfish Systems,
-          Ollama, and the ISO HTTP server.
+          Ollama, ISO HTTP{% if shoal_compose_app | default(true) | bool %}, and Shoal app{% endif %}.

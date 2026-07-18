@@ -1,0 +1,9 @@
+{
+  "@odata.id": "/redfish/v1/Systems/1",
+  "Id": "1",
+  "Name": "shoal-node-2",
+  "SerialNumber": "LAB-SN-FIXTURE-2",
+  "Manufacturer": "Shoal Virtual",
+  "Model": "sushy-node",
+  "PowerState": "On"
+}

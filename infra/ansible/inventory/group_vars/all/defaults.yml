@@ -43,6 +43,12 @@ shoal_iso_server_port: 8080
 shoal_ollama_port: 11434
 shoal_telemetry_db_port: 5433
 shoal_redis_port: 6379
+shoal_app_http_port: 8088
+
+# Phase 6d: run Shoal app as a Compose service (binary image staged by Ansible).
+shoal_compose_app: true
+# Optional Bearer token for /v1/* (empty = open lab API). Prefer vault.
+shoal_api_token: ""
 
 # --- AI provider (see design doc §6 / v2.0.4 dual-model contract) ---
 # Provider is "ollama" (local, served by the shoal-ollama container) or "cloud".

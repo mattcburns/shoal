@@ -24,3 +24,6 @@ shoal_telemetry_db_password: shoal_password
 # Cloud AI provider (only used when shoal_ai_provider == "cloud"; leave empty for
 # local Ollama). This is a secret — never commit a real key.
 shoal_cloud_ai_api_key: ""
+
+# Phase 6d: HTTP API Bearer token for Shoal /v1/* (empty disables auth).
+# shoal_api_token: ""
