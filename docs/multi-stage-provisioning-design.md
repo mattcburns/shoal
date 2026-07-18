@@ -59,10 +59,9 @@ secrets never to logs/LLM, mandatory media cleanup).
 | Offline only | No guest HTTP seed URLs (no transit assumption) |
 | Prep | First-class optional stage before OS install |
 | Image-write | Keep (7a); secondary strategy for golden/cloud disks |
-| Ubuntu / Flatcar | Installer or image path + **offline seed** via second Virtual Media **or** config-drive partition (Ironic-style) |
-| VMware ESXi (v1) | Operator supplies a **ready-to-boot install ISO** (kickstart already baked if needed); Shoal attaches and provisions — **no ISO remaster/compose in this design** |
-| Windows | Open; options in §6.4 — likely same “operator-built ISO” v1 stance as ESXi |
-| Later designs | Optional separate docs for **ISO composition** (embed ks into ESXi ISO, remaster Windows, etc.) |
+| Ubuntu / Flatcar | Installer + offline seed (preference order §4.3) |
+| VMware ESXi / Windows (v1) | **Same boat:** operator supplies a **ready-to-boot install ISO** (ks / Autounattend already on media); Shoal attaches and provisions — **no ISO remaster/compose in this design** |
+| Later designs | Optional separate docs for **ISO composition** (embed ks into ESXi, remaster Windows, etc.) |
 
 ---
 
@@ -145,15 +144,28 @@ fold it under a broader `scripted_iso` with `compose: false` — pick one in the
 
 **Forbidden:** any install-time fetch of answer files over the guest network.
 
-**Allowed:**
+#### 4.3.0 Preference order (when Shoal owns the seed)
 
-1. Config already **inside** an operator-built ISO (`operator_iso`).
-2. **Second Virtual Media** seed (CIDATA / ignition OEM / floppy-like ISO).
-3. **Config-drive partition** on the target disk, written before or during deploy
-   (OpenStack Ironic-style).
-4. **Image-write** payloads that already contain first-boot config (7a cloud prepare).
+For families where Shoal renders and delivers config (Ubuntu, Flatcar; not operator-built
+ESXi/Windows ISOs), prefer the **first mode the BMC/hardware allows**:
 
-#### 4.3.1 Second Virtual Media (userdata volume)
+| Priority | Mode | When to use |
+|----------|------|-------------|
+| **1 (preferred)** | **Second Virtual Media + OS installer** | BMC has ≥2 virtual media (or CD+USB): boot installer on device A, seed ISO/FAT on device B |
+| **2** | **Config-drive partition** on install disk | Only one Virtual Media device, or second_media unavailable; Ironic-style local partition/label |
+| **3** | **Customized single deploy ISO** | Remaster/compose installer + answer into one ISO (highest complexity; last resort for Shoal-owned seeds) |
+
+**Separate track (not ranked in 1–3):**
+
+| Mode | Role |
+|------|------|
+| **`operator_iso`** | Operator already built a single ready ISO (ESXi + ks, Windows + Autounattend). Shoal does not compose. |
+| **`image_write`** | Full disk image already contains first-boot config (7a cloud prepare). No separate seed device. |
+
+Implementation picks seed mode from profile + BMC capability probe (list Virtual Media
+count); never fall back to guest HTTP.
+
+#### 4.3.1 Second Virtual Media (userdata volume) — preference #1
 
 When the BMC exposes **≥2** virtual media devices (or CD + USB):
 
@@ -171,7 +183,7 @@ cleanup.
 lab domain XML extensions — document fidelity gap; do not pretend nested sushy covers it
 until proven.
 
-#### 4.3.2 Config-drive partition (Ironic-style) — confirmed pattern
+#### 4.3.2 Config-drive partition (Ironic-style) — preference #2
 
 OpenStack Ironic (and Nova) can present instance metadata as a **configuration drive**:
 
@@ -208,7 +220,17 @@ separate config partition.
 **Risks:** Partition layout must not fight the installer (leave free space / use end of
 disk / use a second disk if present). Impl PR must pin a tested layout per family.
 
-#### 4.3.3 Explicitly rejected for this design
+#### 4.3.3 Customized single deploy ISO — preference #3
+
+Remaster or inject answer files into one bootable installer ISO (Ubuntu autoinstall
+remaster, future Flatcar embeds, etc.). **Valid but last among Shoal-owned seed modes**
+because of hybrid/UEFI boot fragility, large rebuilds, and version skew. Prefer #1 or #2
+when the BMC and family support them.
+
+**Not** the v1 path for ESXi/Windows (those stay `operator_iso` until a separate compose
+design exists).
+
+#### 4.3.4 Explicitly rejected for this design
 
 | Mode | Why rejected |
 |------|----------------|
@@ -237,7 +259,9 @@ Profile flags (sketch):
 prep: skip | wipe_only | full
 wipe_level: none | discard | pass | crypto
 raid_profile_ref: optional
-seed_delivery: second_media | config_drive | none   # none = operator_iso or image_write embeds config
+seed_delivery: auto | second_media | config_drive | single_iso | none
+# auto = prefer second_media, else config_drive, else single_iso (see §4.3.0)
+# none = operator_iso or image_write (config already on media/image)
 ```
 
 Destruct/wipe still requires Phase **5b** approval.
@@ -293,7 +317,8 @@ os_family: ubuntu | flatcar | esxi | windows
 os_version: string
 install_strategy: operator_iso | scripted_iso | image_write
 media_url / media_ref: operator or published installer / marker ISO
-seed_delivery: none | second_media | config_drive
+seed_delivery: auto | second_media | config_drive | single_iso | none
+# auto implements §4.3.0 preference order when strategy is scripted_iso
 answer_template_ref: ubuntu/flatcar only
 prep: skip | wipe_only | full
 hostname, install_disk, …
@@ -324,71 +349,53 @@ write), `PREP_DONE`, `ERROR`
 
 | Family | v1 strategy | Config delivery | Who builds the install ISO? |
 |--------|-------------|-----------------|------------------------------|
-| **Ubuntu** | `image_write` (done) and/or `scripted_iso` | second_media and/or config_drive; or baked into cloud image (7a prepare) | Shoal marker/seed; installer may be stock or lightly prepared |
-| **Flatcar** | `scripted_iso` or image if applicable | second_media and/or config_drive (Ignition offline) | Stock Flatcar media + Shoal seed |
-| **VMware ESXi** | **`operator_iso` only in this design** | Inside operator ISO (kickstart already embedded by user) | **Operator** (later design: Shoal compose) |
-| **Windows** | **TBD — see §6.4**; lean **`operator_iso` for v1** | Inside operator ISO or second media if BMC allows | **Operator** for v1; composition later |
+| **Ubuntu** | `image_write` (done) and/or `scripted_iso` | §4.3.0: second_media → config_drive → single_iso; or baked in image (7a) | Shoal seed; stock/light installer |
+| **Flatcar** | `scripted_iso` (or image if applicable) | §4.3.0 same order (Ignition offline) | Stock media + Shoal seed |
+| **VMware ESXi** | **`operator_iso` (v1)** | Inside operator ISO | **Operator** |
+| **Windows** | **`operator_iso` (v1)** — same boat as ESXi | Inside operator ISO | **Operator** |
 
 ### 6.2 Ubuntu
 
 | Path | Notes |
 |------|--------|
 | **image_write (7a)** | Prepare cloud image offline (hostname, user, NoCloud seed on image) → marker ISO → dd. **No guest network.** |
-| **scripted_iso** | Boot installer ISO; deliver autoinstall/cloud-init via **second_media** or **config_drive** only. |
+| **scripted_iso** | Boot installer ISO; seed via §4.3.0 order (second_media → config_drive → single_iso). |
 
 ### 6.3 Flatcar
 
-- Prefer offline Ignition via **second_media** or **config_drive** partition written in prep.
-- No `ignition.config.url=http://…` in this design.
+- Offline Ignition only; same §4.3.0 preference order as Ubuntu.
+- No `ignition.config.url=http://…`.
 - Progress may be coarse; verify stage important.
 
-### 6.4 VMware ESXi (v1 scope)
+### 6.4 VMware ESXi and Windows (same v1 boat)
 
-**In scope:**
+Both are **`operator_iso`** for the first product slice: operator builds the ready
+install ISO; Shoal attaches, boots, waits, cleans up.
 
-- Profile/job supplies `media_url` to a **pre-built** ESXi install ISO (kickstart already
-  on media / boot args already set by the operator’s build pipeline).
-- Orchestrator: attach → boot once CD → wait SOL/timeout/power signals → cleanup →
-  optional verify.
+| | ESXi | Windows |
+|--|------|---------|
+| **Who builds media** | Operator (ks already on ISO if unattended) | Operator (`Autounattend.xml` already on ISO if unattended) |
+| **Shoal does** | Attach → boot CD → wait → cleanup | Same |
+| **Shoal does not (v1)** | Remaster / inject kickstart | Remaster / inject unattend + drivers |
+| **Progress** | Coarse (timeouts / power; markers if lucky) | Coarse (SOL usually poor) |
+| **Later** | Optional compose design | Optional compose or dual-media unattend |
 
-**Out of scope (later design document):**
+**Why same boat:** neither treats Ironic/cloud-init config-drive as the natural *setup*
+path the way Ubuntu/Flatcar do. Offline unattended config is expected **on the media the
+operator already built** until a dedicated compose design exists.
 
-- Remastering ESXi ISO, injecting `ks.cfg`, rewriting boot.cfg, signing concerns, version
-  matrix of ESXi media layouts.
+**Windows-only nuances (not ESXi):**
 
-This keeps Shoal’s first ESXi milestone honest: **attach and run**, not **become an ESXi
-media factory**.
+- Setup looks for `Autounattend.xml` on **install/removable media**, not `config-2`
+  mid-setup — so §4.3 preference **#2 (config_drive)** is a poor fit for Windows *setup*.
+- Dual Virtual Media (installer + small unattend ISO) is closer to preference **#1** and
+  may be a **later** Windows improvement when the BMC has two devices — not required for
+  v1 if unattend is baked into the ISO.
+- Golden **image_write** remains valid if the org already ships sysprep’d images.
+- Licensing / OEM drivers stay out of band.
 
-### 6.5 Windows — options analysis (decision needed)
-
-Windows Setup does **not** use cloud-init/config-drive the way Linux does. Unattended
-install is driven by **`Autounattend.xml` / `unattend.xml`**, which Setup searches on
-**removable media and installation media** (and related paths), not a standard Ironic
-`config-2` partition mid-install.
-
-| Option | Offline? | Fits BMC VM? | Complexity | Recommendation |
-|--------|----------|--------------|------------|----------------|
-| **A. Operator-built ISO** with `Autounattend.xml` at ISO root (same pattern as ESXi v1) | Yes | Single CD | Low for Shoal | **Preferred v1** |
-| **B. Dual Virtual Media** — Windows ISO + second small ISO/floppy containing `Autounattend.xml` | Yes | Needs ≥2 devices | Medium | Good when BMC supports it |
-| **C. Shoal remasters Windows ISO** to inject unattend + drivers | Yes | Single CD | High (tools, licensing, Secure Boot, driver packs) | Later design only |
-| **D. image_write golden Windows image** (sysprep generalized VHD/raw) | Yes | Marker write path | Medium–high (sysprep pipeline outside Shoal) | Valid if org already builds golden images |
-| **E. Guest HTTP unattend** | No | — | — | **Rejected** (offline constraint) |
-| **F. Config-drive partition only** | Partial | — | High / unreliable for Setup | **Not primary**; Setup may not read it like cloud-init |
-
-**Progress / SOL:** Windows rarely emits clean serial markers. Expect **timeouts, power
-state, optional post-boot check** (agent later), not Phase-2-quality SOL. Document as
-family-specific progress policy.
-
-**Licensing / drivers:** Out of band; Shoal does not distribute Windows media or OEM
-drivers.
-
-**Proposed stance for this design:**
-
-1. **v1 Windows = `operator_iso`** (operator provides ready unattended ISO), same as ESXi.  
-2. **Optional later:** dual-media unattend when BMC has two devices.  
-3. **Separate design** if we want Shoal-side Windows ISO composition or golden-image
-   factory.  
-4. Do **not** plan guest-network answer files.
+**In scope v1:** `media_url` → attach → boot → cleanup → optional verify.  
+**Out of scope v1:** becoming an ESXi or Windows media factory.
 
 ---
 
@@ -463,11 +470,11 @@ Version media URLs when content changes (sushy cache lesson from 7a).
 | **M0** | This design merged | Docs only |
 | **M1** | Stage runner skeleton; single-stage compat with 7a image-write | 7a still green |
 | **M2** | Prep v1: wipe + `PREP_*` + handoff to image-write Ubuntu | Nested E2E |
-| **M3** | Offline seed: **config_drive** and/or **second_media** for Ubuntu NoCloud | Lab or hardware AC; no HTTP seed |
-| **M4** | Flatcar offline Ignition seed (same delivery modes) | Documented AC |
-| **M5** | **`operator_iso`** path (ESXi-shaped: attach + boot + cleanup + coarse progress) | Hardware preferred; lab if possible |
-| **M6** | Profiles for strategies + seed_delivery | Start without ad-hoc flags for one family |
-| **Later** | Separate designs: ESXi ISO compose, Windows compose, dual-media Windows | Out of this doc’s implementation slices |
+| **M3** | Offline seed preference #1 then #2: **second_media**, else **config_drive**, for Ubuntu NoCloud | Lab or hardware AC; no HTTP seed |
+| **M4** | Flatcar offline Ignition (same preference order) | Documented AC |
+| **M5** | **`operator_iso`** path shared by ESXi + Windows shape (attach + boot + cleanup + coarse progress) | Hardware preferred |
+| **M6** | Profiles + `seed_delivery: auto` implementing §4.3.0 | Happy path without ad-hoc flags |
+| **Later** | Separate designs: ESXi/Windows ISO compose; optional Windows dual-media unattend; single_iso remaster polish | Out of this doc’s v1 slices |
 
 ---
 
@@ -487,9 +494,8 @@ Version media URLs when content changes (sushy cache lesson from 7a).
 1. **Always run prep?** Default `prep: skip` for 7a-compat; `wipe_only` for reimage.  
 2. **Verify stage:** serial scrape vs future guest agent vs Redfish-only power/boot?  
 3. **Config-drive layout:** exact partition size/offset/label per family (pin in M3).  
-4. **Single-CD BMCs:** force `config_drive` or `image_write` when `second_media` impossible?  
-5. **Windows v1:** confirm **operator_iso only** (recommended) vs invest in dual-media unattend.  
-6. **ESXi progress without SOL markers:** max timeout + power state only for M5?
+4. **ESXi/Windows progress without SOL markers:** max timeout + power state only for M5?  
+5. **When to invest in single_iso compose** for Ubuntu if #1 and #2 both fail in lab?
 
 ---
 
