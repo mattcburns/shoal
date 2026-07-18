@@ -76,7 +76,9 @@ secrets never to logs/LLM, mandatory media cleanup).
 5. **Operator-provided ISO** path for ESXi (and likely Windows v1).
 6. Preserve SOL marker protocol; extend phases for prep/install namespaces.
 7. Profile-driven happy path where Shoal owns config (Ubuntu/Flatcar); simple URL attach
-   where operator owns the ISO (ESXi).
+   where operator owns the ISO (ESXi/Windows).
+8. **Operator API** (§6): extend `POST/GET /v1/jobs` and `shoal deploy *` — profile-first,
+   explicit media overrides, staged job status; no separate control plane.
 
 ### 3.2 Non-goals (this design)
 
@@ -289,7 +291,7 @@ cmd/shoal
 ```go
 type InstallStrategy string // simulate | image_write | scripted_iso | operator_iso
 
-type SeedDelivery string // none | second_media | config_drive
+type SeedDelivery string // auto | none | second_media | config_drive | single_iso
 
 type JobStageKind string // prep | os_install | verify
 
@@ -308,7 +310,8 @@ type JobStageSpec struct {
 ```
 
 **Compat path:** single `-iso-url` ⇒ one-stage job (`image_write` or `operator_iso` /
-`scripted_iso` as selected).
+`scripted_iso` as selected). Operators do **not** hand-build a stage array in the happy
+path; the Orchestrator expands profile + request into stages (§6).
 
 ### 5.2 Profile extensions (Phase 5b+)
 
@@ -343,9 +346,338 @@ write), `PREP_DONE`, `ERROR`
 
 ---
 
-## 6. OS support matrix
+## 6. Operator API (CLI + HTTP)
 
-### 6.1 Summary table
+This section is **normative for the product surface**. Implementation extends existing
+`POST /v1/jobs` / `shoal deploy run` rather than inventing a second control plane.
+
+### 6.1 Surfaces
+
+| Surface | Endpoints / commands | Notes |
+|---------|----------------------|--------|
+| **HTTP** | `POST /v1/jobs`, `GET /v1/jobs/{id}`, `POST /v1/jobs/{id}/cancel` | Same routes as today; request/response fields grow |
+| **CLI** | `shoal deploy run \| status \| cancel` | Flags mirror JSON fields |
+| **Profiles** | `shoal profile …` + `SHOAL_PROFILE_DIR` | Happy path: install intent lives here |
+| **Auth** | `Authorization: Bearer $SHOAL_API_TOKEN` when token set | Unchanged (Phase 6d) |
+
+**Not user-facing:** Redfish attach/eject, stage scheduling, SOL session ownership
+(Orchestrator + Observe internals).
+
+### 6.2 Mental model
+
+```text
+1. Publish or host install media on the management segment (BMC-reachable URL)
+2. Save profile (and approve if wipe/destruct)
+3. POST /v1/jobs  { device_id, profile_ref, bmc_*, credentials, … }
+4. Poll GET /v1/jobs/{id} until state provisioned | failed
+5. On failure: media already cleaned; fix inputs; retry
+```
+
+| Intent | What the operator passes |
+|--------|---------------------------|
+| Pre-built ESXi / Windows ISO | `install_strategy=operator_iso` + `iso_url` (or profile) |
+| Ubuntu cloud image-write (7a) | `image_write` media / profile |
+| Ubuntu / Flatcar installer + seed | `scripted_iso` + `seed_delivery=auto` (or explicit) |
+| Wipe then install | `prep=wipe_only` (or `full`) + `approve_destruct` |
+
+Stages are **derived** from profile + request. Operators do not submit a raw stage DAG
+in the happy path.
+
+### 6.3 Profile-driven happy path
+
+**Example profile** (`scripted_iso` + prep):
+
+```json
+{
+  "ref": "lab-ubuntu-wipe-install",
+  "os_family": "ubuntu",
+  "os_version": "22.04",
+  "hostname": "node-a",
+  "install_strategy": "scripted_iso",
+  "seed_delivery": "auto",
+  "prep": "wipe_only",
+  "wipe_level": "discard",
+  "media_ref": "ubuntu-22.04-live-server",
+  "answer_template_ref": "ubuntu-autoinstall-default",
+  "install_disk": "/dev/sda",
+  "needs_approval": true,
+  "destruct_steps": ["secure_wipe"]
+}
+```
+
+**Example profile** (`operator_iso` — ESXi / Windows):
+
+```json
+{
+  "ref": "esxi-fleet-ready",
+  "os_family": "esxi",
+  "install_strategy": "operator_iso",
+  "seed_delivery": "none",
+  "prep": "skip",
+  "media_url": "http://192.168.124.1:8080/esxi-8-with-ks.iso"
+}
+```
+
+**HTTP — start job from profile:**
+
+```http
+POST /v1/jobs
+Content-Type: application/json
+
+{
+  "device_id": "rack1-u12",
+  "profile_ref": "lab-ubuntu-wipe-install",
+  "bmc_endpoint": "https://bmc.example/redfish/v1",
+  "credential_ref": "secret/bmc/rack1-u12",
+  "serial_target": "redfish_sol",
+  "approve_destruct": true,
+  "stall_timeout": "15m"
+}
+```
+
+**CLI:**
+
+```bash
+shoal deploy run \
+  -device-id rack1-u12 \
+  -profile-ref lab-ubuntu-wipe-install \
+  -bmc-url https://bmc.example/redfish/v1 \
+  -credential-ref secret/bmc/rack1-u12 \
+  -approve-destruct \
+  -wait
+```
+
+Response (accepted job; same shape as today, plus stage fields when implemented):
+
+```json
+{
+  "id": "abc…",
+  "device_id": "rack1-u12",
+  "profile_ref": "lab-ubuntu-wipe-install",
+  "state": "provisioning",
+  "phase": "WAITING_SOL",
+  "current_stage": "prep",
+  "stages": [ … ],
+  "started_at": "…",
+  "updated_at": "…"
+}
+```
+
+### 6.4 Explicit / one-off start (compat + power users)
+
+Extends today’s spike flags: pass media URLs without a full profile. Used for lab 7a,
+operator ISOs, and debugging.
+
+**CLI examples:**
+
+```bash
+# 7a-style image-write
+shoal deploy run \
+  -device-id shoal-node-1 \
+  -bmc-url http://192.168.122.100:8001 \
+  -serial-target shoal-node-1 \
+  -iso-url http://192.168.124.1:8080/shoal-ubuntu-cloud-v5.iso \
+  -wait
+
+# Operator ISO (ESXi / Windows)
+shoal deploy run \
+  -device-id host-7 \
+  -bmc-url https://bmc/redfish/v1 \
+  -install-strategy operator_iso \
+  -iso-url http://mgmt:8080/esxi-custom.iso \
+  -wait
+
+# Scripted Ubuntu with explicit second-media seed
+shoal deploy run \
+  -device-id host-7 \
+  -install-strategy scripted_iso \
+  -os-family ubuntu \
+  -seed-delivery second_media \
+  -iso-url http://mgmt:8080/ubuntu-live.iso \
+  -seed-url http://mgmt:8080/cidata-host7.iso \
+  -wait
+```
+
+**HTTP — extended `StartJobRequest` (illustrative; field names finalised in impl PR):**
+
+```json
+{
+  "device_id": "host-7",
+  "bmc_endpoint": "https://bmc/redfish/v1",
+  "credential_ref": "secret/bmc/host-7",
+  "serial_target": "redfish_sol",
+  "install_strategy": "operator_iso",
+  "iso_url": "http://mgmt:8080/esxi-custom.iso",
+  "seed_delivery": "none",
+  "stall_timeout": "45m"
+}
+```
+
+| Field | Meaning |
+|-------|---------|
+| `device_id` | Target identity (required) |
+| `profile_ref` | Load install/prep/seed defaults from profile store |
+| `bmc_endpoint` | Redfish base URL |
+| `bmc_username` / `bmc_password` | Lab/spike only; prefer `credential_ref` |
+| `credential_ref` | Opaque BMC (and seed-render) secret handle |
+| `serial_target` | Libvirt domain or SOL target for Observe |
+| `iso_url` / `media_url` | Installer or marker ISO (**BMC-reachable**; mgmt HTTP OK) |
+| `seed_url` | Second Virtual Media seed ISO URL (when `seed_delivery=second_media`) |
+| `install_strategy` | `operator_iso` \| `scripted_iso` \| `image_write` \| `simulate` |
+| `seed_delivery` | `auto` \| `second_media` \| `config_drive` \| `single_iso` \| `none` |
+| `os_family` | `ubuntu` \| `flatcar` \| `esxi` \| `windows` |
+| `prep` | `skip` \| `wipe_only` \| `full` (overrides profile) |
+| `approve_destruct` | Required when prep wipe / profile `needs_approval` |
+| `stall_timeout` | SOL silence window (family defaults may raise) |
+| `build_iso` | Existing 6a/7a dynamic build (image-write / marker) |
+
+**Forbidden in request fields:** guest-facing HTTP URLs for kickstart, user-data,
+Ignition, or unattend (`ks=http://…`, nocloud-net, etc.). Reject at validate time.
+
+**Optional advanced escape hatch** (not required for M1; product docs lead with profile):
+
+```json
+{
+  "device_id": "…",
+  "bmc_endpoint": "…",
+  "credential_ref": "…",
+  "serial_target": "…",
+  "stages": [
+    { "kind": "prep", "wipe_level": "discard" },
+    {
+      "kind": "os_install",
+      "strategy": "scripted_iso",
+      "family": "ubuntu",
+      "media_url": "http://mgmt:8080/ubuntu.iso",
+      "seed_delivery": "config_drive"
+    }
+  ]
+}
+```
+
+If both `profile_ref` and `stages` are set, implementation must define precedence
+(recommend: explicit `stages` wins, else expand profile).
+
+### 6.5 Profile → stage expansion (orchestrator, not user)
+
+| Profile / request | Stages executed |
+|-------------------|-----------------|
+| `prep: skip`, `image_write` | `[os_install]` (7a shape) |
+| `prep: wipe_only`, `scripted_iso`, `seed_delivery: auto` | `[prep, os_install]` (+ optional verify) |
+| `operator_iso` (ESXi/Windows) | `[os_install]` attach given ISO |
+| `prep: skip`, `scripted_iso`, seed `second_media` | `[os_install]` with two Virtual Media attaches |
+
+### 6.6 Job status API
+
+```http
+GET /v1/jobs/{id}
+```
+
+```json
+{
+  "id": "abc…",
+  "device_id": "rack1-u12",
+  "profile_ref": "lab-ubuntu-wipe-install",
+  "state": "provisioning",
+  "phase": "PREP_WIPE",
+  "percent": 40,
+  "current_stage": "prep",
+  "stages": [
+    {
+      "id": "prep",
+      "kind": "prep",
+      "state": "running",
+      "phase": "PREP_WIPE",
+      "percent": 40
+    },
+    {
+      "id": "os_install",
+      "kind": "os_install",
+      "strategy": "scripted_iso",
+      "family": "ubuntu",
+      "seed_delivery": "second_media",
+      "state": "pending"
+    },
+    {
+      "id": "verify",
+      "kind": "verify",
+      "state": "pending"
+    }
+  ],
+  "last_marker_seq": 12,
+  "iso_url": "http://…/ubuntu-live.iso",
+  "error": null,
+  "updated_at": "…"
+}
+```
+
+**Terminal success:**
+
+```json
+{
+  "state": "provisioned",
+  "phase": "DONE",
+  "percent": 100,
+  "current_stage": "verify"
+}
+```
+
+**Terminal failure:**
+
+```json
+{
+  "state": "failed",
+  "phase": "ERROR",
+  "error": "prep wipe failed: …",
+  "current_stage": "prep"
+}
+```
+
+**CLI:**
+
+```bash
+shoal deploy status -job-id abc…
+shoal deploy run … -wait    # block until provisioned|failed
+```
+
+Coarse lifecycle states remain **`provisioning` | `provisioned` | `failed`** (and
+existing cancel path). `phase` / `current_stage` / `stages[]` carry multi-stage detail.
+
+### 6.7 Cancel
+
+```http
+POST /v1/jobs/{id}/cancel
+```
+
+```bash
+shoal deploy cancel -job-id abc…
+```
+
+At **any** stage: unregister SOL, eject **all** Virtual Media (installer + seed), clear
+boot override, transition job to failed/canceled. Same mandatory cleanup as today.
+
+### 6.8 What is not on the user API
+
+- Guest HTTP answer-file URLs  
+- Direct Redfish Virtual Media / boot override calls (Deploy owns them)  
+- Per-marker lifecycle commits (Observe proposes progress via `jobport`; Orchestrator
+  alone writes terminal state)  
+- Requiring operators to list SOL marker phases
+
+### 6.9 API acceptance criteria (implementation)
+
+1. Existing single-ISO 7a / Phase 2 jobs remain expressible with `iso_url` only.  
+2. Profile-only start works for at least one Ubuntu path without per-request stage lists.  
+3. `operator_iso` start accepts `iso_url` + family and does not require seed fields.  
+4. `GET /v1/jobs/{id}` exposes `current_stage` and per-stage state once multi-stage lands.  
+5. Validation rejects guest HTTP seed patterns in request/profile fields.  
+6. Cancel always triggers full media cleanup.
+
+---
+
+## 7. OS support matrix
+
+### 7.1 Summary table
 
 | Family | v1 strategy | Config delivery | Who builds the install ISO? |
 |--------|-------------|-----------------|------------------------------|
@@ -354,20 +686,20 @@ write), `PREP_DONE`, `ERROR`
 | **VMware ESXi** | **`operator_iso` (v1)** | Inside operator ISO | **Operator** |
 | **Windows** | **`operator_iso` (v1)** — same boat as ESXi | Inside operator ISO | **Operator** |
 
-### 6.2 Ubuntu
+### 7.2 Ubuntu
 
 | Path | Notes |
 |------|--------|
 | **image_write (7a)** | Prepare cloud image offline (hostname, user, NoCloud seed on image) → marker ISO → dd. **No guest network.** |
 | **scripted_iso** | Boot installer ISO; seed via §4.3.0 order (second_media → config_drive → single_iso). |
 
-### 6.3 Flatcar
+### 7.3 Flatcar
 
 - Offline Ignition only; same §4.3.0 preference order as Ubuntu.
 - No `ignition.config.url=http://…`.
 - Progress may be coarse; verify stage important.
 
-### 6.4 VMware ESXi and Windows (same v1 boat)
+### 7.4 VMware ESXi and Windows (same v1 boat)
 
 Both are **`operator_iso`** for the first product slice: operator builds the ready
 install ISO; Shoal attaches, boots, waits, cleans up.
@@ -399,7 +731,7 @@ operator already built** until a dedicated compose design exists.
 
 ---
 
-## 7. Orchestrator stage runner (behavior)
+## 8. Orchestrator stage runner (behavior)
 
 ```text
 func RunJob(job):
@@ -427,9 +759,9 @@ image-write.
 
 ---
 
-## 8. Artifact pipeline
+## 9. Artifact pipeline
 
-### 8.1 What Shoal builds in *this* design
+### 9.1 What Shoal builds in *this* design
 
 | Artifact | Builder |
 |----------|---------|
@@ -438,14 +770,14 @@ image-write.
 | Config-drive filesystem image | New helper used by prep or Deploy |
 | Prep live ISO | Evolve marker ISO |
 
-### 8.2 What Shoal does **not** build in this design
+### 9.2 What Shoal does **not** build in this design
 
 | Artifact | Owner |
 |----------|--------|
 | ESXi ISO + embedded kickstart | **Operator** (later design optional) |
 | Windows ISO + Autounattend + drivers | **Operator** (later design optional) |
 
-### 8.3 Serving media to the BMC
+### 9.3 Serving media to the BMC
 
 Plain HTTP on the **management segment** for Virtual Media **file fetch by the BMC**
 (`SHOAL_ISO_BASE_URL`) remains. That is **not** “guest HTTP seed.”
@@ -454,7 +786,7 @@ Version media URLs when content changes (sushy cache lesson from 7a).
 
 ---
 
-## 9. Security
+## 10. Security
 
 - Seed templates: no production passwords in git/slog; render via `credential_ref`
 - Operator-supplied ISOs are trusted inputs — treat as high sensitivity
@@ -463,7 +795,7 @@ Version media URLs when content changes (sushy cache lesson from 7a).
 
 ---
 
-## 10. Phased implementation plan
+## 11. Phased implementation plan
 
 | Slice | Deliverable | AC |
 |-------|-------------|-----|
@@ -473,12 +805,12 @@ Version media URLs when content changes (sushy cache lesson from 7a).
 | **M3** | Offline seed preference #1 then #2: **second_media**, else **config_drive**, for Ubuntu NoCloud | Lab or hardware AC; no HTTP seed |
 | **M4** | Flatcar offline Ignition (same preference order) | Documented AC |
 | **M5** | **`operator_iso`** path shared by ESXi + Windows shape (attach + boot + cleanup + coarse progress) | Hardware preferred |
-| **M6** | Profiles + `seed_delivery: auto` implementing §4.3.0 | Happy path without ad-hoc flags |
+| **M6** | Profiles + `seed_delivery: auto` + Operator API §6 fields on `POST/GET /v1/jobs` | Happy path without ad-hoc flags; §6.9 ACs |
 | **Later** | Separate designs: ESXi/Windows ISO compose; optional Windows dual-media unattend; single_iso remaster polish | Out of this doc’s v1 slices |
 
 ---
 
-## 11. Relationship to Phase 7
+## 12. Relationship to Phase 7
 
 | Item | Disposition |
 |------|-------------|
@@ -489,7 +821,7 @@ Version media URLs when content changes (sushy cache lesson from 7a).
 
 ---
 
-## 12. Open questions
+## 13. Open questions
 
 1. **Always run prep?** Default `prep: skip` for 7a-compat; `wipe_only` for reimage.  
 2. **Verify stage:** serial scrape vs future guest agent vs Redfish-only power/boot?  
@@ -499,7 +831,7 @@ Version media URLs when content changes (sushy cache lesson from 7a).
 
 ---
 
-## 13. Success metric
+## 14. Success metric
 
 An operator can run **one Deploy job** over BMC (no guest transit network) that:
 
@@ -512,7 +844,7 @@ An operator can run **one Deploy job** over BMC (no guest transit network) that:
 
 ---
 
-## 14. References
+## 15. References
 
 - Design SoT § Phase 7 (v2.0.9 7a closeout)  
 - [`docs/phase-7-plan.md`](./phase-7-plan.md)  
