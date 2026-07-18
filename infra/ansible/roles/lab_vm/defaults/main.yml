@@ -5,12 +5,30 @@
 # Optionally remove the SSH keypair when destroying (default: keep it).
 shoal_remove_ssh_key: false
 
-# Manage the host firewall for the lab. When the L0 host runs ufw, its default
-# deny FORWARD/INPUT policies block the lab VM's DNS + package downloads over
-# the NAT network (only ICMP echo is whitelisted), so cloud-init fails its
-# apt/snap phase. When true (and ufw is active), open the management bridge for
-# input + routed traffic. Set false to manage the host firewall yourself.
+# Manage the host firewall for the lab. When the L0 host runs ufw or firewalld,
+# default deny policies can block the lab VM's DNS + package downloads over the
+# NAT network, so cloud-init fails its apt/snap phase. When true and a known
+# firewall is active, open the management bridge for input/NAT. Set false to
+# manage the host firewall yourself.
+shoal_lab_vm_manage_firewall: true
+# Backward-compatible alias (same meaning as shoal_lab_vm_manage_firewall).
 shoal_lab_vm_manage_ufw: true
+
+# Fallback firewalld zone when the "libvirt" zone is not defined.
+shoal_lab_vm_firewalld_zone_fallback: FedoraWorkstation
+
+# On secureblue/Atomic, try enabling modular libvirt sockets before failing.
+shoal_lab_vm_try_modular_libvirt: true
+shoal_lab_vm_modular_libvirt_units:
+  - virtqemud.socket
+  - virtnetworkd.socket
+  - virtstoraged.socket
+  - virtnodedevd.socket
+  - virtinterfaced.socket
+  - virtsecretd.socket
+  - virtnwfilterd.socket
+  - virtlogd.socket
+  - virtlockd.socket
 
 # Repo root, derived from the playbook dir (infra/ansible/playbooks) so paths
 # resolve regardless of the current working directory.
@@ -25,7 +43,7 @@ shoal_lab_vm_overlay: "/var/lib/libvirt/images/{{ shoal_lab_vm_name }}.qcow2"
 shoal_lab_vm_seed_iso: "/var/lib/libvirt/images/{{ shoal_lab_vm_name }}-seed.iso"
 
 # Operator-owned scratch dir for rendered cloud-init sources + libvirt XML.
-# Read only by the operator/genisoimage (never qemu), so it can live in-repo.
+# Read only by the operator/seed-ISO tool (never qemu), so it can live in-repo.
 shoal_lab_vm_work_dir: "{{ shoal_repo_root }}/infra/ansible/.work/{{ shoal_lab_vm_name }}"
 
 # libvirt URI for L0 host operations (root via qemu:///system can create bridges).

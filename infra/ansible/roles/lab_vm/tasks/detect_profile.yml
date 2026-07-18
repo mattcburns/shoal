@@ -1,0 +1,69 @@
+---
+# Classify the L0 hypervisor host for profile-specific steps.
+# Profiles: classic | secureblue | darwin
+
+- name: Fail when L0 is macOS (nested lab unsupported)
+  ansible.builtin.fail:
+    msg: |
+      Nested VM-hosted lab on macOS is not supported (no KVM L0 path).
+
+      macOS is an operator host only: use a prebuilt darwin binary (or go build)
+      against a lab running on a Linux L0 (classic Fedora/Ubuntu/Arch, or
+      Fedora secureblue). See docs/operator-macos.md and docs/lab-setup-checklist.md.
+
+      To drive Ansible from this Mac, the inventory's vm_l0 host must be a
+      Linux hypervisor (SSH), not localhost with ansible_connection=local on Darwin.
+  when: ansible_system | default('') == "Darwin"
+
+- name: Detect secureblue / Fedora Atomic L0 markers
+  ansible.builtin.shell: |
+    set -e
+    if [ -f /etc/os-release ]; then
+      # shellcheck disable=SC1091
+      . /etc/os-release
+      echo "ID=${ID:-}"
+      echo "VARIANT_ID=${VARIANT_ID:-}"
+      echo "NAME=${NAME:-}"
+    fi
+    if command -v rpm-ostree >/dev/null 2>&1; then
+      echo "RPM_OSTREE=1"
+      rpm-ostree status 2>/dev/null | head -n 5 || true
+    else
+      echo "RPM_OSTREE=0"
+    fi
+    if [ -e /usr/share/ublue-os ] || [ -e /usr/lib/os-release.d/secureblue ] \
+      || grep -qi secureblue /etc/os-release 2>/dev/null; then
+      echo "SECUREBLUE_MARKER=1"
+    else
+      echo "SECUREBLUE_MARKER=0"
+    fi
+  args:
+    executable: /bin/bash
+  register: lab_vm_profile_probe
+  changed_when: false
+  failed_when: false
+  become: false
+
+- name: Set shoal_l0_profile fact
+  ansible.builtin.set_fact:
+    shoal_l0_profile: >-
+      {{
+        'secureblue'
+        if (
+          'SECUREBLUE_MARKER=1' in lab_vm_profile_probe.stdout
+          or (
+            'RPM_OSTREE=1' in lab_vm_profile_probe.stdout
+            and (
+              'ID=fedora' in lab_vm_profile_probe.stdout
+              or 'fedora' in (lab_vm_profile_probe.stdout | lower)
+            )
+          )
+        )
+        else 'classic'
+      }}
+  become: false
+
+- name: Show detected L0 profile
+  ansible.builtin.debug:
+    msg: "L0 host profile: {{ shoal_l0_profile }}"
+  become: false

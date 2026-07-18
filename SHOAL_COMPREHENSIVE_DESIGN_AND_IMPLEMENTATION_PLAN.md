@@ -1,6 +1,6 @@
 # Shoal: Comprehensive Design Document & Phased Implementation Plan
 
-**Version:** 2.0.5  
+**Version:** 2.0.6  
 **Date:** July 2026  
 **Status:** Draft (post-review; open questions resolved)  
 **Author:** (architect / AI agent)  
@@ -28,11 +28,11 @@ This is a **language/stack revision** of the v1.1 product design — not a green
 
 ---
 
-## Changes in v2.0 / v2.0.1 / v2.0.2 / v2.0.3 / v2.0.4 / v2.0.5
+## Changes in v2.0 / v2.0.1 / v2.0.2 / v2.0.3 / v2.0.4 / v2.0.5 / v2.0.6
 
 Full stack rewrite of the **application** from Python to **Go (Golang)**, maximizing the Go standard library **except where Redfish complexity justifies gofish**.
 
-| Area | v1.1 (Python) | v2.0.5 (Go) |
+| Area | v1.1 (Python) | v2.0.6 (Go) |
 |------|---------------|-------------|
 | Language | Python 3.11+ | Go 1.22+ (prefer latest stable) |
 | Module path | n/a | **`github.com/mattcburns/shoal`** |
@@ -61,6 +61,8 @@ Full stack rewrite of the **application** from Python to **Go (Golang)**, maximi
 **v2.0.4 (Phase 3 AI contract):** dual-model local AI — text (`SHOAL_AI_MODEL`) vs vision (`SHOAL_AI_VISION_MODEL`); explicit `Complete` / `CompleteVision` routing; nested-lab-friendly defaults.
 
 **v2.0.5 (photo vision model):** lab vision default is **`deepseek-ocr`** (Free OCR on asset labels; parse SERIAL/VENDOR/MODEL). Rejects placeholder serials. **`moondream` is not AC-grade** for inventory OCR. Text hybrid remains `llama3.2:3b` — do **not** use `deepseek-ocr` as the text model. Phase 6 graphics failure-screen OCR remains deferred (Tesseract vs cloud vision).
+
+**v2.0.6 (Phase 6c packaging + L0 hosts):** multi-platform **CGO-free** release binaries (linux/darwin amd64/arm64) via scripts + GHA; ship `LICENSE`/`NOTICE`/`docs/third-party-licenses.md` with artifacts; **macOS is an operator host** (binary + remote/Linux lab) — not an L0 nested hypervisor. **L0 VM-hosted lab** supports classic Linux and **Fedora secureblue** (detect profile, modular libvirt, firewalld; keep ufw path). Direct-host lab on secureblue and nested lab on macOS remain **out of scope**. Compose `shoal` service image, API auth, metrics, record/replay CI → **Phase 6d+**.
 
 **Preserved (product decisions, not language):**
 
@@ -1434,9 +1436,68 @@ Graphics OCR via **Core `CompleteVision`** (not Tesseract-first), dynamic ISO / 
 
 **Phase 6b (graphics OCR):** Core `CompleteVision` + versioned `failure_screen_ocr.v1` prompt. Image sources: operator file (lab AC) or `BMC.CaptureScreenshot` with **Dell** and **Supermicro** OEM adapters (public docs; rich `CaptureDebugStep` traces). sushy has no capture — unsupported error + file path. Telemetry `events.event_type=graphics_ocr`. SOL remains primary; OCR does not commit lifecycle.
 
-### Phase 6 (remaining)
+**Phase 6c (release packaging + multi-host L0 operators) — detailed plan:**
 
-Compose shoal packaging, API auth + metrics, record/replay CI; more vendor screenshot adapters as hardware is tested.
+Operator machines and release artifacts diverge by role. The **lab topology is unchanged** (L0 hypervisor → L1 Ubuntu lab VM → L2 sushy nodes). What changes is (1) how end users obtain a binary and (2) which L0 OSes the Ansible VM-provision path supports cleanly.
+
+#### 6c.1 — Multi-platform binary packaging
+
+| Item | Decision |
+|------|----------|
+| Targets | `linux/amd64`, `linux/arm64`, `darwin/amd64`, `darwin/arm64` |
+| Linkage | **`CGO_ENABLED=0`** (stdlib + gofish + pgx; no CGO) |
+| Local build | `scripts/build-release.sh` → `dist/shoal_<os>_<arch>[.exe]` + checksums |
+| CI | GHA: unit `go test`/`vet`/`staticcheck` on PR; **release** workflow on `v*` tags publishes archives |
+| License bundle | Every archive/release asset includes `LICENSE`, `NOTICE`, `docs/third-party-licenses.md` (AGENTS §9.1) |
+| Version | Embed via `-ldflags "-X main.version=…"` (or `internal/version`) from git tag / `dev` |
+| Compose shoal image | **Deferred to 6d** (optional container wrapping the same binary) |
+
+**macOS operator model (explicit):**
+
+- Supported: download/build **darwin** binary; point env at a **reachable lab** (VM-hosted endpoints on Linux L0, or remote lab host).
+- Supported: run Ansible **from** macOS **only** if inventory targets a Linux L0/`shoal-lab-vm` over SSH (controller can be Darwin; `vm_l0` connection local must still be a Linux hypervisor).
+- **Not supported:** nested KVM lab on macOS (no `lab_vm` on Darwin). Documented alternative: Linux L0 (including secureblue) or borrow an existing lab.
+
+**Docker Desktop:** not required. Optional Podman/Colima only if the operator chooses containers; default path is binary + remote services.
+
+#### 6c.2 — L0 host profiles for VM-hosted lab
+
+`lab_vm` (play `vm_provision.yml`, hosts `vm_l0`) is the only role that mutates the **outer** hypervisor. Extend it without breaking existing classic Linux L0.
+
+| Profile | Detection (illustrative) | Behavior |
+|---------|--------------------------|----------|
+| `classic` | Default when not atomic | Require `virsh`, `qemu-img`, seed-ISO tool, nested KVM; **ufw** rules if active (existing) |
+| `secureblue` / Fedora Atomic | `/etc/os-release` ID/VARIANT + `rpm-ostree` and/or secureblue markers | Verify preinstalled virt stack; enable **system** libvirt (modular daemons preferred: `virtqemud`/`virtnetworkd`/… or `ujust set-libvirt-daemons` guidance); **firewalld** rules for mgmt bridge (NAT/DNS); do **not** force `libvirt` group membership; clear fail text with operator steps |
+| `darwin` | `ansible_system == Darwin` | **Fail fast** with pointer to operator-only docs (do not attempt domain define) |
+
+**Seed ISO tool:** accept any of `genisoimage`, `mkisofs`, `xorriso` (first found) so Atomic/Homebrew hosts without genisoimage still work.
+
+**Firewall:** rename conceptual flag to manage host firewall; keep `shoal_lab_vm_manage_ufw` as compatible alias. Paths: ufw (existing), firewalld (new), neither (no-op).
+
+**L1 unchanged:** `host_prereqs` remains Debian-family install on `shoal-lab-vm` (Ubuntu cloud image). Secureblue is **L0-only**.
+
+**Non-goals (6c):**
+
+- Direct-host lab (`lab.yml`) on secureblue or macOS  
+- Nested lab on Darwin  
+- Replacing L1 Docker with Podman  
+- API auth, metrics, record/replay CI (→ **6d**)
+
+#### 6c acceptance criteria
+
+1. `scripts/build-release.sh` produces four GOOS/GOARCH binaries with `CGO_ENABLED=0`; checksums present.
+2. GHA CI runs tests on PR; tag `v*` builds and attaches release assets including license bundle.
+3. Docs: operator macOS path; L0 secureblue checklist; README points to both.
+4. `lab_vm` on classic Linux L0: existing ufw + nested checks still pass (no regression).
+5. `lab_vm` on secureblue profile: detects profile; enables or documents system libvirt; opens firewalld for mgmt bridge when active; fails with actionable messages if virt/nested missing.
+6. `lab_vm` on Darwin localhost: fails with operator-only guidance (no partial VM create).
+7. AGENTS.md documents packaging + L0 profiles; design §7.1 unchanged unless a new Go dep is added (prefer none).
+
+### Phase 6d+ (later)
+
+Compose `shoal` service packaging; API auth + metrics; record/replay CI; more vendor screenshot adapters as hardware is tested.
+
+Executable checklist: [`docs/phase-6c-plan.md`](./docs/phase-6c-plan.md).
 
 ---
 
@@ -1602,6 +1663,7 @@ go test ./...
 | PR13 | `feat(deploy): full ISO pipeline + profile gen` | `deploy/iso`, `core/profile` | PR7, PR9 | Static base inject; approval gate |
 | PR14 | `chore: Compose shoal service + Ansible env contract` | `compose_stack`, group_vars | PR1+ | Binary image; `env.j2` NetBox token + DSN + HTTP port |
 | PR15 | `feat: Phase 6 polish` | OCR (choose approach), metrics, API auth, TLS CA | MVP | Evaluate OCR options then implement; other hardening |
+| PR16 | `feat: Phase 6c packaging + L0 host profiles` | `scripts/build-release.sh`, GHA, `lab_vm`, docs | Phase 6a–b on master | Multi-platform CGO-free binaries + NOTICE; macOS operator docs; secureblue L0 + firewalld; keep classic L0 |
 
 **High-level order:** Docs → skeleton → models/secrets → **Postgres jobs** → Redfish + SOL + **live image** → Deploy orchestrator → **Phase 2 spike** → **AI** → Discover hybrid → Observe broaden → Deploy harden → Compose package → Phase 6.
 
@@ -1609,7 +1671,7 @@ go test ./...
 
 ## Open Questions
 
-**All previously open product decisions are resolved through v2.0.5.** Phase 0–5 are on `master`; Phase 6 (polish) is next.
+**All previously open product decisions are resolved through v2.0.6.** Phase 0–5 and 6a–6b are on `master`; Phase **6c** (packaging + L0 hosts) is next; **6d+** remains later polish.
 
 | Topic | Resolution |
 |-------|------------|
@@ -1629,10 +1691,13 @@ go test ./...
 | **Lab AI text model** | **`SHOAL_AI_MODEL=llama3.2:3b`** (instruct; nested-lab friendly) |
 | **Lab AI vision model** | **`SHOAL_AI_VISION_MODEL=deepseek-ocr`** for asset-label Free OCR; **moondream not AC**; empty skips photo |
 | **Complete vs CompleteVision** | Text Discover → `Complete` + text model; photo → `CompleteVision` (`Free OCR.`) + parse SERIAL/VENDOR/MODEL; missing serial → **fail** (no synthetic IDs) |
+| **Phase 6c packaging** | Multi-platform CGO-free binaries + GHA release; license bundle; macOS = **operator only** |
+| **Phase 6c L0 hosts** | Classic Linux + **secureblue/Atomic** for VM-hosted lab; Darwin L0 nested lab **unsupported** |
+| **Compose shoal / API auth / metrics / replay CI** | **Phase 6d+** (after 6c) |
 
-**Deferred until Phase 6 (not blocking earlier phases):**
+**Deferred until Phase 6d+ (not blocking 6c):**
 
-- Exact OCR implementation choice and any extra allow-list entries it requires.
+- Compose `shoal` service image; API auth; metrics/tracing; record/replay CI; additional vendor screenshot adapters.
 
 ---
 
@@ -1648,9 +1713,9 @@ go test ./...
 
 ---
 
-**This document (v2.0.5) is the SoT for agents.** Phase 0–5 (Discover, Observe, Deploy harden) are on `master`.
+**This document (v2.0.6) is the SoT for agents.** Phase 0–5 and 6a–6b are on `master`.
 
 Next actions:
-1. Phase 6a: dynamic ISO + real payload write (in progress / next)
-2. Phase 6b–d: graphics OCR (CompleteVision), Compose shoal packaging, API auth + metrics + replay CI
+1. Phase **6c**: multi-platform packaging + macOS operator docs + L0 secureblue/classic lab_vm profiles ([`docs/phase-6c-plan.md`](./docs/phase-6c-plan.md))
+2. Phase **6d+**: Compose shoal service, API auth, metrics, record/replay CI; more vendor screenshot adapters
 3. Stretch: full distro autoinstall; NetBox device-id binding

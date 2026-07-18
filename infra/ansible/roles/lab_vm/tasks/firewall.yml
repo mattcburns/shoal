@@ -1,0 +1,129 @@
+---
+# Open the management bridge so the L1 VM can use host dnsmasq (DNS/DHCP) and
+# NAT egress. Supports ufw (classic Ubuntu/Debian L0) and firewalld (Fedora /
+# secureblue). No-op when neither firewall is active.
+
+- name: Resolve whether host firewall management is enabled
+  ansible.builtin.set_fact:
+    shoal_lab_vm_manage_firewall_effective: >-
+      {{
+        (shoal_lab_vm_manage_firewall | default(shoal_lab_vm_manage_ufw) | bool)
+      }}
+  become: false
+
+- name: Check host ufw status
+  ansible.builtin.command: ufw status
+  register: lab_vm_ufw_status
+  changed_when: false
+  failed_when: false
+  when: shoal_lab_vm_manage_firewall_effective | bool
+
+- name: Open management bridge in ufw (input to host dnsmasq for DNS/DHCP)
+  community.general.ufw:
+    rule: allow
+    direction: in
+    interface: "{{ shoal_mgmt_network_bridge }}"
+  when:
+    - shoal_lab_vm_manage_firewall_effective | bool
+    - lab_vm_ufw_status is defined
+    - lab_vm_ufw_status.rc | default(1) == 0
+    - "'Status: active' in (lab_vm_ufw_status.stdout | default(''))"
+
+- name: Allow routed egress from the management bridge in ufw (VM -> internet via NAT)
+  community.general.ufw:
+    rule: allow
+    route: true
+    interface_in: "{{ shoal_mgmt_network_bridge }}"
+  when:
+    - shoal_lab_vm_manage_firewall_effective | bool
+    - lab_vm_ufw_status is defined
+    - lab_vm_ufw_status.rc | default(1) == 0
+    - "'Status: active' in (lab_vm_ufw_status.stdout | default(''))"
+
+- name: Check whether firewalld is running
+  ansible.builtin.command: firewall-cmd --state
+  register: lab_vm_firewalld_state
+  changed_when: false
+  failed_when: false
+  when: shoal_lab_vm_manage_firewall_effective | bool
+
+- name: Open management bridge in firewalld (libvirt NAT / dnsmasq)
+  when:
+    - shoal_lab_vm_manage_firewall_effective | bool
+    - lab_vm_firewalld_state is defined
+    - lab_vm_firewalld_state.rc | default(1) == 0
+    - "'running' in (lab_vm_firewalld_state.stdout | default('') | lower)"
+  block:
+    # Prefer the libvirt zone when present; otherwise attach the bridge to the
+    # default zone and allow DNS/DHCP/forward. Idempotent firewall-cmd.
+    - name: List firewalld zones
+      ansible.builtin.command: firewall-cmd --get-zones
+      register: lab_vm_fw_zones
+      changed_when: false
+
+    - name: Get firewalld default zone
+      ansible.builtin.command: firewall-cmd --get-default-zone
+      register: lab_vm_fw_default_zone
+      changed_when: false
+      failed_when: false
+
+    - name: Set fact for firewalld zone used for lab bridge
+      ansible.builtin.set_fact:
+        shoal_lab_vm_firewalld_zone: >-
+          {{
+            'libvirt'
+            if 'libvirt' in lab_vm_fw_zones.stdout.split()
+            else (
+              lab_vm_fw_default_zone.stdout | default(shoal_lab_vm_firewalld_zone_fallback, true) | trim
+            )
+          }}
+
+    - name: Ensure management bridge is in the chosen firewalld zone
+      ansible.builtin.command:
+        argv:
+          - firewall-cmd
+          - --permanent
+          - --zone={{ shoal_lab_vm_firewalld_zone }}
+          - --change-interface={{ shoal_mgmt_network_bridge }}
+      register: lab_vm_fw_if
+      changed_when: lab_vm_fw_if.rc == 0
+      failed_when: false
+
+    - name: Allow DNS in zone (dnsmasq for lab VMs)
+      ansible.builtin.command:
+        argv:
+          - firewall-cmd
+          - --permanent
+          - --zone={{ shoal_lab_vm_firewalld_zone }}
+          - --add-service=dns
+      register: lab_vm_fw_dns
+      changed_when: "'success' in (lab_vm_fw_dns.stdout | default(''))"
+      failed_when: false
+
+    - name: Allow DHCP in zone
+      ansible.builtin.command:
+        argv:
+          - firewall-cmd
+          - --permanent
+          - --zone={{ shoal_lab_vm_firewalld_zone }}
+          - --add-service=dhcp
+      register: lab_vm_fw_dhcp
+      changed_when: "'success' in (lab_vm_fw_dhcp.stdout | default(''))"
+      failed_when: false
+
+    - name: Enable masquerade in zone (NAT egress for lab VMs)
+      ansible.builtin.command:
+        argv:
+          - firewall-cmd
+          - --permanent
+          - --zone={{ shoal_lab_vm_firewalld_zone }}
+          - --add-masquerade
+      register: lab_vm_fw_masq
+      changed_when: "'success' in (lab_vm_fw_masq.stdout | default(''))"
+      failed_when: false
+
+    - name: Reload firewalld
+      ansible.builtin.command:
+        argv: [firewall-cmd, --reload]
+      changed_when: true
+      failed_when: false

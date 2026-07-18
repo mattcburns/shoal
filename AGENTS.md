@@ -4,7 +4,7 @@ This file is the canonical guide for how to work in this repository. It covers
 project conventions, commands, and style. For **architecture, data models, and
 the phased plan**, the source of truth is
 [`SHOAL_COMPREHENSIVE_DESIGN_AND_IMPLEMENTATION_PLAN.md`](./SHOAL_COMPREHENSIVE_DESIGN_AND_IMPLEMENTATION_PLAN.md)
-(**v2.0.5**, Go stack). When this file and the design doc disagree, fix one of
+(**v2.0.6**, Go stack). When this file and the design doc disagree, fix one of
 them in the same change — they must stay consistent.
 
 > **Read order for any task:** (1) this file, (2) the relevant Chapter 4 section
@@ -116,8 +116,13 @@ shoal/                                    # module: github.com/mattcburns/shoal
     golden/                               # prompt regression fixtures
     redfish/                              # record/replay corpus
   infra/ansible/                          # lab automation (language-agnostic)
+  scripts/
+    build-release.sh                      # multi-platform CGO-free release binaries
+  .github/workflows/                      # ci.yml + release.yml (v* tags)
   docs/
     third-party-licenses.md               # full texts of runtime Go dep licenses
+    operator-macos.md                     # Mac = operator only (Phase 6c)
+    phase-6c-plan.md                      # packaging + L0 host profiles checklist
   go.mod
   LICENSE                                 # AGPLv3 (Shoal)
   NOTICE                                  # third-party inventory + copyrights
@@ -183,6 +188,17 @@ the phase playbooks (`vm_provision`, `preflight`, `lab_up`, `bootstrap_netbox`,
 Default VM-hosted endpoints: NetBox `:8000`, sushy `:8001`, ISO HTTP `:8080`,
 Ollama `:11434`, telemetry Postgres `:5433`. Shoal app listens on **`:8088`**.
 
+**L0 host profiles (Phase 6c, `lab_vm` role):**
+
+| Profile | Notes |
+|---------|--------|
+| classic Linux | Existing path; ufw rules when active |
+| Fedora secureblue / Atomic | Modular libvirt enablement attempts; firewalld for mgmt bridge; actionable fails |
+| macOS | **Not L0** — fail fast; operator docs in `docs/operator-macos.md` |
+
+L1 remains Ubuntu + Docker. Direct-host lab on secureblue/macOS is unsupported.
+See `docs/lab-setup-checklist.md` and design v2.0.6 Phase 6c.
+
 ### 3.2 App (Go)
 
 **Go 1.22+.** Module path: `github.com/mattcburns/shoal`.
@@ -200,6 +216,14 @@ staticcheck ./...
 go test ./...
 go test ./... -tags=integration   # needs lab (up.yml)
 ```
+
+Release binaries (Phase 6c; CGO-free matrix → `dist/`):
+```bash
+./scripts/build-release.sh
+# VERSION=v0.6.0 ./scripts/build-release.sh   # override version stamp
+```
+Ships `LICENSE`, `NOTICE`, and third-party license texts next to binaries.
+GHA: `.github/workflows/ci.yml` on PR; `.github/workflows/release.yml` on `v*` tags.
 
 Run the app (Phase 1+):
 ```bash
