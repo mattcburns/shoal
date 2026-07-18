@@ -615,6 +615,24 @@ func (o *Orchestrator) handleTerminalOnce(ctx context.Context, jobID string, rea
 		errMsg = string(reason)
 	}
 
+	// Mark current stage terminal for accurate job status (M1+).
+	if len(job.Stages) > 0 {
+		stageID := job.CurrentStage
+		if stageID == "" {
+			stageID = job.Stages[len(job.Stages)-1].ID
+		}
+		stageState := models.JobStageStateFailed
+		stagePhase := job.Phase
+		if to == models.StateProvisioned {
+			stageState = models.JobStageStateDone
+			if stagePhase == "" {
+				stagePhase = "DONE"
+			}
+		}
+		stages := setStageState(job.Stages, stageID, stageState, stagePhase, errMsg)
+		_ = o.store.UpdateStages(context.Background(), jobID, stageID, job.InstallStrategy, stages)
+	}
+
 	// Always commit lifecycle with Background so waiters observe the terminal state
 	// even if the terminalLoop request context already expired.
 	if err := o.store.Transition(context.Background(), jobID, to, errMsg); err != nil {
