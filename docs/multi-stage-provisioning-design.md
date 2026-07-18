@@ -861,27 +861,34 @@ These items are **explicitly out of scope** for the first multi-stage implementa
 slices (M1–M6). They are recorded so near-term choices stay **compatible** with them
 and we do not paint ourselves into a corner.
 
-### 16.1 Possibly decouple NetBox integration
+### 16.1 Keep NetBox as device identity (do not build a parallel inventory)
 
-**Today:** Deploy Orchestrator best-effort syncs NetBox `lifecycle_state`; identity is
-NetBox-centric in the broader design.
+**Today (design Golden Rule):** **NetBox stores identity + current `lifecycle_state`
+only.** Shoal does **not** keep its own durable device inventory table. Durable jobs /
+events live in telemetry Postgres; the device record (name, serial, BMC access metadata,
+`shoal_lifecycle_state`, `shoal_credential_ref`, etc.) is NetBox’s job.
 
-**Future option:** Treat NetBox as an **optional identity/port backend**, not a hard
-dependency of the stage runner:
+**Decision for this design and near-term implementation:** **Keep NetBox.** Multi-stage
+provisioning should continue to:
 
-| Concern | Near-term guidance | Future direction |
-|---------|--------------------|------------------|
-| Job start | Allow `device_id` + BMC binding without NetBox lookup | Explicit `IdentityStore` interface (NetBox impl + null/file/lab stub) |
-| Lifecycle write | Keep Orchestrator as sole writer of **Shoal** job/lifecycle truth | Fan-out adapters: NetBox, others, or none |
-| Profiles / inventory | Profile store already filesystem | Do not require NetBox custom fields for stage/seed config |
-| Lab / air-gap | Already runnable with weak NetBox | First-class “no NetBox” mode for pure BMC+SOL labs |
+- Key jobs by `device_id` that aligns with NetBox (or lab spike flags that later bind)
+- Best-effort Orchestrator sync of `lifecycle_state` on terminal transitions (as today)
+- Resolve BMC/credential context from NetBox / `credential_ref` where the product path
+  uses Discover/identity — without inventing a second CMDB inside Shoal
 
-**Why it matters while building M1–M6:** Prefer ports (`IdentityStore`, optional
-lifecycle hooks) over direct NetBox imports in new stage-runner code. Do not block
-`POST /v1/jobs` on NetBox availability.
+**Lab / spike exception (unchanged):** Phase 2–style `deploy run` with explicit
+`-bmc-url` / serial flags can still run **without** a NetBox round-trip for a single job.
+That is a binding convenience, not a plan to replace NetBox with an internal device
+store.
 
-**Trigger for a dedicated design/PR:** Multi-tenant CMDB choice, offline-only
-deployments, or non-NetBox customers.
+**What we are *not* planning:** a Shoal-owned device registry that duplicates NetBox
+fields. If a future CMDB other than NetBox ever appears, that would be a new design —
+not a reason to stop using NetBox now.
+
+**Near-term guidance for M1–M6:** Stage runner owns **job + BMC + media** truth; NetBox
+updates stay best-effort and non-blocking for media cleanup (same as existing Deploy
+reliability rules). Do not put stage/seed config into NetBox custom fields (profiles +
+job store remain the place for install intent).
 
 ### 16.2 Image builder for VMware ESXi and Windows
 
@@ -948,7 +955,7 @@ site-specific prep scripts without forking Shoal.
 
 When reviewing an implementation PR:
 
-1. Does it **require** NetBox inside the stage runner? Prefer a port.  
+1. Does it invent a **Shoal device inventory**? Prefer NetBox for identity/lifecycle (§16.1).  
 2. Does it **assume** Shoal remasters ESXi/Windows? Keep `operator_iso` until §16.2.  
 3. Does prep add a **one-off special case** instead of an action/plugin slot? Prefer
    §16.3 shape.
