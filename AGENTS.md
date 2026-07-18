@@ -4,7 +4,7 @@ This file is the canonical guide for how to work in this repository. It covers
 project conventions, commands, and style. For **architecture, data models, and
 the phased plan**, the source of truth is
 [`SHOAL_COMPREHENSIVE_DESIGN_AND_IMPLEMENTATION_PLAN.md`](./SHOAL_COMPREHENSIVE_DESIGN_AND_IMPLEMENTATION_PLAN.md)
-(**v2.0.7**, Go stack). When this file and the design doc disagree, fix one of
+(**v2.0.8**, Go stack). When this file and the design doc disagree, fix one of
 them in the same change — they must stay consistent.
 
 > **Read order for any task:** (1) this file, (2) the relevant Chapter 4 section
@@ -124,6 +124,7 @@ shoal/                                    # module: github.com/mattcburns/shoal
     operator-macos.md                     # Mac = operator only (Phase 6c)
     phase-6c-plan.md                      # packaging + L0 host profiles checklist
     phase-6d-plan.md                      # compose app + auth + metrics + fixtures
+    phase-7-plan.md                       # full OS autoinstall (Phase 7)
   deploy/docker/Dockerfile                # minimal runtime image for lab Compose
   go.mod
   LICENSE                                 # AGPLv3 (Shoal)
@@ -293,6 +294,12 @@ ISO: publish + profile resolve (5c); **6a** `install-mode write` writes `/payloa
 with real SOL progress; optional `-build-iso` / `SHOAL_ISO_DYNAMIC`. Marker
 `simulate` mode remains the Phase 2 demo. Plain HTTP ISO on mgmt segment.
 Sole lifecycle writer remains Orchestrator; JobStore stays pure persistence.
+
+**Phase 7 (full OS autoinstall):** real OS install over BMC Virtual Media + SOL
+(not the 6a payload MVP). Planned slices: **7a** Ubuntu autoinstall E2E, **7b**
+profile/artifact model, **7c** second path + NetBox identity polish. Design §
+Phase 7 and [`docs/phase-7-plan.md`](./docs/phase-7-plan.md). Do not treat 6a
+`write` as full autoinstall.
 
 ---
 

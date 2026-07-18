@@ -1,6 +1,6 @@
 # Shoal: Comprehensive Design Document & Phased Implementation Plan
 
-**Version:** 2.0.7  
+**Version:** 2.0.8  
 **Date:** July 2026  
 **Status:** Draft (post-review; open questions resolved)  
 **Author:** (architect / AI agent)  
@@ -28,11 +28,11 @@ This is a **language/stack revision** of the v1.1 product design — not a green
 
 ---
 
-## Changes in v2.0 / v2.0.1 / v2.0.2 / v2.0.3 / v2.0.4 / v2.0.5 / v2.0.6 / v2.0.7
+## Changes in v2.0 / v2.0.1 / v2.0.2 / v2.0.3 / v2.0.4 / v2.0.5 / v2.0.6 / v2.0.7 / v2.0.8
 
 Full stack rewrite of the **application** from Python to **Go (Golang)**, maximizing the Go standard library **except where Redfish complexity justifies gofish**.
 
-| Area | v1.1 (Python) | v2.0.7 (Go) |
+| Area | v1.1 (Python) | v2.0.8 (Go) |
 |------|---------------|-------------|
 | Language | Python 3.11+ | Go 1.22+ (prefer latest stable) |
 | Module path | n/a | **`github.com/mattcburns/shoal`** |
@@ -65,6 +65,8 @@ Full stack rewrite of the **application** from Python to **Go (Golang)**, maximi
 **v2.0.6 (Phase 6c packaging + L0 hosts):** multi-platform **CGO-free** release binaries (linux/darwin amd64/arm64) via scripts + GHA; ship `LICENSE`/`NOTICE`/`docs/third-party-licenses.md` with artifacts; **macOS is an operator host** (binary + remote/Linux lab) — not an L0 nested hypervisor. **L0 VM-hosted lab** supports classic Linux and **Fedora secureblue** (detect profile, modular libvirt, firewalld; keep ufw path). Direct-host lab on secureblue and nested lab on macOS remain **out of scope**. Compose `shoal` service image, API auth, metrics, record/replay CI → **Phase 6d+**.
 
 **v2.0.7 (Phase 6d ops packaging):** optional **Compose `shoal` service** in the lab stack (binary image, env from Ansible); **Bearer API token** auth for `/v1/*` when `SHOAL_API_TOKEN` set (health/ready/metrics remain open); **stdlib Prometheus text `/metrics`** (job + HTTP counters, no new deps); **record/replay fixture tests** under `testdata/redfish/` wired into unit CI. Extra OEM screenshot adapters remain hardware-driven.
+
+**v2.0.8 (Phase 7 full OS autoinstall):** promote former stretch **full distro autoinstall** to numbered **Phase 7** (7a Ubuntu autoinstall E2E → 7b profile/artifact model → 7c second family or generalized image-write + NetBox binding polish). Phase **6a** remains the **bounded payload-write MVP** (`SHOAL_INSTALL_MODE=write`); it is **not** replaced. Phase **6e+** stays optional polish (more OEM screenshots, registry publish, tracing). Still BMC-only (Virtual Media + SOL); no PXE.
 
 **Preserved (product decisions, not language):**
 
@@ -1556,9 +1558,89 @@ CLI continues to talk to services without HTTP API for most ops; when calling AP
 
 Executable checklist: [`docs/phase-6d-plan.md`](./docs/phase-6d-plan.md). Phase 6c checklist remains [`docs/phase-6c-plan.md`](./docs/phase-6c-plan.md).
 
-### Phase 6e+ (later)
+### Phase 6e+ (later / optional polish)
 
-Additional vendor screenshot adapters as hardware is tested; optional image registry publish; richer tracing.
+Additional vendor screenshot adapters as hardware is tested; optional image registry publish; richer tracing. **Not a gate for Phase 7.**
+
+### Phase 7: Full OS autoinstall
+
+**Intent:** Install a **real operating system** onto local disk over the **BMC-only** path (Redfish Virtual Media + SOL progress), then reboot into the installed OS. This is the product path beyond Phase **6a**’s bounded `/payload` write MVP.
+
+**Relationship to earlier phases:**
+
+| Piece | Role in Phase 7 |
+|-------|-----------------|
+| Phase 2 `simulate` | Demo markers only — keep for spike/regression |
+| Phase 5b profiles | Carry `os_family`, version, hostname, disk target, autoinstall config refs |
+| Phase 5c / 6a ISO | Build/publish install media; dynamic build when needed |
+| Phase 6a `write` | Still valid for non-OS payload inject; **not** full autoinstall |
+| Phase 6b OCR | Graphics failure screens only; does **not** commit lifecycle |
+| Phase 6d Compose/auth | Lab/ops packaging; optional for install path |
+
+**Principles (non-negotiable — Golden Rules apply):**
+
+1. **BMC-only provisioning path** — Virtual Media + one-time boot override; **no PXE**, no provisioning VLAN requirement for the install loop.
+2. **SOL is the primary progress channel** — marker phases at least: `DISK_PREP` → `IMAGE_WRITE` → `POSTINSTALL` → `VERIFY` → `DONE` / `ERROR` (+ heartbeats). Same `SHOAL|…` protocol family as Phase 2/6a.
+3. **Orchestrator is the sole lifecycle writer**; JobStore remains pure persistence; Observe proposes progress via `jobport` only.
+4. **Secrets never** in published ISO contents, SOL logs, slog, or LLM payloads (no password fields from vault in autoinstall user-data without secret-backend indirection / redaction policy).
+5. **Cleanup is mandatory** — eject Virtual Media and clear boot override on success, failure, and cancel (existing Deploy finalizer).
+6. Prefer **stdlib + existing allow-list**; new deps only with §7.1 update in the same change.
+
+#### 7a — Ubuntu autoinstall end-to-end (first family)
+
+| Item | Decision |
+|------|----------|
+| First OS | **Ubuntu Server** autoinstall (cloud-init autoinstall / subiquity-class flow) |
+| Media | Shoal-assembled or Shoal-parameterized install ISO (or live+autoinstall seed), published to lab ISO HTTP (`:8080`), attached via Redfish Virtual Media |
+| Lab AC host | Nested **libvirt guest with a real disk** (L2 under L1) — not “sushy BMC only”; sushy-tools still provides Redfish control plane where used |
+| Progress | Producer emits SOL markers through install; Observe/jobport progress; Orchestrator transitions to terminal + cleanup |
+| Outcome | Guest reboots into installed Ubuntu; `VERIFY`/`DONE` after agreed checks (e.g. marker or post-boot signal — exact verify signal specified in implementation PR) |
+
+**7a acceptance criteria:**
+
+1. Lab job: Virtual Media install ISO → SOL markers progress through install phases → terminal success → media ejected / boot override cleared.
+2. Nested guest has a bootable Ubuntu root on disk (not merely a payload file from 6a `write`).
+3. `simulate` and 6a `write` still work (no regression).
+4. No secrets in ISO build logs or published autoinstall files beyond documented non-secret identity fields.
+
+#### 7b — Profile and artifact model
+
+| Item | Decision |
+|------|----------|
+| Profile fields | Extend `ProvisioningProfile` (and store under `SHOAL_PROFILE_DIR`) for install: `os_family`, OS version, hostname, install disk/target, autoinstall document ref or inline non-secret config, ISO/base image refs |
+| Modes | Keep `simulate`, 6a `write`, and new **`autoinstall`** (name TBD in impl) install mode on the producer / job request |
+| ISO builder | Extend `internal/deploy/iso` / marker-or-install image scripts; profile-driven Start without hand-passed `-iso-url` when resolve works (same pattern as 5c/6a) |
+| Approval | Destruct / wipe steps still require Phase 5b approval gates |
+
+**7b acceptance criteria:**
+
+1. Operator can `profile generate|save|approve` (or equivalent) an Ubuntu autoinstall profile and `deploy`/`Start` without manually crafting ISO flags for the happy path.
+2. Schema validation on profile + autoinstall inputs; golden/unit tests for builder inputs.
+3. Documented mapping from profile → published ISO URL → job.
+
+#### 7c — Second family / generalized path + identity polish
+
+| Item | Decision |
+|------|----------|
+| Second path | Either **RHEL-like kickstart** (or Alma/Rocky) **or** generalized **compressed rootfs / image-write** install — choose one in the 7c implementation PR with lab AC |
+| NetBox | Lifecycle already Orchestrator-owned; polish **device identity binding** after successful install (serial/inventory ↔ NetBox device) where still loose |
+| OCR | Still non-authoritative for lifecycle |
+
+**7c acceptance criteria:**
+
+1. Second install path documented and lab-demonstrated (or explicitly deferred with design note if hardware/lab blocks it).
+2. Successful install updates/consistent NetBox `lifecycle_state` (+ identity fields as designed).
+3. Failure paths still cleanup BMC state.
+
+#### Phase 7 non-goals (7.0)
+
+- Windows or non-Linux guests  
+- PXE / DHCP provisioning networks as a required path  
+- Multi-tenant cloud imaging SaaS  
+- Replacing SOL with OCR as the progress loop  
+- Full distro matrix (every Ubuntu/RHEL minor) — start with one Ubuntu train, expand deliberately  
+
+Executable checklist: [`docs/phase-7-plan.md`](./docs/phase-7-plan.md).
 
 ---
 
@@ -1726,14 +1808,16 @@ go test ./...
 | PR15 | `feat: Phase 6 polish` | OCR (choose approach), metrics, API auth, TLS CA | MVP | Evaluate OCR options then implement; other hardening |
 | PR16 | `feat: Phase 6c packaging + L0 host profiles` | `scripts/build-release.sh`, GHA, `lab_vm`, docs | Phase 6a–b on master | Multi-platform CGO-free binaries + NOTICE; macOS operator docs; secureblue L0 + firewalld; keep classic L0 |
 | PR17 | `feat: Phase 6d compose shoal + auth + metrics + replay` | compose_stack, `api`, config, fixtures | 6c on master | Lab Compose app service; Bearer token; `/metrics`; redfish fixture CI |
+| PR18 | `docs: Phase 7 full OS autoinstall plan (v2.0.8)` | design, `docs/phase-7-plan.md`, AGENTS | 6d on master | Numbered Phase 7 (7a–7c); 6a remains payload MVP |
+| PR19+ | `feat: Phase 7a Ubuntu autoinstall…` | deploy/iso, live image, profiles, lab | PR18 | Implementation slices per `docs/phase-7-plan.md` |
 
-**High-level order:** Docs → skeleton → models/secrets → **Postgres jobs** → Redfish + SOL + **live image** → Deploy orchestrator → **Phase 2 spike** → **AI** → Discover hybrid → Observe broaden → Deploy harden → Compose package → Phase 6.
+**High-level order:** Docs → skeleton → models/secrets → **Postgres jobs** → Redfish + SOL + **live image** → Deploy orchestrator → **Phase 2 spike** → **AI** → Discover hybrid → Observe broaden → Deploy harden → Compose package → Phase 6 polish → **Phase 7 full OS autoinstall**.
 
 ---
 
 ## Open Questions
 
-**All previously open product decisions are resolved through v2.0.7.** Phase 0–6c on `master`; Phase **6d** is next ops packaging.
+**All previously open product decisions are resolved through v2.0.8.** Phases **0–6d** are on `master`. Phase **6** polish (6a–6d) is complete; **6e+** is optional. **Phase 7** (full OS autoinstall) is next.
 
 | Topic | Resolution |
 |-------|------------|
@@ -1755,11 +1839,13 @@ go test ./...
 | **Complete vs CompleteVision** | Text Discover → `Complete` + text model; photo → `CompleteVision` (`Free OCR.`) + parse SERIAL/VENDOR/MODEL; missing serial → **fail** (no synthetic IDs) |
 | **Phase 6c packaging** | Multi-platform CGO-free binaries + GHA release; license bundle; macOS = **operator only** |
 | **Phase 6c L0 hosts** | Classic Linux + **secureblue/Atomic** for VM-hosted lab; Darwin L0 nested lab **unsupported** |
-| **Compose shoal / API auth / metrics / replay CI** | **Phase 6d** (v2.0.7) |
+| **Compose shoal / API auth / metrics / replay CI** | **Phase 6d** (v2.0.7) — **done on master** |
 | **Phase 6d API auth** | Optional Bearer `SHOAL_API_TOKEN`; open if empty; protects `/v1/*` only |
 | **Phase 6d metrics** | Stdlib Prometheus text `/metrics`; no new deps |
+| **Full OS autoinstall** | **Phase 7** (v2.0.8): 7a Ubuntu autoinstall E2E → 7b profiles/artifacts → 7c second path + NetBox identity polish |
+| **Phase 6a vs 7** | **6a** = bounded `/payload` write MVP; **7** = real OS install + reboot into installed system |
 
-**Deferred until Phase 6e+:**
+**Deferred until Phase 6e+ (optional; not blocking Phase 7):**
 
 - Additional vendor screenshot adapters; registry image publish; distributed tracing.
 
@@ -1777,9 +1863,9 @@ go test ./...
 
 ---
 
-**This document (v2.0.7) is the SoT for agents.** Phase 0–6c are on `master`.
+**This document (v2.0.8) is the SoT for agents.** Phases **0–6d** are on `master` (Phase 6 polish complete for 6a–6d).
 
 Next actions:
-1. Phase **6d**: Compose shoal + API auth + metrics + redfish fixture CI ([`docs/phase-6d-plan.md`](./docs/phase-6d-plan.md))
-2. Phase **6e+**: more vendor screenshot adapters; optional registry publish
-3. Stretch: full distro autoinstall; NetBox device-id binding
+1. Phase **7**: full OS autoinstall — implement **7a** first ([`docs/phase-7-plan.md`](./docs/phase-7-plan.md); design § Phase 7)
+2. Phase **7b–7c**: profile/artifact model; second install path + NetBox identity polish
+3. Optional **6e+**: more vendor screenshot adapters; registry image publish; richer tracing

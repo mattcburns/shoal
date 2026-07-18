@@ -35,6 +35,7 @@ release builds: `./scripts/build-release.sh` (see Phase 6c).
 - [Operator host: macOS](docs/operator-macos.md)
 - [Phase 6c plan (packaging + L0 hosts)](docs/phase-6c-plan.md)
 - [Phase 6d plan (Compose app + auth + metrics)](docs/phase-6d-plan.md)
+- [Phase 7 plan (full OS autoinstall)](docs/phase-7-plan.md)
 
 ## Prerequisites (L0 host)
 Install and verify:
