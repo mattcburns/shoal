@@ -1,0 +1,423 @@
+# NetBox integration: visual telemetry, events, and job context
+
+**Status:** Design draft (implementation not started)  
+**Date:** July 2026  
+**Audience:** Human architect + coding agents  
+**Related:** Design SoT `SHOAL_COMPREHENSIVE_DESIGN_AND_IMPLEMENTATION_PLAN.md` (v2.0.9+);
+[`docs/multi-stage-provisioning-design.md`](./multi-stage-provisioning-design.md) §16.1 (NetBox remains device identity SoT).
+
+---
+
+## 1. Purpose
+
+Operators already use **NetBox** as the map of the fleet. Shoal already gathers BMC-adjacent
+data (SEL/events, sensors, job progress, job logs) in **telemetry Postgres** and exposes
+some of it over HTTP (`GET /v1/devices/{id}/status`, `…/events`, jobs API).
+
+This design specifies a **tighter NetBox integration** so that, from a **device page in
+NetBox**, operators can **visually inspect** that telemetry and provisioning context —
+without making NetBox a time-series database and without building a parallel device
+inventory inside Shoal.
+
+---
+
+## 2. Problem statement
+
+### 2.1 What we have
+
+| Layer | Role today |
+|-------|------------|
+| **NetBox** | Device identity + current `lifecycle_state` (+ credential ref / BMC metadata as designed) |
+| **Shoal telemetry DB** | `jobs`, `events`, `sensor_readings`, `job_log` |
+| **Shoal API** | Device status/events; job start/status/cancel; metrics |
+| **Operator UX** | API + CLI only (no first-party browser UI in MVP) |
+
+### 2.2 What operators want
+
+From **NetBox** (where they already look at devices):
+
+- See recent **SEL / normalized events**
+- See **sensor** context (latest and/or simple history)
+- See **active / recent provisioning jobs** and phase/progress
+- Optionally tail **job log** lines related to that device
+- Navigate without juggling raw URLs and tokens
+
+### 2.3 Hard constraint (non-negotiable)
+
+**Golden Rule:** *NetBox stores identity + current `lifecycle_state` only. Time-series and
+events (SEL, sensors, job logs, durable jobs) go to the telemetry store — never into NetBox
+custom fields as history.*
+
+Therefore:
+
+| Do | Do not |
+|----|--------|
+| Use NetBox as **navigation + identity hub** | Dump SEL/sensor series into custom fields |
+| **Render** Shoal data in NetBox UI (plugin) or linked dashboards | Duplicate event tables into NetBox |
+| Store tiny **pointers** on the device if useful (e.g. Shoal base URL, last job id) | Make NetBox SoT for job state machines |
+
+---
+
+## 3. Goals and non-goals
+
+### 3.1 Goals
+
+1. **Device-centric view** of Shoal telemetry keyed by the same `device_id` / NetBox device
+   identity Discover and Deploy already use.
+2. **In-NetBox visualization** as the primary operator path (plugin tabs preferred over
+   “API only”).
+3. Preserve **single device inventory** in NetBox (no Shoal device registry).
+4. Clear **auth** model for NetBox → Shoal reads (service token).
+5. Identify **API gaps** on Shoal needed for a good UI (jobs-by-device, sensors, logs).
+6. Optional **Grafana** path for rich sensor graphs without blocking the NetBox plugin MVP.
+7. Lab install path via Ansible (plugin + config) when ready.
+
+### 3.2 Non-goals
+
+- Replacing NetBox with a Shoal SPA as CMDB  
+- Storing full event/sensor history in NetBox  
+- Real-time SOL streaming inside NetBox (v1; optional later via Shoal log API)  
+- Rewriting Observe/Deploy core for the UI  
+- Multi-tenant SaaS NetBox hosting  
+- Shipping a general-purpose Shoal web console (may share APIs later)
+
+---
+
+## 4. Architecture
+
+### 4.1 Principle: NetBox shell, Shoal data plane
+
+```text
+┌─────────────────────────────────────────────────────────────┐
+│  NetBox (identity + lifecycle_state)                        │
+│  Device detail page                                         │
+│    ├─ Plugin tab: Status      ──HTTP──► Shoal API           │
+│    ├─ Plugin tab: Events/SEL  ──HTTP──► Shoal API           │
+│    ├─ Plugin tab: Jobs        ──HTTP──► Shoal API           │
+│    ├─ Plugin tab: Sensors     ──HTTP──► Shoal API           │
+│    └─ Optional link: Grafana  ──query──► telemetry DB/API   │
+└─────────────────────────────────────────────────────────────┘
+                              │
+                              │ Bearer service token
+                              ▼
+┌─────────────────────────────────────────────────────────────┐
+│  Shoal (:8088)                                              │
+│  GET /v1/devices/{id}/status|events|sensors|jobs…           │
+│  GET /v1/jobs/{id}                                          │
+│         │                                                   │
+│         ▼                                                   │
+│  telemetry Postgres (events, sensor_readings, jobs, job_log)│
+└─────────────────────────────────────────────────────────────┘
+```
+
+- **Write path** for lifecycle remains Deploy Orchestrator → NetBox (best-effort), as today.  
+- **Read path** for telemetry is always Shoal → Postgres (or Grafana → Postgres).  
+- Plugin is **read-mostly** for v1 (no “start job from NetBox” required for MVP; can be a
+  later phase).
+
+### 4.2 Identity mapping
+
+| Concept | Source |
+|---------|--------|
+| NetBox device primary key / URL slug | NetBox |
+| `device_id` on jobs/events | Shoal — **must match** the id Discover writes / operators use |
+| BMC endpoint / credential_ref | NetBox custom fields / secrets pattern (existing design) |
+
+**MVP rule:** Plugin uses NetBox device **name or a dedicated custom field**
+`shoal_device_id` if present; otherwise NetBox numeric id string only if that is already
+how the lab keys devices. Implementation PR must pin one canonical mapping and document
+lab bootstrap (Discover upsert should set a stable key both sides understand).
+
+Recommended custom fields (identity/pointers only, not history):
+
+| Field | Purpose |
+|-------|---------|
+| `shoal_lifecycle_state` | Existing |
+| `shoal_credential_ref` | Existing pattern |
+| `shoal_device_id` | Explicit Shoal key when ≠ NetBox name/id |
+| `shoal_last_job_id` | Optional pointer (updated by Orchestrator on start/terminal) |
+| `shoal_ui_base` | Optional override of global plugin Shoal URL |
+
+### 4.3 Components
+
+| Component | Language / home | Responsibility |
+|-----------|-----------------|----------------|
+| **Shoal API** | Go `internal/api` | Device-scoped read APIs; auth |
+| **Shoal telemetry** | Postgres | Durable events/sensors/jobs/logs |
+| **NetBox plugin** | Python/Django (NetBox plugin SDK) | Device tabs; server-side HTTP to Shoal |
+| **Ansible (lab)** | `infra/ansible` | Install plugin into lab NetBox, set config |
+| **Grafana (optional)** | Lab compose | Sensor dashboards; linked from plugin |
+
+The plugin is a **separate artifact** (not linked into the Go binary). License/docs: treat
+like other lab stack pieces (NetBox itself); do not fold into `NOTICE` unless we ship it
+as a redistributed bundle with explicit policy.
+
+### 4.4 Auth and security
+
+| Concern | Approach |
+|---------|----------|
+| Plugin → Shoal | `Authorization: Bearer <token>` using `SHOAL_API_TOKEN` (or dedicated read-only token later) |
+| Token storage | NetBox plugin config / env (not in git); vault in lab Ansible |
+| Browser → plugin | Normal NetBox session (operator already authenticated to NetBox) |
+| Secrets in UI | Never show BMC passwords, API keys, full credential material |
+| Log lines | Redact password-like patterns before display if not already redacted at write |
+| SSRF | Plugin only calls configured Shoal base URL (allowlist), not operator-supplied arbitrary hosts per request |
+
+**Read-only token (future):** optional `SHOAL_API_TOKEN_READ` that cannot start/cancel jobs;
+MVP may use the existing single token with plugin only calling GET routes.
+
+### 4.5 What NetBox must not become
+
+- A warehouse for SEL history  
+- The job state machine SoT (Shoal `jobs` table remains SoT for provisioning jobs)  
+- A substitute for Observe poll
+
+---
+
+## 5. Shoal API surface (for UI)
+
+### 5.1 Existing (keep / polish)
+
+| Method | Path | Use in UI |
+|--------|------|-----------|
+| `GET` | `/v1/devices/{id}/status` | Status tab: lifecycle, power, active job, phase/percent |
+| `GET` | `/v1/devices/{id}/events?since=&limit=` | Events/SEL tab |
+| `GET` | `/v1/jobs/{id}` | Job detail panel |
+| `GET` | `/metrics` | Ops only; not NetBox-facing |
+
+### 5.2 Gaps to add (implementation slices)
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| `GET` | `/v1/devices/{id}/jobs?limit=&state=` | Recent jobs for device |
+| `GET` | `/v1/devices/{id}/sensors?since=&limit=` or latest-per-sensor | Sensors tab |
+| `GET` | `/v1/jobs/{id}/log?since=&limit=` | Job log lines from `job_log` (if populated) |
+| `GET` | `/v1/devices/{id}/summary` (optional) | Single round-trip: status + last N events + active job |
+
+**Query conventions:** RFC3339 `since`, bounded `limit` (cap e.g. 200–500), stable JSON
+shapes, empty lists not 404.
+
+**Auth:** Same Bearer gate as other `/v1/*` when token configured.
+
+### 5.3 Illustrative response shapes
+
+**Jobs list:**
+
+```json
+{
+  "device_id": "lab-node-1",
+  "jobs": [
+    {
+      "id": "abc…",
+      "state": "provisioning",
+      "phase": "IMAGE_WRITE",
+      "percent": 40,
+      "profile_ref": "…",
+      "updated_at": "…"
+    }
+  ]
+}
+```
+
+**Sensors (latest snapshot):**
+
+```json
+{
+  "device_id": "lab-node-1",
+  "readings": [
+    { "sensor": "Inlet Temp", "value": 24.5, "unit": "C", "ts": "…" }
+  ]
+}
+```
+
+**Job log:**
+
+```json
+{
+  "job_id": "abc…",
+  "lines": [
+    { "ts": "…", "line": "SHOAL|1|3|…|IMAGE_WRITE|10|OK|…" }
+  ]
+}
+```
+
+(Exact marker formatting may already be in Observe/job progress; log API exposes durable
+`job_log` rows when writers exist.)
+
+### 5.4 Non-API data path (optional Grafana)
+
+For long sensor history and multi-device graphs:
+
+- Grafana → Postgres `sensor_readings` (read-only role) **or**  
+- Grafana → Shoal API if we add range queries later  
+
+Plugin shows a button: “Open sensor dashboard” with `device_id` variable.
+
+---
+
+## 6. NetBox plugin UX
+
+### 6.1 Device tabs (MVP)
+
+| Tab | Content | Data |
+|-----|---------|------|
+| **Shoal status** | Lifecycle (from status API + NetBox CF), power, active job, phase bar | `GET …/status` |
+| **Events** | Table: ts, severity, type, component, message | `GET …/events` |
+| **Jobs** | Table of recent jobs; link to expand phase/error | `GET …/jobs` |
+| **Sensors** | Latest readings table; optional sparkline later | `GET …/sensors` |
+
+Empty states: “No events yet — has Observe poll run?” with lab runbook link.
+
+### 6.2 Global plugin configuration
+
+```text
+SHOAL_BASE_URL=http://192.168.122.100:8088   # or internal Docker DNS
+SHOAL_API_TOKEN=…                            # Bearer
+SHOAL_REQUEST_TIMEOUT=10s
+SHOAL_DEVICE_ID_FIELD=shoal_device_id        # or name / id strategy
+```
+
+### 6.3 Optional v2 plugin features
+
+- “Refresh” button with cache-bust  
+- Embed job log viewer for selected job  
+- Deep link to cancel job (POST) with NetBox permission gate — **after** read MVP  
+- Start job wizard — **later** (needs profile picker + secrets discipline)
+
+### 6.4 Deep links only (phase 0 deliverable)
+
+If plugin packaging is slow, ship first:
+
+1. NetBox custom link / button template → Shoal external minimal HTML page **or**  
+2. Custom link to Grafana  
+
+Prefer not to stop at deep links forever; plugin is the target UX.
+
+---
+
+## 7. Minimal external Shoal HTML (optional, not full product UI)
+
+If useful for deep links without Grafana:
+
+- `GET /ui/devices/{id}` static/template page served by Shoal (stdlib templates only)
+- Same APIs as plugin; no NetBox dependency  
+
+**Not** a commitment to a large SPA. Defer if plugin lands first.
+
+---
+
+## 8. Data flow (Observe remains source of SEL/sensors)
+
+```text
+BMC (Redfish) ──poll──► Observe ──write──► telemetry Postgres
+                                              ▲
+NetBox plugin ──GET /v1/devices/… ──► Shoal API ─┘
+```
+
+Provisioning:
+
+```text
+Deploy job ──progress──► jobs (+ job_log)
+              └──lifecycle──► NetBox CF (current state only)
+NetBox plugin ──GET jobs by device──► Shoal
+```
+
+---
+
+## 9. Lab / ops packaging
+
+| Slice | Work |
+|-------|------|
+| Ansible | Install NetBox plugin into lab NetBox container/image; set env; restart |
+| Custom fields | Ensure `shoal_*` fields exist (bootstrap playbook already partially does lifecycle) |
+| Network | NetBox → Shoal HTTP on mgmt network (lab: `192.168.122.100:8088` or compose DNS) |
+| Docs | lab-runbook: “Open device in NetBox → Shoal tabs” |
+
+---
+
+## 10. Phased implementation plan
+
+| Slice | Deliverable | AC |
+|-------|-------------|-----|
+| **N0** | This design merged | Docs only |
+| **N1** | Shoal API: `GET /v1/devices/{id}/jobs` (+ tests) | Unit + optional lab |
+| **N2** | Shoal API: sensors latest (and/or since) | Unit; poll writes visible |
+| **N3** | Shoal API: `GET /v1/jobs/{id}/log` if `job_log` writers exist; else stub/doc | Honest empty state |
+| **N4** | NetBox custom fields + config context for Shoal base URL / device id | Lab bootstrap |
+| **N5** | NetBox plugin MVP: Status + Events tabs | Lab demo from device page |
+| **N6** | Plugin Jobs + Sensors tabs | Lab demo |
+| **N7** | Optional Grafana dashboard + plugin link | Lab compose |
+| **N8** | Optional Orchestrator write of `shoal_last_job_id` pointer | NetBox shows last job link |
+
+Do **not** block N5 on Grafana or job start-from-NetBox.
+
+---
+
+## 11. Relationship to other designs
+
+| Design | Relationship |
+|--------|----------------|
+| Main SoT Golden Rule 4 | Reinforced: no time-series in NetBox |
+| Multi-stage provisioning §16.1 | NetBox remains identity; this design is the **visibility** half |
+| Phase 4 Observe | Produces the events/sensors this UI displays |
+| Phase 6d auth | Bearer token reused for plugin |
+| Phase 6e+ | Not a substitute for this |
+
+---
+
+## 12. Open questions
+
+1. **Canonical `device_id`:** NetBox name vs numeric id vs dedicated `shoal_device_id` CF —
+   pin in N4/N5 with Discover alignment.  
+2. **Plugin repo location:** monorepo `extras/netbox-plugin-shoal/` vs separate repo?  
+3. **Read-only API token** vs single token for MVP?  
+4. **job_log population:** which components write today; is N3 blocked until writers land?  
+5. **Historical sensor retention** and Grafana retention policy?  
+
+---
+
+## 13. Success metric
+
+An operator can:
+
+1. Open a device in **NetBox**,  
+2. See **Shoal status**, **recent events**, **recent jobs**, and **latest sensors** without
+   using curl,  
+3. Trust that history lives in **Shoal telemetry**, while NetBox still shows only identity +
+   current lifecycle,  
+4. In lab, complete this path after `up.yml` + plugin install docs.
+
+---
+
+## 14. Future plans (decision guide)
+
+### 14.1 Start / cancel jobs from NetBox
+
+NetBox as a control surface for Deploy. Requires careful secrets UX, profile picker, and
+permission mapping. **After** read-only MVP (N5–N6).
+
+### 14.2 Live SOL / log stream in the browser
+
+SSE/WebSocket from Shoal to plugin or Shoal UI. Higher complexity; keep job_log polling
+first.
+
+### 14.3 Multi-CMDB
+
+If another inventory system appears, extract a “device hub link” pattern; **do not** build
+a Shoal inventory to replace NetBox without a new design.
+
+### 14.4 Richer Shoal-native UI
+
+Plugin and optional `/ui` pages share the same read APIs. A larger SPA is optional product
+work, not required for NetBox integration success.
+
+---
+
+## 15. References
+
+- Design SoT § NetBox integration, Golden Rules, Phase 4 Observe  
+- [`docs/multi-stage-provisioning-design.md`](./multi-stage-provisioning-design.md) §16.1  
+- `internal/api/devices.go` — status/events handlers  
+- `internal/common/telemetry/schema.sql` — `events`, `sensor_readings`, `jobs`, `job_log`  
+- `internal/common/netbox` — identity + lifecycle only  
+- NetBox plugin development docs (upstream)  
