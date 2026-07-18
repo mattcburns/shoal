@@ -852,3 +852,105 @@ An operator can run **one Deploy job** over BMC (no guest transit network) that:
 - [Ironic configuration drive](https://docs.openstack.org/ironic/latest/install/configdrive.html)  
 - [cloud-init ConfigDrive datasource](https://docs.cloud-init.io/en/latest/reference/datasources/configdrive.html)  
 - Golden Rules in `AGENTS.md` §1  
+
+---
+
+## 16. Future plans (decision guide)
+
+These items are **explicitly out of scope** for the first multi-stage implementation
+slices (M1–M6). They are recorded so near-term choices stay **compatible** with them
+and we do not paint ourselves into a corner.
+
+### 16.1 Possibly decouple NetBox integration
+
+**Today:** Deploy Orchestrator best-effort syncs NetBox `lifecycle_state`; identity is
+NetBox-centric in the broader design.
+
+**Future option:** Treat NetBox as an **optional identity/port backend**, not a hard
+dependency of the stage runner:
+
+| Concern | Near-term guidance | Future direction |
+|---------|--------------------|------------------|
+| Job start | Allow `device_id` + BMC binding without NetBox lookup | Explicit `IdentityStore` interface (NetBox impl + null/file/lab stub) |
+| Lifecycle write | Keep Orchestrator as sole writer of **Shoal** job/lifecycle truth | Fan-out adapters: NetBox, others, or none |
+| Profiles / inventory | Profile store already filesystem | Do not require NetBox custom fields for stage/seed config |
+| Lab / air-gap | Already runnable with weak NetBox | First-class “no NetBox” mode for pure BMC+SOL labs |
+
+**Why it matters while building M1–M6:** Prefer ports (`IdentityStore`, optional
+lifecycle hooks) over direct NetBox imports in new stage-runner code. Do not block
+`POST /v1/jobs` on NetBox availability.
+
+**Trigger for a dedicated design/PR:** Multi-tenant CMDB choice, offline-only
+deployments, or non-NetBox customers.
+
+### 16.2 Image builder for VMware ESXi and Windows
+
+**Today (this design):** ESXi and Windows v1 are **`operator_iso`** — the operator
+builds the ready install ISO (kickstart / Autounattend already present). Shoal attaches
+and provisions only.
+
+**Future option:** Shoal-side (or sidecar) **media composition**:
+
+| Family | Possible builder responsibilities |
+|--------|-----------------------------------|
+| **ESXi** | Inject `ks.cfg`, patch `boot.cfg` / boot args, version-aware layouts |
+| **Windows** | Inject `Autounattend.xml`, optional driver packs, ISO rebuild tooling |
+| **Shared** | Versioned output names (VM cache), secret render at compose time, publish to `SHOAL_ISO_*` |
+
+**Near-term guidance:** Keep a clean boundary — `MediaComposer` / `operator_iso` vs
+“compose then attach.” Do not special-case ESXi/Windows seed paths that assume Shoal
+remastered the media. When this lands, it should be a **separate design document**
+(compose pipeline, tooling host OS, licensing for Windows, Secure Boot) and new
+implementation slices after M5.
+
+**Trigger:** Operators want Shoal to own kickstart/unattend injection instead of an
+external media factory.
+
+### 16.3 Customizable pre-install (prep) image: actions and tooling
+
+**Today:** Prep is a **Shoal maintenance live** with a fixed capability set (wipe stub,
+optional RAID stub, config-drive write, `PREP_*` markers).
+
+**Future option:** Treat prep as a **pluggable action pipeline** on a customizable
+live image:
+
+```text
+prep_profile:
+  actions:
+    - type: wipe
+      level: discard
+    - type: raid
+      profile_ref: raid1-os
+    - type: firmware_bundle   # or redfish_side_effect for BMC firmware
+      ref: …
+    - type: shell_plugin      # carefully sandboxed; lab/advanced only
+      image_layer: vendor-storcli
+    - type: write_config_drive
+      seed_ref: …
+```
+
+| Capability | Near-term (M2) | Future |
+|------------|----------------|--------|
+| Action list | Hard-coded wipe (+ seed write) | Ordered, validated action graph |
+| Tooling | Busybox + minimal tools in one ISO | Optional **layers** / packs (storcli, MegaCLI, vendor fw) selected by profile |
+| Build | Single prep ISO artifact | Compose prep ISO from base + selected packs (still offline for the guest) |
+| Safety | 5b approval for wipe | Per-action approval tags; no untrusted network pulls during prep |
+| Redfish vs in-band | BMC firmware via Redfish when possible | Keep that split; plugins document in-band vs OOB |
+
+**Near-term guidance:** Implement prep as an **interface** (`PrepAction` / runner) even
+if only one action exists. Avoid baking MegaCLI paths into Orchestrator. Keep SOL phase
+names stable (`PREP_*`) so custom actions map into the same protocol.
+
+**Trigger:** Real hardware needs vendor RAID/firmware packs, or customers require
+site-specific prep scripts without forking Shoal.
+
+### 16.4 How to use this section
+
+When reviewing an implementation PR:
+
+1. Does it **require** NetBox inside the stage runner? Prefer a port.  
+2. Does it **assume** Shoal remasters ESXi/Windows? Keep `operator_iso` until §16.2.  
+3. Does prep add a **one-off special case** instead of an action/plugin slot? Prefer
+   §16.3 shape.
+
+None of §16 is required to merge M0–M6 or to call the first multi-stage path successful.
