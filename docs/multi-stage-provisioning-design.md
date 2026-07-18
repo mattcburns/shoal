@@ -7,23 +7,30 @@
 Phase **7a complete** (Ubuntu nested-lab cloud image-write). This document **supersedes**
 deferred Phase **7b/7c** checklists for product direction.
 
+**Constraint (hard):** Provisioning assumes **no guest transit / data-plane network** during
+install. Answer files and installers must be available via **BMC Virtual Media** and/or
+**local disk** prepared by Shoal. **No HTTP(S) URLs for kickstart, user-data, Ignition, or
+unattend** fetched by the guest. (Serving install *ISOs* to the BMC over the management
+segment for Virtual Media insert remains in scope — that traffic is BMC↔Shoal, not the
+guest OS pulling config.)
+
 ---
 
 ## 1. Purpose
 
-Specify how Shoal should provision **real operating systems** on bare metal (and
-nested lab guests) beyond the single-media Phase 7a image-write path:
+Specify how Shoal should provision **real operating systems** on bare metal (and nested
+lab guests) beyond the single-media Phase 7a image-write path:
 
-1. **Optional prep stage** — live maintenance image (wipe, RAID, firmware-related
-   host prep) with SOL progress.
-2. **OS install stage** — family-specific **scripted installer ISO** (or golden
-   **image-write**) attached via Virtual Media.
+1. **Optional prep stage** — live maintenance image (wipe, RAID, firmware-related host
+   prep) with SOL progress.
+2. **OS install stage** — attach an installer (or image-write) medium via Virtual Media;
+   deliver per-family config **offline** (see §4.3).
 3. **Optional verify stage** — boot installed OS; confirm health / identity.
 4. **OS support matrix** — Ubuntu, Flatcar, VMware ESXi, later Windows.
 
-This is a **Deploy Orchestrator** evolution, not a new microservice. Golden Rules
-still apply (BMC-only control path, SOL primary progress, Orchestrator sole
-lifecycle writer, secrets never to logs/LLM, mandatory media cleanup).
+This is a **Deploy Orchestrator** evolution, not a new microservice. Golden Rules still
+apply (BMC-only control path, SOL primary progress, Orchestrator sole lifecycle writer,
+secrets never to logs/LLM, mandatory media cleanup).
 
 ---
 
@@ -33,28 +40,29 @@ lifecycle writer, secrets never to logs/LLM, mandatory media cleanup).
 
 - Nested lab: Virtual Media + SOL + marker producer → **bootable Ubuntu** → job
   **`provisioned`**.
-- Preferred mechanism: **cloud image-write** (`gunzip|dd`), not live-server
-  autoinstall remaster (unreliable under nested sushy).
+- Preferred mechanism: **cloud image-write** (`gunzip|dd`), not live-server autoinstall
+  remaster (unreliable under nested sushy).
 
 ### 2.2 What 7a does not solve
 
 | Need | Gap |
 |------|-----|
-| ESXi / Flatcar / Windows | Not disk-clone products; need **installer + answer file** |
-| Wipe / RAID / pre-config | Must run **before** OS installer, often on a different live environment |
+| ESXi / Flatcar / Windows | Often need an **installer + offline answer file**, not only dd |
+| Wipe / RAID / pre-config | Must run **before** OS install, often on a different live environment |
 | One job spanning prep + install | Today: single media URL, single boot cycle |
 | Product primary path | Image-write is great for golden/cloud images, **not** universal |
 
 ### 2.3 Product intent (agreed direction)
 
-- **Primary:** customized / composed **installer ISOs** with family answer files:
-  - Ubuntu: autoinstall / cloud-init (`user-data`)
-  - VMware ESXi: kickstart
-  - Flatcar: Ignition
-  - Windows (later): unattend / Autounattend
-- **Secondary:** **image-write** (Phase 7a style) when a golden raw/cloud image exists
-- **Prep:** first-class **stage** before OS install when profile requires it
-- Delivery: **Redfish Virtual Media** (+ one-time boot); no PXE required
+| Intent | Detail |
+|--------|--------|
+| Offline only | No guest HTTP seed URLs (no transit assumption) |
+| Prep | First-class optional stage before OS install |
+| Image-write | Keep (7a); secondary strategy for golden/cloud disks |
+| Ubuntu / Flatcar | Installer or image path + **offline seed** via second Virtual Media **or** config-drive partition (Ironic-style) |
+| VMware ESXi (v1) | Operator supplies a **ready-to-boot install ISO** (kickstart already baked if needed); Shoal attaches and provisions — **no ISO remaster/compose in this design** |
+| Windows | Open; options in §6.4 — likely same “operator-built ISO” v1 stance as ESXi |
+| Later designs | Optional separate docs for **ISO composition** (embed ks into ESXi ISO, remaster Windows, etc.) |
 
 ---
 
@@ -64,22 +72,23 @@ lifecycle writer, secrets never to logs/LLM, mandatory media cleanup).
 
 1. **Multi-stage job model** in Orchestrator (prep → os_install → verify).
 2. **Media swap** between stages (eject stage N media, attach stage N+1, reboot).
-3. **Install strategies:** `scripted_iso` (primary), `image_write` (secondary),
-   `simulate` (regression).
-4. **Family adapters** for answer-file composition and progress semantics.
-5. **Profile-driven** inputs (extends Phase 5b) without hand-built flags for happy path.
+3. **Install strategies:** `scripted_iso` / `operator_iso`, `image_write`, `simulate`.
+4. **Offline config delivery** for Ubuntu/Flatcar (§4.3) without guest network.
+5. **Operator-provided ISO** path for ESXi (and likely Windows v1).
 6. Preserve SOL marker protocol; extend phases for prep/install namespaces.
-7. Nested-lab demonstration path for at least one scripted family **or** document
-   fidelity limits honestly (sushy single CD, remaster quirks).
+7. Profile-driven happy path where Shoal owns config (Ubuntu/Flatcar); simple URL attach
+   where operator owns the ISO (ESXi).
 
 ### 3.2 Non-goals (this design)
 
-- Implementing Windows in the first implementation slice
+- **HTTP/HTTPS seed URLs** for answer files (`ks=http://…`, nocloud-net, `ignition.config.url=http://…`, etc.)
+- **ESXi ISO composition / kickstart injection** (deferred to a later design if wanted)
+- Implementing Windows as a first implementation slice (design options only)
 - PXE / DHCP as a required provisioning network
 - Multi-tenant imaging SaaS
 - OCR as install progress authority
-- Replacing Phase 7a image-write (it remains a supported strategy)
-- Full vendor RAID matrix on day one (plugin/stub architecture first)
+- Replacing Phase 7a image-write
+- Full vendor RAID matrix on day one
 
 ---
 
@@ -101,9 +110,9 @@ lifecycle writer, secrets never to logs/LLM, mandatory media cleanup).
    └─────┬─────┘            └──────┬───────┘            └──────┬─────┘
          │                         │                           │
          │ Virtual Media           │ Virtual Media             │ boot HDD
-         │ prep.iso                │ family installer ISO      │ (no media
-         │ SOL: PREP_*             │ or image-write marker ISO │  or empty)
-         │ PREP_DONE ≠ job done    │ SOL: INSTALL_* / DONE     │ checks
+         │ prep.iso                │ installer / image-write   │
+         │ SOL: PREP_*             │ + offline seed (§4.3)     │ checks
+         │ PREP_DONE ≠ job done    │ SOL: INSTALL_* / DONE     │
          └─────────────────────────┴───────────────────────────┘
                                     │
                                     ▼
@@ -117,30 +126,95 @@ lifecycle writer, secrets never to logs/LLM, mandatory media cleanup).
 - Job state stays **`PROVISIONING`** until final stage succeeds or any stage fails.
 - **`PREP_DONE` advances stage**; only final OS (or verify) **`DONE`** → `provisioned`.
 - Failure / cancel at any stage → **HandleTerminal** cleanup (all media, override).
-- At most **one** Virtual Media image attached at a time (lab/sushy constraint);
-  dual-media is optional when BMC reports ≥2 devices.
+- Virtual Media: prefer **one** device when that is all the BMC offers; **second device**
+  is used for seed when available (§4.3.1).
 
 ### 4.2 Install strategies
 
-| Strategy | Media content | Disk effect | Use when |
-|----------|---------------|-------------|----------|
-| **`scripted_iso`** | Vendor/custom installer + embedded (or HTTP) answer file | Installer partitions/installs | **Primary** product path |
-| **`image_write`** | Marker live + `payload.gz` on ISO | `gunzip\|dd` full disk image | Golden/cloud images; nested lab (7a) |
-| **`simulate`** | Marker demo | None | Phase 2 regression |
+| Strategy | Media / disk effect | Use when |
+|----------|---------------------|----------|
+| **`operator_iso`** | Attach operator-supplied bootable ISO as-is | **ESXi v1**; likely **Windows v1**; any pre-baked media |
+| **`scripted_iso`** | Attach installer ISO **plus** Shoal-delivered offline seed (second media or config-drive) | **Ubuntu / Flatcar** when not using image-write |
+| **`image_write`** | Marker live + `payload.gz` on ISO → `gunzip\|dd` | Golden/cloud images (7a Ubuntu) |
+| **`simulate`** | Marker demo | Phase 2 regression |
 
-### 4.3 Seed / answer delivery modes (scripted_iso)
+Naming note: `operator_iso` makes “we don’t compose this ISO” explicit. Implementation may
+fold it under a broader `scripted_iso` with `compose: false` — pick one in the impl PR.
 
-Prefer offline BMC-only:
+### 4.3 Offline config delivery (no guest HTTP)
 
-| Mode | Description | Default |
-|------|-------------|---------|
-| **`embed`** | Compose single ISO: installer + answer file + boot args | **Yes** |
-| **`http`** | Boot stock/light ISO; `ks=` / nocloud-net / ignition URL on mgmt HTTP | Lab/fast optional |
-| **`second_media`** | Installer CD + seed CD/USB | Only if BMC supports ≥2 VM devices |
+**Forbidden:** any install-time fetch of answer files over the guest network.
 
-Secrets in answer files: render at compose time from **secret backend** /
-`credential_ref`; never log full rendered user-data/ks/ignition with passwords;
-published lab ISOs may use documented lab-only passwords (same as 7a).
+**Allowed:**
+
+1. Config already **inside** an operator-built ISO (`operator_iso`).
+2. **Second Virtual Media** seed (CIDATA / ignition OEM / floppy-like ISO).
+3. **Config-drive partition** on the target disk, written before or during deploy
+   (OpenStack Ironic-style).
+4. **Image-write** payloads that already contain first-boot config (7a cloud prepare).
+
+#### 4.3.1 Second Virtual Media (userdata volume)
+
+When the BMC exposes **≥2** virtual media devices (or CD + USB):
+
+```text
+Device A: installer ISO (Ubuntu live/server, Flatcar, …)  — boot target
+Device B: small seed ISO/FAT image
+          Ubuntu: NoCloud layout (user-data, meta-data), often label CIDATA
+          Flatcar: Ignition config per family conventions
+```
+
+Orchestrator attaches both, sets one-time boot to the installer device, ejects both on
+cleanup.
+
+**Lab note:** sushy-tools often models **one** CD. Dual-media may require real BMC or
+lab domain XML extensions — document fidelity gap; do not pretend nested sushy covers it
+until proven.
+
+#### 4.3.2 Config-drive partition (Ironic-style) — confirmed pattern
+
+OpenStack Ironic (and Nova) can present instance metadata as a **configuration drive**:
+
+- Small image/partition presented to the instance (in Ironic bare metal, commonly as a
+  **disk partition**, not only as a second CD).
+- Filesystem is discovered by **label** (classically **`config-2`** for OpenStack
+  config-drive).
+- **cloud-init** (and similar) mount by label and apply `user_data` / network / meta
+  **without any network** to a metadata service.
+
+See: [Ironic configdrive](https://docs.openstack.org/ironic/latest/install/configdrive.html),
+[cloud-init ConfigDrive datasource](https://docs.cloud-init.io/en/latest/reference/datasources/configdrive.html).
+
+**Shoal adaptation (proposed):**
+
+| Step | Actor | Action |
+|------|--------|--------|
+| 1 | Prep stage and/or Deploy host-side tooling | Build a small FAT/ISO9660 image (NoCloud or OpenStack layout) with rendered user-data / Ignition |
+| 2 | Prep live **or** specialized write | Create a small partition at the **start or end of the install disk** (or write config-drive into a reserved area), label appropriately, copy seed files |
+| 3 | OS install / first boot | Installer or first-boot agent reads local config-drive / NoCloud |
+
+**Ubuntu:** cloud-init NoCloud + optional OpenStack datasource; autoinstall can be fed via
+NoCloud seed (exact layout fixed in impl PR). Prefer labels cloud-init already searches
+(`cidata` / `CIDATA`, `config-2`).
+
+**Flatcar:** Ignition supports offline sources (e.g. from disk/OEM); exact path chosen in
+impl (config-drive-like partition vs second media). Prefer **no network**.
+
+**Ordering with wipe:** If prep **wipes** the disk, config-drive must be written
+**after** wipe and **before** or as part of the OS stage that expects it. Image-write of a
+full cloud image that already includes seed (7a prepare) is an alternative that avoids a
+separate config partition.
+
+**Risks:** Partition layout must not fight the installer (leave free space / use end of
+disk / use a second disk if present). Impl PR must pin a tested layout per family.
+
+#### 4.3.3 Explicitly rejected for this design
+
+| Mode | Why rejected |
+|------|----------------|
+| `ks=http://…` / `ignition.config.url=http://…` / nocloud-net | Requires guest network (transit) |
+| Metadata service (169.254.169.254) | Same; also not BMC-only story |
+| “Download answer file during install” | Violates offline constraint |
 
 ### 4.4 Prep stage capabilities
 
@@ -150,13 +224,12 @@ Prep runs a **Shoal maintenance live image** (evolution of marker ISO):
 |------------|----|--------|
 | Secure wipe / blkdiscard / NVMe sanitize | Required stub + one real method | Vendor crypto erase |
 | Emit `PREP_*` SOL markers | Required | — |
+| Write config-drive partition (§4.3.2) | Optional v1 if second media unavailable | Preferred offline seed path |
 | RAID / HBA configure | Stub interface | storcli/MegaCLI/… plugins |
 | Host-visible firmware tools | Optional | Vendor packs |
-| Inventory / “ready to install” gate | Optional | Required for strict profiles |
 
-**BMC firmware** that Redfish can do without booting the host should stay on
-**Deploy → Redfish**, not forced into the live image. Prep live is for
-**host-disk / adapter / in-band** work.
+**BMC firmware** that Redfish can perform without booting the host stays on
+**Deploy → Redfish**. Prep live is for **host-disk / adapter / in-band** work.
 
 Profile flags (sketch):
 
@@ -164,6 +237,7 @@ Profile flags (sketch):
 prep: skip | wipe_only | full
 wipe_level: none | discard | pass | crypto
 raid_profile_ref: optional
+seed_delivery: second_media | config_drive | none   # none = operator_iso or image_write embeds config
 ```
 
 Destruct/wipe still requires Phase **5b** approval.
@@ -173,9 +247,9 @@ Destruct/wipe still requires Phase **5b** approval.
 ```text
 cmd/shoal
   → deploy.Orchestrator   # stage runner + lifecycle + cleanup
-  → deploy/iso            # compose scripted ISO / marker image-write ISO
+  → deploy/iso            # marker image-write; small seed ISO build; NOT ESXi compose in v1
   → observe (SOL)         # via watchport + jobport only
-  → common/redfish        # Virtual Media, boot, power
+  → common/redfish        # Virtual Media (1–2 devices), boot, power
 ```
 
 - Observe still **never** imports Deploy; progress via `jobport`.
@@ -188,161 +262,212 @@ cmd/shoal
 
 ### 5.1 Job stages
 
-Illustrative (implementation PR defines exact structs):
-
 ```go
-type InstallStrategy string // simulate | image_write | scripted_iso
+type InstallStrategy string // simulate | image_write | scripted_iso | operator_iso
+
+type SeedDelivery string // none | second_media | config_drive
 
 type JobStageKind string // prep | os_install | verify
 
 type JobStageSpec struct {
-    ID        string
-    Kind      JobStageKind
-    Strategy  InstallStrategy // os_install only
-    Family    string          // ubuntu | flatcar | esxi | windows | ""
-    MediaURL  string          // resolved before stage start; may be built
-    AnswerRef string          // profile/template ref (non-secret)
-    Timeout   time.Duration
-    // Prep-only:
-    WipeLevel string
+    ID           string
+    Kind         JobStageKind
+    Strategy     InstallStrategy
+    Family       string // ubuntu | flatcar | esxi | windows | ""
+    MediaURL     string // installer or marker ISO (BMC-reachable)
+    SeedMediaURL string // optional second VM URL
+    AnswerRef    string // template for seed render (ubuntu/flatcar); unused for operator_iso
+    SeedDelivery SeedDelivery
+    Timeout      time.Duration
+    WipeLevel    string // prep
 }
-
-// On ProvisioningJob (or side table):
-// Stages []JobStageSpec
-// CurrentStage int
-// StageResults []StageResult
 ```
 
-API/CLI may keep a **compat path**: single `-iso-url` ⇒ one-stage `os_install`
-(image_write or scripted) for 7a-style runs.
+**Compat path:** single `-iso-url` ⇒ one-stage job (`image_write` or `operator_iso` /
+`scripted_iso` as selected).
 
 ### 5.2 Profile extensions (Phase 5b+)
 
 ```text
 os_family: ubuntu | flatcar | esxi | windows
 os_version: string
-install_strategy: scripted_iso | image_write
-answer_template_ref: path or id
-base_iso_ref / base_image_ref: artifact refs
-seed_mode: embed | http | second_media
+install_strategy: operator_iso | scripted_iso | image_write
+media_url / media_ref: operator or published installer / marker ISO
+seed_delivery: none | second_media | config_drive
+answer_template_ref: ubuntu/flatcar only
 prep: skip | wipe_only | full
 hostname, install_disk, …
-credential_ref: for passwords/keys used at compose time
+credential_ref: secrets for seed render (not for operator_iso contents Shoal did not build)
 ```
 
 ### 5.3 SOL marker phases
 
-Extend existing protocol (same `SHOAL|1|seq|ts|phase|percent|state|detail`):
+**Prep:** `PREP_BOOT`, `PREP_WIPE`, `PREP_RAID`, `PREP_FIRMWARE`, `PREP_SEED` (config-drive
+write), `PREP_DONE`, `ERROR`  
 
-**Prep:** `PREP_BOOT`, `PREP_WIPE`, `PREP_RAID`, `PREP_FIRMWARE`, `PREP_DONE`, `ERROR`  
-**Install:** keep `DISK_PREP`, `IMAGE_WRITE`, `POSTINSTALL`, `VERIFY`, `DONE`  
-  and/or family aliases `INSTALL_BOOT`, `INSTALL_COPY` mapped by parser to the same progress fields  
-**Heartbeats:** existing `HEARTBEAT` / percent `-`
+**Install:** `DISK_PREP`, `IMAGE_WRITE` / `INSTALL_*`, `POSTINSTALL`, `VERIFY`, `DONE`  
 
-Orchestrator:
+**Heartbeats:** existing rules.
 
 | Marker | Effect |
 |--------|--------|
 | Progress-only | Update phase/percent/seq |
-| `PREP_DONE` | Complete prep stage; start next stage (media swap) |
-| `DONE` (os stage) | If more stages → verify; else terminal success |
+| `PREP_DONE` | Complete prep; start next stage |
+| `DONE` (os stage) | Next stage or terminal success |
 | `ERROR` | Terminal failure |
 
 ---
 
 ## 6. OS support matrix
 
-| Family | Strategy | Answer file | Compose notes | Progress notes | Lab fidelity |
-|--------|----------|-------------|-----------------|----------------|--------------|
-| **Ubuntu** | `scripted_iso` primary; `image_write` supported (7a) | autoinstall `user-data` / NoCloud | Embed seed; preserve hybrid/UEFI boot (`xorriso` replay) | late-commands / marker inject preferred | Nested: image-write proven; autoinstall remaster stretch |
-| **Flatcar** | `scripted_iso` | Ignition | Embed or `ignition.config.url` (http mode) | Limited serial; may need coarse progress + verify | TBD |
-| **VMware ESXi** | `scripted_iso` | kickstart `ks.cfg` + boot `ks=cdrom:…` | Inject ks; do not assume dd image | %post markers if possible; else timeouts + verify | Needs real-ish media; sushy may be insufficient |
-| **Windows** | `scripted_iso` (later) | `unattend.xml` | Driver injection hard; licensing out of band | SOL often poor → post-boot agent / Redfish checks | Later phase |
+### 6.1 Summary table
 
-**Image-write column:** any family that publishes a **supported raw/cloud disk image** may use 7a mechanics; that is **not** a substitute for ESXi/Windows product install.
+| Family | v1 strategy | Config delivery | Who builds the install ISO? |
+|--------|-------------|-----------------|------------------------------|
+| **Ubuntu** | `image_write` (done) and/or `scripted_iso` | second_media and/or config_drive; or baked into cloud image (7a prepare) | Shoal marker/seed; installer may be stock or lightly prepared |
+| **Flatcar** | `scripted_iso` or image if applicable | second_media and/or config_drive (Ignition offline) | Stock Flatcar media + Shoal seed |
+| **VMware ESXi** | **`operator_iso` only in this design** | Inside operator ISO (kickstart already embedded by user) | **Operator** (later design: Shoal compose) |
+| **Windows** | **TBD — see §6.4**; lean **`operator_iso` for v1** | Inside operator ISO or second media if BMC allows | **Operator** for v1; composition later |
+
+### 6.2 Ubuntu
+
+| Path | Notes |
+|------|--------|
+| **image_write (7a)** | Prepare cloud image offline (hostname, user, NoCloud seed on image) → marker ISO → dd. **No guest network.** |
+| **scripted_iso** | Boot installer ISO; deliver autoinstall/cloud-init via **second_media** or **config_drive** only. |
+
+### 6.3 Flatcar
+
+- Prefer offline Ignition via **second_media** or **config_drive** partition written in prep.
+- No `ignition.config.url=http://…` in this design.
+- Progress may be coarse; verify stage important.
+
+### 6.4 VMware ESXi (v1 scope)
+
+**In scope:**
+
+- Profile/job supplies `media_url` to a **pre-built** ESXi install ISO (kickstart already
+  on media / boot args already set by the operator’s build pipeline).
+- Orchestrator: attach → boot once CD → wait SOL/timeout/power signals → cleanup →
+  optional verify.
+
+**Out of scope (later design document):**
+
+- Remastering ESXi ISO, injecting `ks.cfg`, rewriting boot.cfg, signing concerns, version
+  matrix of ESXi media layouts.
+
+This keeps Shoal’s first ESXi milestone honest: **attach and run**, not **become an ESXi
+media factory**.
+
+### 6.5 Windows — options analysis (decision needed)
+
+Windows Setup does **not** use cloud-init/config-drive the way Linux does. Unattended
+install is driven by **`Autounattend.xml` / `unattend.xml`**, which Setup searches on
+**removable media and installation media** (and related paths), not a standard Ironic
+`config-2` partition mid-install.
+
+| Option | Offline? | Fits BMC VM? | Complexity | Recommendation |
+|--------|----------|--------------|------------|----------------|
+| **A. Operator-built ISO** with `Autounattend.xml` at ISO root (same pattern as ESXi v1) | Yes | Single CD | Low for Shoal | **Preferred v1** |
+| **B. Dual Virtual Media** — Windows ISO + second small ISO/floppy containing `Autounattend.xml` | Yes | Needs ≥2 devices | Medium | Good when BMC supports it |
+| **C. Shoal remasters Windows ISO** to inject unattend + drivers | Yes | Single CD | High (tools, licensing, Secure Boot, driver packs) | Later design only |
+| **D. image_write golden Windows image** (sysprep generalized VHD/raw) | Yes | Marker write path | Medium–high (sysprep pipeline outside Shoal) | Valid if org already builds golden images |
+| **E. Guest HTTP unattend** | No | — | — | **Rejected** (offline constraint) |
+| **F. Config-drive partition only** | Partial | — | High / unreliable for Setup | **Not primary**; Setup may not read it like cloud-init |
+
+**Progress / SOL:** Windows rarely emits clean serial markers. Expect **timeouts, power
+state, optional post-boot check** (agent later), not Phase-2-quality SOL. Document as
+family-specific progress policy.
+
+**Licensing / drivers:** Out of band; Shoal does not distribute Windows media or OEM
+drivers.
+
+**Proposed stance for this design:**
+
+1. **v1 Windows = `operator_iso`** (operator provides ready unattended ISO), same as ESXi.  
+2. **Optional later:** dual-media unattend when BMC has two devices.  
+3. **Separate design** if we want Shoal-side Windows ISO composition or golden-image
+   factory.  
+4. Do **not** plan guest-network answer files.
 
 ---
 
 ## 7. Orchestrator stage runner (behavior)
 
-Pseudo-algorithm:
-
 ```text
 func RunJob(job):
   for i, stage in job.Stages:
     job.CurrentStage = i
-    resolveOrBuildMedia(stage)
-    attachVirtualMedia(stage.MediaURL)   // skip if verify boots disk only
-    setBootOverride(stage)               // Once CD for prep/os; disk for verify
+    if stage needs seed and seed_delivery == config_drive:
+      ensureConfigDriveOnDisk(stage)   // via prep live or host-side when safe
+    attachVirtualMedia(stage.MediaURL)
+    if stage.SeedMediaURL != "" && seed_delivery == second_media:
+      attachSecondVirtualMedia(stage.SeedMediaURL)
+    setBootOverride(stage)
     power ForceRestart or On
-    register SOL watch
-    wait until stage terminal marker or timeout/stall/cancel
+    register SOL watch (family policy: markers required vs best-effort)
+    wait until stage terminal or timeout/stall/cancel
     unregister SOL
-    eject media; clear override (best-effort each stage end)
+    eject all media; clear override
     if failed: HandleTerminal(failed); return
   HandleTerminal(provisioned)
 ```
 
-**Idempotency:** re-entering a stage must re-read BMC media/boot state (existing Deploy rule).
+**Idempotency:** re-read BMC media/boot state each stage (existing Deploy rule).
 
-**Timeouts:** per-stage; prep shorter than full OS install; ESXi/Windows longer than Ubuntu image-write.
+**Timeouts:** per-stage; OS install longer than prep; Windows/ESXi longer than Ubuntu
+image-write.
 
 ---
 
-## 8. ISO / artifact pipeline
+## 8. Artifact pipeline
 
-### 8.1 Interfaces (sketch)
+### 8.1 What Shoal builds in *this* design
 
-```text
-type MediaComposer interface {
-    Compose(ctx, ComposeInput) (Artifact, error)
-}
+| Artifact | Builder |
+|----------|---------|
+| Marker image-write ISO | Existing `build-marker-iso.sh` + prepare scripts (7a) |
+| Small **seed** ISO/FAT (CIDATA / Ignition) | New small builder — **not** full OS remaster |
+| Config-drive filesystem image | New helper used by prep or Deploy |
+| Prep live ISO | Evolve marker ISO |
 
-// ComposeInput: Strategy, Family, BaseISO/BaseImage, Answer rendered bytes,
-// Hostname, SeedMode, OutDir, …
-```
+### 8.2 What Shoal does **not** build in this design
 
-Implementations:
+| Artifact | Owner |
+|----------|--------|
+| ESXi ISO + embedded kickstart | **Operator** (later design optional) |
+| Windows ISO + Autounattend + drivers | **Operator** (later design optional) |
 
-- `MarkerImageWriteComposer` — existing `build-marker-iso.sh` + prepare scripts  
-- `UbuntuAutoinstallComposer` — remaster / inject (evolve 7a remaster scripts)  
-- `ESXiKickstartComposer` — later  
-- `FlatcarIgnitionComposer` — later  
+### 8.3 Serving media to the BMC
 
-Publish remains **plain HTTP** on mgmt segment (`SHOAL_ISO_*`) for MVP.
+Plain HTTP on the **management segment** for Virtual Media **file fetch by the BMC**
+(`SHOAL_ISO_BASE_URL`) remains. That is **not** “guest HTTP seed.”
 
-### 8.2 Caching
-
-Virtual Media clients (sushy) may **cache by URL**. Composed artifacts should use
-**content-addressed or versioned basenames** when inputs change (lesson from 7a lab).
+Version media URLs when content changes (sushy cache lesson from 7a).
 
 ---
 
 ## 9. Security
 
-- Answer files: no plaintext production passwords in git or slog  
-- Lab defaults documented (`shoal-lab`) only  
-- Wipe/RAID: 5b approval  
-- Published ISOs treated as sensitive if they embed credentials  
-- Redact compose logs  
+- Seed templates: no production passwords in git/slog; render via `credential_ref`
+- Operator-supplied ISOs are trusted inputs — treat as high sensitivity
+- Wipe/RAID: 5b approval
+- Redact compose logs for seed render
 
 ---
 
 ## 10. Phased implementation plan
 
-Suggested slices (separate PRs after this design is accepted):
-
 | Slice | Deliverable | AC |
 |-------|-------------|-----|
-| **M0** | This design merged; design SoT pointer from main plan | Docs only |
-| **M1** | Stage runner skeleton: multi-stage job with **one** stage (compat with 7a) | Existing 7a still green |
-| **M2** | Prep stage v1: wipe + `PREP_*` markers + handoff to existing image-write Ubuntu | Nested lab E2E prep→install |
-| **M3** | Ubuntu `scripted_iso` embed path (best-effort nested; hardware preferred) | Documented AC |
-| **M4** | Profile fields + Start without hand ISO flags for one family | 5b-style |
-| **M5** | Flatcar **or** ESXi first scripted family | Lab or hardware AC |
-| **M6** | Windows spike design + optional prototype | Explicit fidelity note |
-
-Do **not** block M1–M2 on full OS matrix.
+| **M0** | This design merged | Docs only |
+| **M1** | Stage runner skeleton; single-stage compat with 7a image-write | 7a still green |
+| **M2** | Prep v1: wipe + `PREP_*` + handoff to image-write Ubuntu | Nested E2E |
+| **M3** | Offline seed: **config_drive** and/or **second_media** for Ubuntu NoCloud | Lab or hardware AC; no HTTP seed |
+| **M4** | Flatcar offline Ignition seed (same delivery modes) | Documented AC |
+| **M5** | **`operator_iso`** path (ESXi-shaped: attach + boot + cleanup + coarse progress) | Hardware preferred; lab if possible |
+| **M6** | Profiles for strategies + seed_delivery | Start without ad-hoc flags for one family |
+| **Later** | Separate designs: ESXi ISO compose, Windows compose, dual-media Windows | Out of this doc’s implementation slices |
 
 ---
 
@@ -350,38 +475,34 @@ Do **not** block M1–M2 on full OS matrix.
 
 | Item | Disposition |
 |------|-------------|
-| 7a Ubuntu nested image-write | **Complete** (v2.0.9); remains `image_write` strategy |
-| 7b profiles | **Superseded** by §5.2 + M4 |
-| 7c second family | **Superseded** by §6 + M5 |
-| Live autoinstall remaster | Alternate Ubuntu path under `scripted_iso` |
-
-Update main design doc status line when M0 merges (pointer to this file).
+| 7a Ubuntu nested image-write | **Complete**; `image_write` strategy |
+| 7b profiles | **Superseded** by §5.2 + M6 |
+| 7c second family | **Superseded** by matrix + M4/M5 |
+| HTTP autoinstall seed | **Rejected** under offline constraint |
 
 ---
 
 ## 12. Open questions
 
-1. **Always run prep?** Default `prep: skip` for 7a-compat; `wipe_only` for reimage profiles.  
-2. **Verify stage:** marker from guest agent vs SSH vs serial login scrape?  
-3. **HTTP seed vs embed** for lab CI speed — allow both; production prefer embed.  
-4. **Windows SOL** — accept non-marker progress for that family?  
-5. **Single composer binary vs shell scripts** — keep scripts for ISO (5c/7a pattern) unless complexity forces Go.  
-
-Resolve in implementation PRs; record decisions here.
+1. **Always run prep?** Default `prep: skip` for 7a-compat; `wipe_only` for reimage.  
+2. **Verify stage:** serial scrape vs future guest agent vs Redfish-only power/boot?  
+3. **Config-drive layout:** exact partition size/offset/label per family (pin in M3).  
+4. **Single-CD BMCs:** force `config_drive` or `image_write` when `second_media` impossible?  
+5. **Windows v1:** confirm **operator_iso only** (recommended) vs invest in dual-media unattend.  
+6. **ESXi progress without SOL markers:** max timeout + power state only for M5?
 
 ---
 
 ## 13. Success metric
 
-An operator can:
+An operator can run **one Deploy job** over BMC (no guest transit network) that:
 
-1. Select a profile (family + prep policy + strategy),  
-2. Run one Deploy job over BMC,  
-3. See SOL/stage progress,  
-4. End in **`provisioned`** with media cleaned,  
-
-for **Ubuntu** (image-write and/or scripted) and at least **one** of Flatcar/ESXi,
-with Windows on a clear later slice — without PXE.
+1. Optionally preps (wipe/RAID),  
+2. Installs **Ubuntu** (image-write and/or offline-seeded scripted path) and **Flatcar**
+   (offline seed),  
+3. Can **attach and run** an **operator-built ESXi ISO**,  
+4. Has a clear **Windows** path (at least operator_iso) without HTTP seeds,  
+5. Ends **`provisioned`** with media cleaned.
 
 ---
 
@@ -390,4 +511,6 @@ with Windows on a clear later slice — without PXE.
 - Design SoT § Phase 7 (v2.0.9 7a closeout)  
 - [`docs/phase-7-plan.md`](./phase-7-plan.md)  
 - [`docs/lab-runbook.md`](./lab-runbook.md) § Phase 7a  
+- [Ironic configuration drive](https://docs.openstack.org/ironic/latest/install/configdrive.html)  
+- [cloud-init ConfigDrive datasource](https://docs.cloud-init.io/en/latest/reference/datasources/configdrive.html)  
 - Golden Rules in `AGENTS.md` §1  
