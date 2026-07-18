@@ -188,10 +188,14 @@ type StartJobRequest struct {
 	BuildISO bool `json:"build_iso,omitempty"`
 	// ISOPayloadFile is an optional host path for binary install payload (write mode).
 	ISOPayloadFile string `json:"iso_payload_file,omitempty"`
-	// ISOInstallMode is simulate|write for dynamic builds (default simulate).
+	// ISOInstallMode is simulate|write|autoinstall for dynamic builds (default simulate).
 	ISOInstallMode string `json:"iso_install_mode,omitempty"`
 	// ISOInstallTarget is optional write target baked into the image (e.g. /dev/vda).
 	ISOInstallTarget string `json:"iso_install_target,omitempty"`
+	// ISOUbuntuBase is path to official Ubuntu Server live-server ISO (Phase 7a autoinstall).
+	ISOUbuntuBase string `json:"iso_ubuntu_base,omitempty"`
+	// ISOHostname is the autoinstall identity hostname (Phase 7a).
+	ISOHostname string `json:"iso_hostname,omitempty"`
 }
 
 // CancelJobRequest cancels an in-flight provisioning job.

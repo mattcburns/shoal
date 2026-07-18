@@ -346,8 +346,12 @@ func (o *Orchestrator) provision(ctx context.Context, job models.ProvisioningJob
 	if err := bmc.SetBootOverrideOnceCD(ctx, sys.ID); err != nil {
 		return fmt.Errorf("boot override: %w", err)
 	}
-	if err := bmc.Power(ctx, sys.ID, "On"); err != nil {
-		return fmt.Errorf("power on: %w", err)
+	// Prefer ForceRestart so an already-on system reboots into the new media.
+	// Fall back to On for powered-off domains (sushy maps both onto libvirt).
+	if err := bmc.Power(ctx, sys.ID, "ForceRestart"); err != nil {
+		if err2 := bmc.Power(ctx, sys.ID, "On"); err2 != nil {
+			return fmt.Errorf("power on/restart: %w (also: %v)", err2, err)
+		}
 	}
 
 	_ = o.store.UpdateProgress(ctx, job.ID, "WAITING_SOL", nil, 0, "")
@@ -589,10 +593,29 @@ func (o *Orchestrator) postCheckClean(ctx context.Context, bmcURL, credRef, syst
 	if err != nil {
 		return fmt.Errorf("get boot post-check: %w", err)
 	}
-	if boot.OverrideEnabled != "" && boot.OverrideEnabled != "Disabled" && boot.OverrideEnabled != "disabled" {
+	// Clean = Disabled, empty, or sushy-tools steady state Continuous/Hdd
+	// (ClearBootOverride falls back to Continuous+Hdd when Disabled is rejected).
+	if !bootOverrideCleared(boot) {
 		return fmt.Errorf("boot override still set (%s/%s)", boot.OverrideEnabled, boot.OverrideTarget)
 	}
 	return nil
+}
+
+// bootOverrideCleared reports whether the BMC boot source is in a post-cleanup state
+// (no one-time CD/USB override left active).
+func bootOverrideCleared(boot redfish.BootInfo) bool {
+	en := strings.TrimSpace(boot.OverrideEnabled)
+	tgt := strings.TrimSpace(boot.OverrideTarget)
+	switch {
+	case en == "" || strings.EqualFold(en, "Disabled"):
+		return true
+	case strings.EqualFold(en, "Continuous") &&
+		(tgt == "" || strings.EqualFold(tgt, "None") || strings.EqualFold(tgt, "Hdd") || strings.EqualFold(tgt, "Disk") || strings.EqualFold(tgt, "Hd")):
+		// sushy-tools maps "clear override" onto Continuous + Hdd boot order.
+		return true
+	default:
+		return false
+	}
 }
 
 // checkProfileApproval enforces Phase 5b human gate before any BMC action.
@@ -674,6 +697,8 @@ func (o *Orchestrator) maybeBuildISO(ctx context.Context, req *models.StartJobRe
 	mode := strings.TrimSpace(req.ISOInstallMode)
 	payloadFile := strings.TrimSpace(req.ISOPayloadFile)
 	target := strings.TrimSpace(req.ISOInstallTarget)
+	ubuntuBase := strings.TrimSpace(req.ISOUbuntuBase)
+	hostname := strings.TrimSpace(req.ISOHostname)
 	embedded := ""
 
 	if profileRef != "" && profileRef != "spike" && o.profiles != nil {
@@ -695,11 +720,16 @@ func (o *Orchestrator) maybeBuildISO(ctx context.Context, req *models.StartJobRe
 		}
 	}
 	if mode == "" {
-		if payloadFile != "" || embedded != "" {
+		if ubuntuBase != "" {
+			mode = iso.InstallModeAutoinstall
+		} else if payloadFile != "" || embedded != "" {
 			mode = iso.InstallModeWrite
 		} else {
 			mode = iso.InstallModeSimulate
 		}
+	}
+	if mode == iso.InstallModeAutoinstall && name == "shoal-install.iso" {
+		name = "shoal-ubuntu-autoinstall.iso"
 	}
 
 	in := iso.BuildInput{
@@ -708,6 +738,8 @@ func (o *Orchestrator) maybeBuildISO(ctx context.Context, req *models.StartJobRe
 		EmbeddedPayload: embedded,
 		InstallMode:     mode,
 		InstallTarget:   target,
+		UbuntuBaseISO:   ubuntuBase,
+		Hostname:        hostname,
 	}
 	url, art, err := buildAndPublish(ctx, o.isoBuilder, in, iso.PublishDest{
 		Dir: o.isoPublishDir, BaseURL: o.isoBaseURL,

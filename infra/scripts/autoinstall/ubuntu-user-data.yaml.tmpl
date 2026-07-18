@@ -1,0 +1,78 @@
+#cloud-config
+# Phase 7a Ubuntu autoinstall (non-secret lab template).
+# Placeholders: {{HOSTNAME}} {{PASSWORD_HASH}} {{USERNAME}}
+# SOL markers are written to ttyS0 for Shoal Observe progress.
+autoinstall:
+  version: 1
+  locale: en_US.UTF-8
+  keyboard:
+    layout: us
+  identity:
+    hostname: {{HOSTNAME}}
+    username: {{USERNAME}}
+    password: "{{PASSWORD_HASH}}"
+  ssh:
+    install-server: true
+    allow-pw: true
+  storage:
+    layout:
+      name: direct
+  packages:
+    - openssh-server
+  early-commands:
+    - |
+      /bin/bash -c '
+      emit() {
+        local phase="$1" percent="$2" state="$3" detail="${4:-}"
+        SEQ_FILE=/run/shoal-seq
+        seq=0
+        if [ -f "$SEQ_FILE" ]; then seq=$(cat "$SEQ_FILE"); fi
+        seq=$((seq + 1))
+        echo "$seq" > "$SEQ_FILE"
+        ts=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo 1970-01-01T00:00:00Z)
+        line="SHOAL|1|${seq}|${ts}|${phase}|${percent}|${state}|${detail}"
+        for d in /dev/ttyS0 /dev/console; do
+          if [ -w "$d" ]; then printf "%s\n" "$line" >"$d" 2>/dev/null || true; fi
+        done
+        printf "%s\n" "$line" || true
+      }
+      emit BOOT 0 OK "ubuntu autoinstall early-commands"
+      emit DISK_PREP 5 OK "storage layout starting"
+      # Background heartbeats while subiquity runs (stall protection for long installs).
+      (
+        while true; do
+          sleep 45
+          emit IMAGE_WRITE - HEARTBEAT "autoinstall in progress"
+        done
+      ) &
+      echo $! > /run/shoal-hb.pid
+      '
+  late-commands:
+    - |
+      /bin/bash -c '
+      emit() {
+        local phase="$1" percent="$2" state="$3" detail="${4:-}"
+        SEQ_FILE=/run/shoal-seq
+        seq=0
+        if [ -f "$SEQ_FILE" ]; then seq=$(cat "$SEQ_FILE"); fi
+        seq=$((seq + 1))
+        echo "$seq" > "$SEQ_FILE"
+        ts=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo 1970-01-01T00:00:00Z)
+        line="SHOAL|1|${seq}|${ts}|${phase}|${percent}|${state}|${detail}"
+        for d in /dev/ttyS0 /dev/console; do
+          if [ -w "$d" ]; then printf "%s\n" "$line" >"$d" 2>/dev/null || true; fi
+        done
+        printf "%s\n" "$line" || true
+      }
+      if [ -f /run/shoal-hb.pid ]; then kill "$(cat /run/shoal-hb.pid)" 2>/dev/null || true; fi
+      emit IMAGE_WRITE 90 OK "late-commands"
+      emit POSTINSTALL 95 OK "curtin finished"
+      emit VERIFY 98 OK "target root present"
+      # Ensure serial console on installed system for post-boot diagnostics.
+      curtin in-target --target=/target -- bash -c \
+        "grep -q console=ttyS0 /etc/default/grub 2>/dev/null || \
+         sed -i \"s/GRUB_CMDLINE_LINUX=\\\"/GRUB_CMDLINE_LINUX=\\\"console=ttyS0,115200n8 /\" /etc/default/grub; \
+         update-grub 2>/dev/null || true"
+      emit DONE 100 OK "ubuntu autoinstall complete reboot"
+      '
+  shutdown: reboot

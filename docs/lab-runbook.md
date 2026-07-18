@@ -326,6 +326,90 @@ present, the image falls back to a file target (`/tmp/shoal-install.out` or
 `SHOAL_ISO_DYNAMIC=true` also builds when `-iso-url` is empty and publish
 dir/base URL are set.
 
+### Phase 7a: Ubuntu full OS on nested lab (**complete**)
+
+Phase **6a** writes a bounded `/payload` only. Phase **7a** installs a **real
+Ubuntu root** on the nested guest disk over Virtual Media + SOL markers, then
+reboots. Job ends **`provisioned`**.
+
+**Preferred path (nested sushy lab):** Ubuntu **cloud image** → customize →
+gzip → marker ISO with `payload.gz` on the ISO root → guest
+`gunzip|dd` to `/dev/vda`. Live-server **autoinstall remaster** is alternate/stretch
+(often fails to boot/progress under nested sushy).
+
+**Prerequisites**
+
+1. Nested guest with a **real disk** (lab nodes: 20G qcow2) and ≥2 GiB RAM.
+2. Build on **L1** (needs loop mounts / sudo for cloud prep; kernel modules for marker ISO).
+3. Publish dir served at BMC-reachable URL:
+
+```bash
+export SHOAL_ISO_PUBLISH_DIR=/srv/iso
+export SHOAL_ISO_BASE_URL=http://192.168.124.1:8080
+```
+
+**Prepare cloud payload (L1)**
+
+```bash
+wget -O /var/tmp/ubuntu-22.04-server-cloudimg-amd64.img \
+  https://cloud-images.ubuntu.com/releases/22.04/release/ubuntu-22.04-server-cloudimg-amd64.img
+export SHOAL_UBUNTU_CLOUD_IMG=/var/tmp/ubuntu-22.04-server-cloudimg-amd64.img
+export SHOAL_AUTOINSTALL_HOSTNAME=lab-node-1
+export SHOAL_AUTOINSTALL_USERNAME=ubuntu
+export SHOAL_AUTOINSTALL_PASSWORD=shoal-lab   # lab only
+sudo -E ./infra/scripts/prepare-ubuntu-cloud-payload.sh /tmp/ubuntu-cloud-payload.raw
+# produces /tmp/ubuntu-cloud-payload.raw.gz
+```
+
+**Build marker install ISO (payload on ISO root, small initrd)**
+
+```bash
+sudo env \
+  SHOAL_INSTALL_MODE=autoinstall \
+  SHOAL_PAYLOAD_FILE=/tmp/ubuntu-cloud-payload.raw.gz \
+  SHOAL_INSTALL_TARGET=/dev/vda \
+  SHOAL_INSTALL_REBOOT=1 \
+  SHOAL_ISO_NAME=shoal-ubuntu-cloud-v5.iso \
+  ./infra/scripts/build-marker-iso.sh /srv/iso/shoal-ubuntu-cloud-v5.iso
+```
+
+**Deploy**
+
+```bash
+# Use a new ISO basename when content changes (sushy caches by download path).
+go run ./cmd/shoal deploy run \
+  -device-id shoal-node-1 \
+  -bmc-url http://192.168.122.100:8001 \
+  -bmc-user admin -bmc-pass password \
+  -serial-target shoal-node-1 \
+  -serial-ssh-host 192.168.122.100 \
+  -serial-ssh-user lab \
+  -serial-ssh-key "$HOME/.ssh/shoal_lab_vm" \
+  -iso-url http://192.168.124.1:8080/shoal-ubuntu-cloud-v5.iso \
+  -stall-timeout 15m \
+  -wait-timeout 25m \
+  -wait
+# Expect: state=provisioned, phase=DONE
+```
+
+**Lab login (cloud prepare defaults):** user `ubuntu`, password `shoal-lab` (lab-only).
+
+**Alternate — live-server autoinstall remaster**
+
+```bash
+export SHOAL_UBUNTU_ISO=/path/to/ubuntu-22.04.5-live-server-amd64.iso
+go run ./cmd/shoal deploy iso build \
+  -name shoal-ubuntu-autoinstall.iso \
+  -install-mode autoinstall \
+  -ubuntu-iso "$SHOAL_UBUNTU_ISO" \
+  -hostname lab-node-1 \
+  -publish
+```
+
+**Fidelity:** sushy-tools emulates BMC only; write runs on the nested libvirt disk.
+Cloud image-write typically finishes in a few minutes once media is attached;
+live autoinstall (if used) can take 20–60+ minutes on nested CPU.
+
 ### Phase 6b: graphics failure-screen OCR
 
 SOL remains the primary progress channel. Graphics OCR is **diagnostic only**.

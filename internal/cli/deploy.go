@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -62,10 +63,13 @@ func cmdDeployRun(args []string) int {
 	systemID := fs.String("system-id", "", "optional Redfish system id or name")
 	profileRef := fs.String("profile-ref", "spike", "profile ref (spike = no store; else SHOAL_PROFILE_DIR)")
 	approveDestruct := fs.Bool("approve-destruct", false, "operator consent for NeedsApproval/DestructSteps profiles")
-	buildISO := fs.Bool("build-iso", false, "build+publish live ISO before start (Phase 6a; needs publish dir)")
+	buildISO := fs.Bool("build-iso", false, "build+publish live ISO before start (Phase 6a/7a; needs publish dir)")
 	isoPayload := fs.String("iso-payload-file", "", "payload file for -build-iso write mode")
-	isoMode := fs.String("iso-install-mode", "", "simulate|write for -build-iso (default write if payload set)")
+	isoMode := fs.String("iso-install-mode", "", "simulate|write|autoinstall for -build-iso")
 	isoTarget := fs.String("iso-install-target", "", "write target for -build-iso (e.g. /tmp/shoal-install.out)")
+	ubuntuISO := fs.String("ubuntu-iso", os.Getenv("SHOAL_UBUNTU_ISO"), "Ubuntu live-server ISO (legacy remaster)")
+	cloudImg := fs.String("ubuntu-cloud-img", os.Getenv("SHOAL_UBUNTU_CLOUD_IMG"), "Ubuntu cloud image for autoinstall build (preferred)")
+	isoHostname := fs.String("iso-hostname", "", "autoinstall hostname when building")
 	sshHost := fs.String("serial-ssh-host", cfg.SerialSSHHost, "SSH host for nested libvirt serial (VM mode)")
 	sshUser := fs.String("serial-ssh-user", cfg.SerialSSHUser, "SSH user for serial delegate")
 	sshKey := fs.String("serial-ssh-key", cfg.SerialSSHKey, "SSH private key for serial delegate")
@@ -78,6 +82,20 @@ func cmdDeployRun(args []string) int {
 	cfg.SerialSSHHost = *sshHost
 	cfg.SerialSSHUser = *sshUser
 	cfg.SerialSSHKey = *sshKey
+
+	// Phase 7a: full Ubuntu install; raise defaults when autoinstall unless overridden.
+	mode := strings.TrimSpace(*isoMode)
+	if mode == iso.InstallModeAutoinstall || strings.TrimSpace(*ubuntuISO) != "" || strings.TrimSpace(*cloudImg) != "" {
+		if mode == "" {
+			mode = iso.InstallModeAutoinstall
+		}
+		if *stallTimeout == 3*time.Minute {
+			*stallTimeout = 15 * time.Minute // cloud-image write is faster than live autoinstall
+		}
+		if *waitTimeout == 30*time.Minute {
+			*waitTimeout = 45 * time.Minute
+		}
+	}
 
 	dev := *deviceID
 	if dev == "" {
@@ -96,8 +114,14 @@ func cmdDeployRun(args []string) int {
 		ApproveDestruct:  *approveDestruct,
 		BuildISO:         *buildISO,
 		ISOPayloadFile:   *isoPayload,
-		ISOInstallMode:   *isoMode,
+		ISOInstallMode:   mode,
 		ISOInstallTarget: *isoTarget,
+		ISOUbuntuBase:    *ubuntuISO,
+		ISOHostname:      *isoHostname,
+	}
+	// Cloud image is passed via env for the builder (StartJobRequest has no field yet for 7a.1).
+	if strings.TrimSpace(*cloudImg) != "" {
+		_ = os.Setenv("SHOAL_UBUNTU_CLOUD_IMG", strings.TrimSpace(*cloudImg))
 	}
 
 	store, dbCloser, err := openJobStore(cfg)

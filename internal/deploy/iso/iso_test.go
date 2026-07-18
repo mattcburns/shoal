@@ -87,6 +87,51 @@ func TestBuildRejectsBadInstallMode(t *testing.T) {
 	}
 }
 
+func TestBuildAutoinstallRequiresCloudOrISO(t *testing.T) {
+	b := iso.NewScriptBuilder("/nonexistent-script", slog.New(slog.NewTextHandler(io.Discard, nil)))
+	t.Setenv("SHOAL_UBUNTU_ISO", "")
+	t.Setenv("SHOAL_UBUNTU_CLOUD_IMG", "")
+	_, err := b.Build(context.Background(), iso.BuildInput{
+		InstallMode: iso.InstallModeAutoinstall,
+		OutDir:      t.TempDir(),
+	})
+	if err == nil {
+		t.Fatal("expected autoinstall input error")
+	}
+	if !strings.Contains(err.Error(), "CLOUD") && !strings.Contains(err.Error(), "payload") && !strings.Contains(err.Error(), "UBUNTU") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestFindUbuntuAutoinstallScript(t *testing.T) {
+	p, err := iso.FindUbuntuAutoinstallScript()
+	if err != nil {
+		t.Skipf("script not found in this environment: %v", err)
+	}
+	if !strings.Contains(p, "build-ubuntu-autoinstall-iso.sh") {
+		t.Fatalf("unexpected path %q", p)
+	}
+}
+
+func TestAutoinstallTemplateExists(t *testing.T) {
+	// Template must ship with the repo for Phase 7a.
+	p, err := iso.FindUbuntuAutoinstallScript()
+	if err != nil {
+		t.Skip(err)
+	}
+	tmpl := filepath.Join(filepath.Dir(p), "autoinstall", "ubuntu-user-data.yaml.tmpl")
+	b, err := os.ReadFile(tmpl)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(b)
+	for _, want := range []string{"autoinstall:", "{{HOSTNAME}}", "SHOAL|", "DONE"} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("template missing %q", want)
+		}
+	}
+}
+
 func TestBuildRejectsMissingPayloadFile(t *testing.T) {
 	b := iso.NewScriptBuilder("/nonexistent-script", slog.New(slog.NewTextHandler(io.Discard, nil)))
 	_, err := b.Build(context.Background(), iso.BuildInput{
