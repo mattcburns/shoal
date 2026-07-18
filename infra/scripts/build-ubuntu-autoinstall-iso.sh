@@ -79,13 +79,16 @@ chmod -R u+w "$ISO_TREE" 2>/dev/null || true
 NOCLOUD="$ISO_TREE/nocloud"
 mkdir -p "$NOCLOUD"
 
-# Escape sed replacement carefully for hash ($ and /).
-esc_hash="$(printf '%s' "$PASSWORD_HASH" | sed -e 's/[&|\\]/\\&/g')"
-sed \
-  -e "s/{{HOSTNAME}}/${HOSTNAME}/g" \
-  -e "s/{{USERNAME}}/${USERNAME}/g" \
-  -e "s|{{PASSWORD_HASH}}|${esc_hash}|g" \
-  "$TEMPLATE" > "$NOCLOUD/user-data"
+# Render user-data without sed '$' backref issues (password hashes contain $).
+python3 - "$TEMPLATE" "$HOSTNAME" "$USERNAME" "$PASSWORD_HASH" "$NOCLOUD/user-data" <<'PY'
+import sys
+tmpl, hostname, username, pw_hash, out = sys.argv[1:6]
+text = open(tmpl, encoding="utf-8").read()
+text = text.replace("{{HOSTNAME}}", hostname)
+text = text.replace("{{USERNAME}}", username)
+text = text.replace("{{PASSWORD_HASH}}", pw_hash)
+open(out, "w", encoding="utf-8").write(text)
+PY
 printf 'instance-id: shoal-autoinstall\nlocal-hostname: %s\n' "$HOSTNAME" > "$NOCLOUD/meta-data"
 chmod -R a+rX "$NOCLOUD"
 
