@@ -249,6 +249,12 @@ printf '%s\n' "$INSTALL_MODE" > "$ROOT/install_mode"
 printf '%s\n' "$INSTALL_TARGET_DEFAULT" > "$ROOT/install_target_default"
 printf '%s\n' "$INSTALL_REBOOT" > "$ROOT/install_reboot"
 printf '%s\n' "$PREP_WIPE_LEVEL" > "$ROOT/prep_wipe_level"
+# Optional NoCloud FAT image for config_drive (written after wipe in prep mode).
+if [[ -n "${SHOAL_SEED_IMG:-}" && -r "${SHOAL_SEED_IMG}" ]]; then
+  cp "${SHOAL_SEED_IMG}" "$ROOT/seed.img"
+  chmod 644 "$ROOT/seed.img"
+  echo "seed.img: embedded from ${SHOAL_SEED_IMG} ($(wc -c <"$ROOT/seed.img" | tr -d ' ') bytes)"
+fi
 
 # Init emits markers then powers off. console=ttyS0 from kernel cmdline.
 cat > "$ROOT/init" << 'INIT'
@@ -487,6 +493,40 @@ if [ "$MODE" = "prep" ]; then
   fi
   sync 2>/dev/null || true
   emit PREP_WIPE 100 OK "wipe finished target=${TARGET}"
+
+  # config_drive (M3 debt): write prebuilt FAT cidata image to end of disk.
+  # Full-disk image_write must not use this path (dd would destroy it).
+  if [ -f /seed.img ]; then
+    emit PREP_SEED 10 OK "writing config_drive seed to end of ${TARGET}"
+    SEED_BYTES="$(wc -c </seed.img 2>/dev/null | tr -d ' ')"
+    if [ -z "$SEED_BYTES" ] || [ "$SEED_BYTES" = "0" ]; then
+      emit ERROR 0 ERROR "prep seed.img empty"
+      sleep 2
+      /bin/busybox poweroff -f 2>/dev/null || true
+      while true; do sleep 3600; done
+    fi
+    # /sys/block/<name>/size is 512-byte sectors for whole disk.
+    DEVBASE="$(basename "$TARGET")"
+    SECTORS="$(cat /sys/block/${DEVBASE}/size 2>/dev/null || echo 0)"
+    SEED_SECTORS=$(( (SEED_BYTES + 511) / 512 ))
+    if [ -z "$SECTORS" ] || [ "$SECTORS" -le "$SEED_SECTORS" ]; then
+      emit ERROR 0 ERROR "prep seed: disk too small or size unknown target=${TARGET}"
+      sleep 2
+      /bin/busybox poweroff -f 2>/dev/null || true
+      while true; do sleep 3600; done
+    fi
+    SEEK=$(( SECTORS - SEED_SECTORS ))
+    if dd if=/seed.img of="$TARGET" bs=512 seek="$SEEK" conv=fsync 2>/dev/null; then
+      sync 2>/dev/null || true
+      emit PREP_SEED 100 OK "config_drive seed written label=cidata seek=${SEEK} sectors=${SEED_SECTORS}"
+    else
+      emit ERROR 0 ERROR "prep seed dd failed target=${TARGET}"
+      sleep 2
+      /bin/busybox poweroff -f 2>/dev/null || true
+      while true; do sleep 3600; done
+    fi
+  fi
+
   emit PREP_DONE 100 OK "prep complete ready for os install"
   # Stay powered on with heartbeats so the orchestrator can swap Virtual Media
   # and ForceRestart into the OS install ISO without losing the serial PTY

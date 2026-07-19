@@ -508,7 +508,34 @@ go run ./cmd/shoal deploy run \
 | `none` (default) | No runtime seed (7a prepare-time seed is fine) |
 | `second_media` | Install ISO on CD1 + seed ISO on CD2; needs ≥2 CD slots |
 | `auto` | Prefer second_media when ≥2 CDs + `seed_iso_url`; else error if image_write (no config_drive) |
-| `config_drive` | **Forbidden** with `image_write` (full-disk dd wipes partition); write path not implemented yet |
+| `config_drive` | Prep writes FAT `cidata` image to **end of disk** after wipe (single CD). **Forbidden** with `image_write`. Build prep with `SHOAL_SEED_IMG=…` |
+
+### Config-drive offline seed (single CD)
+
+When the BMC has only one Virtual Media slot, use **prep + config_drive** instead of
+`second_media`:
+
+```bash
+# 1) FAT NoCloud seed image
+./infra/scripts/build-nocloud-seed-img.sh /tmp/cidata.img
+
+# 2) Prep ISO that wipes then dd's seed.img to end of disk
+sudo env SHOAL_INSTALL_MODE=prep SHOAL_INSTALL_TARGET=/dev/vda \
+  SHOAL_SEED_IMG=/tmp/cidata.img \
+  SHOAL_ISO_NAME=shoal-prep-seed.iso \
+  ./infra/scripts/build-marker-iso.sh /srv/iso/shoal-prep-seed.iso
+
+# 3) Job: wipe+seed prep, then scripted installer (single media attach for OS)
+go run ./cmd/shoal deploy run \
+  -install-strategy scripted_iso -os-family ubuntu \
+  -seed-delivery auto \
+  -prep wipe_only -approve-destruct \
+  -prep-iso-url http://192.168.124.1:8080/shoal-prep-seed.iso \
+  -iso-url http://192.168.124.1:8080/ubuntu-live.iso \
+  ...bmc/serial...
+```
+
+`auto` with one CD selects **config_drive**; with two CDs and `seed_iso_url` selects **second_media**.
 
 ### Multi-stage M5: operator_iso (ESXi / Windows)
 
