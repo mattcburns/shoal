@@ -5,9 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/mattcburns/shoal/internal/common/models"
-	"github.com/mattcburns/shoal/internal/common/validate"
 	"github.com/mattcburns/shoal/internal/deploy/jobstore"
 )
 
@@ -56,8 +56,10 @@ func (s *Server) handleStartJob(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json"})
 		return
 	}
-	if err := validate.StartJobRequest(req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+	// Full StartJobRequest validation runs inside Orchestrator.Start after M6
+	// profile defaults are applied (so profile-only jobs can omit iso_url/strategy).
+	if strings.TrimSpace(req.DeviceID) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "validate: device_id is required"})
 		return
 	}
 	j, err := s.start.Start(r.Context(), req)
@@ -66,6 +68,12 @@ func (s *Server) handleStartJob(w http.ResponseWriter, r *http.Request) {
 		// May still have a job row after partial start.
 		if j.ID != "" {
 			writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error(), "job": j})
+			return
+		}
+		// Validation / approval errors are client faults.
+		msg := err.Error()
+		if strings.Contains(msg, "validate:") || strings.Contains(msg, "requires approval") || strings.Contains(msg, "load profile") {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": msg})
 			return
 		}
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})

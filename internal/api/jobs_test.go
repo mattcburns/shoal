@@ -20,7 +20,12 @@ func TestGetJob(t *testing.T) {
 	now := time.Now().UTC()
 	_ = store.Insert(context.Background(), models.ProvisioningJob{
 		ID: "j1", DeviceID: "d1", State: models.StateProvisioning,
-		UpdatedAt: &now,
+		UpdatedAt: &now, CurrentStage: models.JobStageKindOSInstall,
+		InstallStrategy: models.InstallStrategyImageWrite,
+		Stages: []models.JobStage{{
+			ID: models.JobStageKindOSInstall, Kind: models.JobStageKindOSInstall,
+			Strategy: models.InstallStrategyImageWrite, State: models.JobStageStateRunning,
+		}},
 	})
 	s := api.New(config.Config{}, nil).WithJobStore(store)
 	rr := httptest.NewRecorder()
@@ -35,6 +40,13 @@ func TestGetJob(t *testing.T) {
 	}
 	if j.ID != "j1" {
 		t.Fatalf("id %s", j.ID)
+	}
+	// M6 AC: GET exposes current_stage + stages
+	if j.CurrentStage != models.JobStageKindOSInstall {
+		t.Fatalf("current_stage=%s", j.CurrentStage)
+	}
+	if len(j.Stages) != 1 {
+		t.Fatalf("stages=%d", len(j.Stages))
 	}
 }
 

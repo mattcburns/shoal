@@ -552,6 +552,39 @@ seed device — Shoal does not remaster the installer in M4.
 
 Ubuntu `scripted_iso` + NoCloud seed uses the same attach path (`build-nocloud-seed-iso.sh`).
 
+### Multi-stage M6: profile-driven deploy (happy path)
+
+Profiles under `SHOAL_PROFILE_DIR` can supply `install_strategy`, `os_family`, `prep`,
+`seed_*`, and media (`iso_base` / `media_url`) so each run only needs device + BMC +
+serial (and `-approve-destruct` when the profile wipes).
+
+Example profiles: `testdata/profiles/*.json`.
+
+```bash
+export SHOAL_PROFILE_DIR=/var/lib/shoal/profiles   # lab Ansible default
+export SHOAL_ISO_BASE_URL=http://192.168.124.1:8080
+
+# Save once
+go run ./cmd/shoal profile save -file testdata/profiles/lab-ubuntu-image-write.json
+
+# Profile-only start (no -iso-url / -install-strategy)
+go run ./cmd/shoal deploy run \
+  -device-id shoal-node-1 \
+  -profile-ref lab-ubuntu-image-write \
+  -bmc-url http://192.168.122.100:8001 \
+  -bmc-user admin -bmc-pass password \
+  -serial-target shoal-node-1 \
+  -serial-ssh-host 192.168.122.100 \
+  -serial-ssh-user lab \
+  -serial-ssh-key "$HOME/.ssh/shoal_lab_vm" \
+  -wait
+```
+
+**Merge rule:** non-empty request flags override the profile. Wipe profiles need
+`-approve-destruct` (or prior `profile approve`).
+
+`GET /v1/jobs/{id}` (and `deploy status`) already return `current_stage` and `stages`.
+
 ### Phase 6b: graphics failure-screen OCR
 
 SOL remains the primary progress channel. Graphics OCR is **diagnostic only**.

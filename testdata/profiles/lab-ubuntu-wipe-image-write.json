@@ -1,0 +1,12 @@
+{
+  "ref": "lab-ubuntu-wipe-image-write",
+  "iso_base": "shoal-ubuntu-m1-test",
+  "prep_iso_base": "shoal-prep",
+  "os_family": "ubuntu",
+  "install_strategy": "image_write",
+  "seed_delivery": "none",
+  "prep": "wipe_only",
+  "wipe_level": "discard",
+  "needs_approval": true,
+  "destruct_steps": ["secure_wipe"]
+}
