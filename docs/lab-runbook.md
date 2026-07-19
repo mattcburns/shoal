@@ -509,6 +509,49 @@ go run ./cmd/shoal deploy run \
 Nested sushy can smoke-test attach + short `-stage-timeout` only; it does **not** prove
 ESXi/Windows install. Prefer real BMC hardware for true AC.
 
+### Multi-stage M4: Flatcar scripted_iso + offline Ignition
+
+**No guest HTTP** for Ignition (`ignition.config.url=http://…` is forbidden). Shoal attaches
+the Flatcar installer ISO plus a small Ignition seed ISO on a **second** Virtual Media
+slot when the BMC has ≥2 CD devices.
+
+**Build Ignition seed ISO:**
+
+```bash
+# From operator Ignition JSON (spec 3.x):
+SHOAL_IGNITION_FILE=/path/to/config.ign \
+  ./infra/scripts/build-ignition-seed-iso.sh /srv/iso/flatcar-ignition.iso
+
+# Or lab template (hostname only; optional SHOAL_SSH_AUTHORIZED_KEY):
+SHOAL_SEED_HOSTNAME=lab-node-1 \
+  ./infra/scripts/build-ignition-seed-iso.sh /srv/iso/flatcar-ignition.iso
+```
+
+Seed layout: `config.ign` and `ignition/config.ign` on an ISO labeled `ignition`.
+
+**Deploy (dual-CD BMC):**
+
+```bash
+go run ./cmd/shoal deploy run \
+  -device-id host-flatcar-1 \
+  -bmc-url http://192.168.122.100:8001 \
+  -bmc-user admin -bmc-pass password \
+  -install-strategy scripted_iso \
+  -os-family flatcar \
+  -iso-url http://192.168.124.1:8080/flatcar_production_iso_image.iso \
+  -seed-delivery second_media \
+  -seed-iso-url http://192.168.124.1:8080/flatcar-ignition.iso \
+  -stage-timeout 90m \
+  -wait
+```
+
+Progress is **coarse** (deadline → `provisioned`, not guest verification). Nested sushy
+with a single CD cannot prove second_media; unit tests use `NewFakeDualCD`. Stock Flatcar
+ISO may require operator media that is configured to consume offline Ignition from the
+seed device — Shoal does not remaster the installer in M4.
+
+Ubuntu `scripted_iso` + NoCloud seed uses the same attach path (`build-nocloud-seed-iso.sh`).
+
 ### Phase 6b: graphics failure-screen OCR
 
 SOL remains the primary progress channel. Graphics OCR is **diagnostic only**.

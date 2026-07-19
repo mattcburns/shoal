@@ -12,6 +12,7 @@ import (
 // expandStages derives the stage list for a StartJobRequest (multi-stage design).
 // M1: single os_install. M2: optional prep wipe + os_install.
 // M3: offline seed fields on os_install (second_media / config_drive / auto).
+// M4: scripted_iso + flatcar/ubuntu offline seed (Ignition / NoCloud).
 // M5: operator_iso (ESXi/Windows) with coarse progress — no seed.
 func expandStages(req models.StartJobRequest) ([]models.JobStage, error) {
 	strategy, err := resolveInstallStrategy(req)
@@ -19,12 +20,25 @@ func expandStages(req models.StartJobRequest) ([]models.JobStage, error) {
 		return nil, err
 	}
 	if strategy == models.InstallStrategyScriptedISO {
-		return nil, fmt.Errorf("job: install_strategy scripted_iso not implemented yet (use image_write, operator_iso, or simulate)")
+		fam := strings.TrimSpace(strings.ToLower(req.OsFamily))
+		switch fam {
+		case models.OSFamilyFlatcar, models.OSFamilyUbuntu:
+			// ok
+		case "":
+			return nil, fmt.Errorf("job: scripted_iso requires os_family flatcar or ubuntu")
+		default:
+			return nil, fmt.Errorf("job: scripted_iso does not support os_family %q", req.OsFamily)
+		}
 	}
 
 	seedDelivery, seedURL, err := normalizeSeedRequest(req, strategy)
 	if err != nil {
 		return nil, err
+	}
+	if strategy == models.InstallStrategyScriptedISO && strings.EqualFold(req.OsFamily, models.OSFamilyFlatcar) {
+		if seedDelivery == models.SeedDeliveryNone || (seedURL == "" && seedDelivery != models.SeedDeliveryConfigDrive) {
+			return nil, fmt.Errorf("job: scripted_iso flatcar requires offline Ignition seed (seed_iso_url + second_media|auto)")
+		}
 	}
 
 	installMedia := strings.TrimSpace(req.ISOURL)
@@ -139,6 +153,9 @@ func resolveSeedDelivery(requested, seedURL, strategy string, nCD int) (string, 
 		}
 		if strategy == models.InstallStrategyImageWrite {
 			return "", fmt.Errorf("job: seed_delivery auto: only one Virtual Media slot and image_write cannot use config_drive; bake seed with prepare-ubuntu-cloud-payload or attach seed_iso_url on a dual-CD BMC")
+		}
+		if strategy == models.InstallStrategyScriptedISO {
+			return "", fmt.Errorf("job: seed_delivery auto: scripted_iso needs ≥2 CD slots for second_media (found %d); config_drive not implemented", nCD)
 		}
 		return "", fmt.Errorf("job: seed_delivery auto: config_drive fallback not implemented yet (need ≥2 CD slots for second_media, found %d)", nCD)
 	default:

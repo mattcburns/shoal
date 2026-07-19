@@ -497,12 +497,13 @@ func (o *Orchestrator) startStage(ctx context.Context, job models.ProvisioningJo
 	case <-time.After(settle):
 	}
 
-	// Progress policy: operator_iso uses coarse deadline (no SOL stall).
+	// Progress policy: operator_iso and scripted_iso use coarse deadline (no SOL stall).
 	stageStrategy := stage.Strategy
 	if stageStrategy == "" {
 		stageStrategy = strategy
 	}
-	coarse := stage.Kind == models.JobStageKindOSInstall && stageStrategy == models.InstallStrategyOperatorISO
+	coarse := stage.Kind == models.JobStageKindOSInstall &&
+		(stageStrategy == models.InstallStrategyOperatorISO || stageStrategy == models.InstallStrategyScriptedISO)
 	rs.progressCoarse = coarse
 	if rs.stopDeadline != nil {
 		rs.stopDeadline()
@@ -561,16 +562,19 @@ func (o *Orchestrator) startStage(ctx context.Context, job models.ProvisioningJo
 	if coarse {
 		deadline := req.StageTimeout
 		if deadline <= 0 {
-			if env := strings.TrimSpace(os.Getenv("SHOAL_OPERATOR_ISO_TIMEOUT")); env != "" {
-				if d, err := time.ParseDuration(env); err == nil && d > 0 {
-					deadline = d
+			for _, envKey := range []string{"SHOAL_COARSE_STAGE_TIMEOUT", "SHOAL_OPERATOR_ISO_TIMEOUT", "SHOAL_SCRIPTED_ISO_TIMEOUT"} {
+				if env := strings.TrimSpace(os.Getenv(envKey)); env != "" {
+					if d, err := time.ParseDuration(env); err == nil && d > 0 {
+						deadline = d
+						break
+					}
 				}
 			}
 		}
 		if deadline <= 0 {
 			deadline = DefaultOperatorStageTimeout
 		}
-		o.armCoarseDeadline(job.ID, rs, deadline)
+		o.armCoarseDeadline(job.ID, rs, deadline, stageStrategy)
 	}
 
 	o.log.Info("stage media attached",
@@ -580,13 +584,15 @@ func (o *Orchestrator) startStage(ctx context.Context, job models.ProvisioningJo
 		"iso_url", mediaURL,
 		"stage", stage.ID,
 		"kind", stage.Kind,
+		"strategy", stageStrategy,
+		"family", stage.Family,
 		"coarse", coarse,
 	)
 	return nil
 }
 
-// armCoarseDeadline schedules optimistic provisioned when operator_iso stage timeout elapses.
-func (o *Orchestrator) armCoarseDeadline(jobID string, rs *runState, deadline time.Duration) {
+// armCoarseDeadline schedules optimistic provisioned when a coarse stage timeout elapses.
+func (o *Orchestrator) armCoarseDeadline(jobID string, rs *runState, deadline time.Duration, strategy string) {
 	timer := time.NewTimer(deadline)
 	done := make(chan struct{})
 	rs.stopDeadline = func() {
@@ -602,8 +608,9 @@ func (o *Orchestrator) armCoarseDeadline(jobID string, rs *runState, deadline ti
 			close(done)
 		}
 	}
-	o.log.Info("operator_iso coarse deadline armed",
+	o.log.Info("coarse stage deadline armed",
 		"job_id", jobID,
+		"strategy", strategy,
 		"deadline", deadline.String(),
 	)
 	go func() {
@@ -615,8 +622,8 @@ func (o *Orchestrator) armCoarseDeadline(jobID string, rs *runState, deadline ti
 			return
 		}
 		// Mark phase then terminal success (not install verification).
-		_ = o.store.UpdateProgress(context.Background(), jobID, "COARSE_DONE", intPtr(100), 0,
-			"operator_iso: stage deadline elapsed (no SOL verify)")
+		detail := strategy + ": stage deadline elapsed (no SOL verify)"
+		_ = o.store.UpdateProgress(context.Background(), jobID, "COARSE_DONE", intPtr(100), 0, detail)
 		o.enqueueTerminal(jobID, ReasonDoneOK)
 	}()
 }

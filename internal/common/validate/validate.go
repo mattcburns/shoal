@@ -155,7 +155,9 @@ func StartJobRequest(r models.StartJobRequest) error {
 	}
 	strategy := strings.TrimSpace(r.InstallStrategy)
 	operatorISO := strategy == models.InstallStrategyOperatorISO
-	if strings.TrimSpace(r.SerialTarget) == "" && !operatorISO {
+	scriptedISO := strategy == models.InstallStrategyScriptedISO
+	// Coarse progress strategies may omit serial (operator_iso / scripted_iso).
+	if strings.TrimSpace(r.SerialTarget) == "" && !operatorISO && !scriptedISO {
 		return fmt.Errorf("validate: serial_target is required")
 	}
 	hasUserPass := r.BMCUsername != "" || r.BMCPassword != ""
@@ -167,7 +169,7 @@ func StartJobRequest(r models.StartJobRequest) error {
 		switch strategy {
 		case models.InstallStrategySimulate, models.InstallStrategyImageWrite,
 			models.InstallStrategyScriptedISO, models.InstallStrategyOperatorISO:
-			// scripted_iso may still be rejected at expand
+			// ok
 		default:
 			return fmt.Errorf("validate: unknown install_strategy %q", strategy)
 		}
@@ -200,6 +202,51 @@ func StartJobRequest(r models.StartJobRequest) error {
 		if r.StageTimeout < 0 {
 			return fmt.Errorf("validate: stage_timeout must be non-negative")
 		}
+	}
+	if scriptedISO {
+		if strings.TrimSpace(r.ISOURL) == "" && !r.BuildISO {
+			ref := strings.TrimSpace(r.ProfileRef)
+			if ref == "" || ref == "spike" {
+				return fmt.Errorf("validate: scripted_iso requires iso_url (installer media)")
+			}
+		}
+		fam := strings.TrimSpace(strings.ToLower(r.OsFamily))
+		switch fam {
+		case models.OSFamilyFlatcar, models.OSFamilyUbuntu:
+			// ok (M4 Flatcar Ignition; Ubuntu NoCloud second_media)
+		case "":
+			return fmt.Errorf("validate: scripted_iso requires os_family flatcar or ubuntu")
+		case models.OSFamilyESXi, models.OSFamilyWindows:
+			return fmt.Errorf("validate: os_family %q uses operator_iso, not scripted_iso", r.OsFamily)
+		default:
+			return fmt.Errorf("validate: unknown os_family %q for scripted_iso (want flatcar or ubuntu)", r.OsFamily)
+		}
+		seed := strings.TrimSpace(strings.ToLower(r.SeedDelivery))
+		seedURL := strings.TrimSpace(r.SeedISOURL)
+		if seedURL == "" {
+			seedURL = strings.TrimSpace(os.Getenv("SHOAL_SEED_ISO_URL"))
+		}
+		// Flatcar must receive offline Ignition (never guest HTTP).
+		if fam == models.OSFamilyFlatcar {
+			if seed == "" || seed == models.SeedDeliveryNone {
+				if seedURL == "" {
+					return fmt.Errorf("validate: scripted_iso flatcar requires seed_delivery (second_media|auto) and seed_iso_url (offline Ignition)")
+				}
+			}
+			if seed == models.SeedDeliveryNone {
+				return fmt.Errorf("validate: scripted_iso flatcar cannot use seed_delivery=none (need offline Ignition seed)")
+			}
+			if seedURL == "" && (seed == models.SeedDeliverySecondMedia || seed == models.SeedDeliveryAuto || seed == "") {
+				return fmt.Errorf("validate: scripted_iso flatcar requires seed_iso_url or SHOAL_SEED_ISO_URL")
+			}
+		}
+		if r.StageTimeout < 0 {
+			return fmt.Errorf("validate: stage_timeout must be non-negative")
+		}
+	}
+	// image_write is not a Flatcar path in M4.
+	if installStrategyIsImageWrite(r) && strings.TrimSpace(strings.ToLower(r.OsFamily)) == models.OSFamilyFlatcar {
+		return fmt.Errorf("validate: os_family flatcar with image_write is not supported (use scripted_iso + offline Ignition seed)")
 	}
 	prep := strings.TrimSpace(strings.ToLower(r.Prep))
 	switch prep {
@@ -238,12 +285,10 @@ func StartJobRequest(r models.StartJobRequest) error {
 	}
 	if fam := strings.TrimSpace(strings.ToLower(r.OsFamily)); fam != "" {
 		switch fam {
-		case models.OSFamilyUbuntu, models.OSFamilyESXi, models.OSFamilyWindows:
-			// ok (flatcar reserved for M4)
-		case models.OSFamilyFlatcar:
-			return fmt.Errorf("validate: os_family flatcar not implemented yet (M4)")
+		case models.OSFamilyUbuntu, models.OSFamilyFlatcar, models.OSFamilyESXi, models.OSFamilyWindows:
+			// ok
 		default:
-			if !operatorISO {
+			if !operatorISO && !scriptedISO {
 				return fmt.Errorf("validate: unknown os_family %q", r.OsFamily)
 			}
 		}

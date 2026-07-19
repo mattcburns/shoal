@@ -154,4 +154,34 @@ func TestStartJobRequest(t *testing.T) {
 	if err := validate.StartJobRequest(noSerial); err == nil {
 		t.Fatal("expected serial_target required without operator_iso")
 	}
+	// M4 scripted_iso flatcar
+	fc := good
+	fc.InstallStrategy = models.InstallStrategyScriptedISO
+	fc.OsFamily = models.OSFamilyFlatcar
+	fc.SerialTarget = ""
+	fc.SeedDelivery = models.SeedDeliverySecondMedia
+	fc.SeedISOURL = "http://lab:8080/ignition.iso"
+	if err := validate.StartJobRequest(fc); err != nil {
+		t.Fatal(err)
+	}
+	fc.SeedISOURL = ""
+	t.Setenv("SHOAL_SEED_ISO_URL", "")
+	if err := validate.StartJobRequest(fc); err == nil {
+		t.Fatal("expected flatcar without seed to fail")
+	}
+	fc.SeedISOURL = "http://lab:8080/ignition.iso"
+	fc.OsFamily = models.OSFamilyESXi
+	if err := validate.StartJobRequest(fc); err == nil {
+		t.Fatal("expected esxi+scripted_iso to fail")
+	}
+	// ubuntu scripted with seed
+	ub := good
+	ub.InstallStrategy = models.InstallStrategyScriptedISO
+	ub.OsFamily = models.OSFamilyUbuntu
+	ub.SeedDelivery = models.SeedDeliverySecondMedia
+	ub.SeedISOURL = "http://lab:8080/cidata.iso"
+	ub.SerialTarget = ""
+	if err := validate.StartJobRequest(ub); err != nil {
+		t.Fatal(err)
+	}
 }
