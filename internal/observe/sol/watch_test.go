@@ -67,6 +67,33 @@ func TestWatchServiceMarkers(t *testing.T) {
 	_ = pw.Close()
 }
 
+func TestWatchServiceStallDisabled(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	prog := &recordingProgress{}
+	w := sol.NewWatchService(log, prog)
+	pr, pw := io.Pipe()
+	w.NewTransport = func(models.WatchSession) sol.Transport {
+		return sol.NewReaderTransport(pr)
+	}
+	err := w.Register(context.Background(), models.WatchSession{
+		ID: "s1", JobID: "j1", DeviceID: "d1", Target: "x",
+		StallTimeout:  30 * time.Millisecond,
+		StallDisabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(80 * time.Millisecond)
+	prog.mu.Lock()
+	stalls := prog.stalls
+	prog.mu.Unlock()
+	if stalls != 0 {
+		t.Fatalf("stalls=%d want 0 when StallDisabled", stalls)
+	}
+	_ = w.Unregister(context.Background(), "s1")
+	_ = pw.Close()
+}
+
 func TestWatchServiceStopsOnTerminalMarker(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	prog := &recordingProgress{}

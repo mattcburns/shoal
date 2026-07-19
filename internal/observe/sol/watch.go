@@ -70,7 +70,7 @@ func (w *WatchService) Register(ctx context.Context, session models.WatchSession
 	if session.Target == "" {
 		return fmt.Errorf("sol: watch session missing target")
 	}
-	if session.StallTimeout <= 0 {
+	if !session.StallDisabled && session.StallTimeout <= 0 {
 		session.StallTimeout = DefaultStallTimeout
 	}
 
@@ -165,11 +165,20 @@ func (w *WatchService) Unregister(_ context.Context, sessionID string) error {
 
 func (w *WatchService) run(ctx context.Context, aw *activeWatch, lines <-chan string, progress jobport.JobProgress) {
 	defer close(aw.done)
+	stallDisabled := aw.session.StallDisabled
 	stall := aw.session.StallTimeout
-	timer := time.NewTimer(stall)
-	defer timer.Stop()
+	var timer *time.Timer
+	var timerC <-chan time.Time
+	if !stallDisabled {
+		timer = time.NewTimer(stall)
+		timerC = timer.C
+		defer timer.Stop()
+	}
 
 	resetStall := func() {
+		if stallDisabled || timer == nil {
+			return
+		}
 		if !timer.Stop() {
 			select {
 			case <-timer.C:
@@ -183,7 +192,7 @@ func (w *WatchService) run(ctx context.Context, aw *activeWatch, lines <-chan st
 		select {
 		case <-ctx.Done():
 			return
-		case <-timer.C:
+		case <-timerC:
 			w.log.Warn("sol stall detected", "job_id", aw.session.JobID, "timeout", stall.String())
 			_ = progress.ReportStall(context.Background(), aw.session.JobID, fmt.Sprintf("no SOL marker for %s", stall))
 			return

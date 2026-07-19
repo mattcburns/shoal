@@ -153,7 +153,9 @@ func StartJobRequest(r models.StartJobRequest) error {
 			return fmt.Errorf("validate: iso_url is required (or non-spike profile_ref / build_iso)")
 		}
 	}
-	if strings.TrimSpace(r.SerialTarget) == "" {
+	strategy := strings.TrimSpace(r.InstallStrategy)
+	operatorISO := strategy == models.InstallStrategyOperatorISO
+	if strings.TrimSpace(r.SerialTarget) == "" && !operatorISO {
 		return fmt.Errorf("validate: serial_target is required")
 	}
 	hasUserPass := r.BMCUsername != "" || r.BMCPassword != ""
@@ -161,13 +163,42 @@ func StartJobRequest(r models.StartJobRequest) error {
 	if !hasUserPass && !hasRef {
 		return fmt.Errorf("validate: bmc credentials or credential_ref is required")
 	}
-	if s := strings.TrimSpace(r.InstallStrategy); s != "" {
-		switch s {
+	if strategy != "" {
+		switch strategy {
 		case models.InstallStrategySimulate, models.InstallStrategyImageWrite,
 			models.InstallStrategyScriptedISO, models.InstallStrategyOperatorISO:
-			// ok (scripted/operator reserved; expand may reject later)
+			// scripted_iso may still be rejected at expand
 		default:
-			return fmt.Errorf("validate: unknown install_strategy %q", s)
+			return fmt.Errorf("validate: unknown install_strategy %q", strategy)
+		}
+	}
+	if operatorISO {
+		if strings.TrimSpace(r.ISOURL) == "" && !r.BuildISO {
+			ref := strings.TrimSpace(r.ProfileRef)
+			if ref == "" || ref == "spike" {
+				return fmt.Errorf("validate: operator_iso requires iso_url (operator-supplied media)")
+			}
+		}
+		fam := strings.TrimSpace(strings.ToLower(r.OsFamily))
+		switch fam {
+		case models.OSFamilyESXi, models.OSFamilyWindows:
+			// ok
+		case "":
+			return fmt.Errorf("validate: operator_iso requires os_family esxi or windows")
+		case models.OSFamilyUbuntu, models.OSFamilyFlatcar:
+			return fmt.Errorf("validate: os_family %q is not valid with operator_iso (use image_write or scripted_iso)", r.OsFamily)
+		default:
+			return fmt.Errorf("validate: unknown os_family %q for operator_iso (want esxi or windows)", r.OsFamily)
+		}
+		seed := strings.TrimSpace(strings.ToLower(r.SeedDelivery))
+		if seed != "" && seed != models.SeedDeliveryNone {
+			return fmt.Errorf("validate: operator_iso does not use seed_delivery (config must be on the operator ISO; use none)")
+		}
+		if strings.TrimSpace(r.SeedISOURL) != "" {
+			return fmt.Errorf("validate: operator_iso does not use seed_iso_url")
+		}
+		if r.StageTimeout < 0 {
+			return fmt.Errorf("validate: stage_timeout must be non-negative")
 		}
 	}
 	prep := strings.TrimSpace(strings.ToLower(r.Prep))
@@ -205,8 +236,17 @@ func StartJobRequest(r models.StartJobRequest) error {
 	default:
 		return fmt.Errorf("validate: unknown seed_delivery %q", r.SeedDelivery)
 	}
-	if fam := strings.TrimSpace(strings.ToLower(r.OsFamily)); fam != "" && fam != "ubuntu" {
-		return fmt.Errorf("validate: os_family %q not supported yet (M3: ubuntu only)", r.OsFamily)
+	if fam := strings.TrimSpace(strings.ToLower(r.OsFamily)); fam != "" {
+		switch fam {
+		case models.OSFamilyUbuntu, models.OSFamilyESXi, models.OSFamilyWindows:
+			// ok (flatcar reserved for M4)
+		case models.OSFamilyFlatcar:
+			return fmt.Errorf("validate: os_family flatcar not implemented yet (M4)")
+		default:
+			if !operatorISO {
+				return fmt.Errorf("validate: unknown os_family %q", r.OsFamily)
+			}
+		}
 	}
 	if seedURL := strings.TrimSpace(r.SeedISOURL); seedURL != "" {
 		if !strings.HasPrefix(seedURL, "http://") && !strings.HasPrefix(seedURL, "https://") {

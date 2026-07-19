@@ -70,13 +70,14 @@ func cmdDeployRun(args []string) int {
 	ubuntuISO := fs.String("ubuntu-iso", os.Getenv("SHOAL_UBUNTU_ISO"), "Ubuntu live-server ISO (legacy remaster)")
 	cloudImg := fs.String("ubuntu-cloud-img", os.Getenv("SHOAL_UBUNTU_CLOUD_IMG"), "Ubuntu cloud image for autoinstall build (preferred)")
 	isoHostname := fs.String("iso-hostname", "", "autoinstall hostname when building")
-	installStrategy := fs.String("install-strategy", "", "simulate|image_write (M1); reserved: scripted_iso|operator_iso")
+	installStrategy := fs.String("install-strategy", "", "simulate|image_write|operator_iso (M5 ESXi/Windows); reserved: scripted_iso")
 	prep := fs.String("prep", "", "skip (default) | wipe_only (M2 multi-stage prep)")
 	prepISO := fs.String("prep-iso-url", os.Getenv("SHOAL_PREP_ISO_URL"), "BMC-reachable prep live ISO (wipe_only)")
 	wipeLevel := fs.String("wipe-level", "", "discard|zero (baked into prep ISO at build; optional)")
 	seedDelivery := fs.String("seed-delivery", "", "none|auto|second_media|config_drive (M3 offline NoCloud; no guest HTTP)")
 	seedISO := fs.String("seed-iso-url", os.Getenv("SHOAL_SEED_ISO_URL"), "BMC-reachable NoCloud cidata ISO (second_media)")
-	osFamily := fs.String("os-family", "", "ubuntu (M3 seed paths); flatcar later")
+	osFamily := fs.String("os-family", "", "ubuntu | esxi | windows (operator_iso requires esxi|windows)")
+	stageTimeout := fs.Duration("stage-timeout", 0, "operator_iso coarse wait (default 60m or SHOAL_OPERATOR_ISO_TIMEOUT)")
 	sshHost := fs.String("serial-ssh-host", cfg.SerialSSHHost, "SSH host for nested libvirt serial (VM mode)")
 	sshUser := fs.String("serial-ssh-user", cfg.SerialSSHUser, "SSH user for serial delegate")
 	sshKey := fs.String("serial-ssh-key", cfg.SerialSSHKey, "SSH private key for serial delegate")
@@ -132,6 +133,7 @@ func cmdDeployRun(args []string) int {
 		SeedDelivery:     *seedDelivery,
 		SeedISOURL:       *seedISO,
 		OsFamily:         *osFamily,
+		StageTimeout:     *stageTimeout,
 	}
 	// Cloud image is passed via env for the builder (StartJobRequest has no field yet for 7a.1).
 	if strings.TrimSpace(*cloudImg) != "" {

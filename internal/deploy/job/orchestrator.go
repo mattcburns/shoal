@@ -46,6 +46,8 @@ const (
 	UnregisterTimeout     = 10 * time.Second
 	TerminalWorkerTimeout = 2 * time.Minute
 	DefaultSOLStall       = 3 * time.Minute
+	// DefaultOperatorStageTimeout is the coarse wait for operator_iso when StageTimeout is 0.
+	DefaultOperatorStageTimeout = 60 * time.Minute
 )
 
 // Orchestrator owns lifecycle transitions, BMC actions, and cleanup.
@@ -100,6 +102,10 @@ type runState struct {
 	stageStarted  time.Time
 	solReopens    int
 	maxSOLReopens int
+	// progressCoarse: M5 operator_iso — no SOL stall; stage deadline → provisioned.
+	progressCoarse bool
+	// stopDeadline cancels the coarse stage timer (also called from HandleTerminal).
+	stopDeadline func()
 }
 
 type terminalEvent struct {
@@ -491,18 +497,29 @@ func (o *Orchestrator) startStage(ctx context.Context, job models.ProvisioningJo
 	case <-time.After(settle):
 	}
 
+	// Progress policy: operator_iso uses coarse deadline (no SOL stall).
+	stageStrategy := stage.Strategy
+	if stageStrategy == "" {
+		stageStrategy = strategy
+	}
+	coarse := stage.Kind == models.JobStageKindOSInstall && stageStrategy == models.InstallStrategyOperatorISO
+	rs.progressCoarse = coarse
+	if rs.stopDeadline != nil {
+		rs.stopDeadline()
+		rs.stopDeadline = nil
+	}
+
 	phase := "WAITING_SOL"
 	if stage.Kind == models.JobStageKindPrep {
 		phase = "PREP_BOOT"
+	}
+	if coarse {
+		phase = "WAITING_INSTALL"
 	}
 	_ = o.store.UpdateProgress(ctx, job.ID, phase, nil, 0, "")
 	stages = setStageState(stages, stage.ID, models.JobStageStateRunning, phase, "")
 	_ = o.store.UpdateStages(ctx, job.ID, stage.ID, strategy, stages)
 
-	stall := rs.stallTimeout
-	if stall <= 0 {
-		stall = DefaultSOLStall
-	}
 	// New session id per stage so Unregister of previous stage does not race.
 	sessionID := rs.sessionID
 	if idx > 0 {
@@ -510,24 +527,52 @@ func (o *Orchestrator) startStage(ctx context.Context, job models.ProvisioningJo
 		rs.sessionID = sessionID
 		_ = o.store.UpdateRuntime(ctx, job.ID, sys.ID, sessionID, rs.credential)
 	}
-	session := models.WatchSession{
-		ID:           sessionID,
-		JobID:        job.ID,
-		DeviceID:     req.DeviceID,
-		Transport:    "libvirt",
-		Target:       req.SerialTarget,
-		StartedAt:    time.Now().UTC(),
-		StallTimeout: stall,
-	}
-	if err := o.watches.Register(ctx, session); err != nil {
+
+	serialTarget := strings.TrimSpace(req.SerialTarget)
+	if serialTarget != "" {
+		stall := rs.stallTimeout
+		if stall <= 0 {
+			stall = DefaultSOLStall
+		}
+		session := models.WatchSession{
+			ID:            sessionID,
+			JobID:         job.ID,
+			DeviceID:      req.DeviceID,
+			Transport:     "libvirt",
+			Target:        serialTarget,
+			StartedAt:     time.Now().UTC(),
+			StallTimeout:  stall,
+			StallDisabled: coarse,
+		}
+		if err := o.watches.Register(ctx, session); err != nil {
+			_ = bmc.CleanupMediaAndBoot(ctx, sys.ID)
+			return fmt.Errorf("register watch: %w", err)
+		}
+	} else if !coarse {
 		_ = bmc.CleanupMediaAndBoot(ctx, sys.ID)
-		return fmt.Errorf("register watch: %w", err)
+		return fmt.Errorf("serial_target is required for marker-based stages")
 	}
 	rs.stageStarted = time.Now().UTC()
 	rs.solReopens = 0
 	if rs.maxSOLReopens == 0 {
 		rs.maxSOLReopens = 4
 	}
+
+	if coarse {
+		deadline := req.StageTimeout
+		if deadline <= 0 {
+			if env := strings.TrimSpace(os.Getenv("SHOAL_OPERATOR_ISO_TIMEOUT")); env != "" {
+				if d, err := time.ParseDuration(env); err == nil && d > 0 {
+					deadline = d
+				}
+			}
+		}
+		if deadline <= 0 {
+			deadline = DefaultOperatorStageTimeout
+		}
+		o.armCoarseDeadline(job.ID, rs, deadline)
+	}
+
 	o.log.Info("stage media attached",
 		"job_id", job.ID,
 		"device_id", job.DeviceID,
@@ -535,9 +580,48 @@ func (o *Orchestrator) startStage(ctx context.Context, job models.ProvisioningJo
 		"iso_url", mediaURL,
 		"stage", stage.ID,
 		"kind", stage.Kind,
+		"coarse", coarse,
 	)
 	return nil
 }
+
+// armCoarseDeadline schedules optimistic provisioned when operator_iso stage timeout elapses.
+func (o *Orchestrator) armCoarseDeadline(jobID string, rs *runState, deadline time.Duration) {
+	timer := time.NewTimer(deadline)
+	done := make(chan struct{})
+	rs.stopDeadline = func() {
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
+		select {
+		case <-done:
+		default:
+			close(done)
+		}
+	}
+	o.log.Info("operator_iso coarse deadline armed",
+		"job_id", jobID,
+		"deadline", deadline.String(),
+	)
+	go func() {
+		select {
+		case <-done:
+			return
+		case <-timer.C:
+		case <-o.stopCh:
+			return
+		}
+		// Mark phase then terminal success (not install verification).
+		_ = o.store.UpdateProgress(context.Background(), jobID, "COARSE_DONE", intPtr(100), 0,
+			"operator_iso: stage deadline elapsed (no SOL verify)")
+		o.enqueueTerminal(jobID, ReasonDoneOK)
+	}()
+}
+
+func intPtr(n int) *int { return &n }
 
 // reopenSOL re-registers the SOL watch after an early stream drop (stage handoff).
 func (o *Orchestrator) reopenSOL(jobID string) {
@@ -743,8 +827,14 @@ func (o *Orchestrator) HandleTerminal(ctx context.Context, jobID string, reason 
 func (o *Orchestrator) handleTerminalOnce(ctx context.Context, jobID string, reason TerminalReason, rs *runState) error {
 	o.log.Info("HandleTerminal", "job_id", jobID, "reason", string(reason))
 
-	if rs != nil && rs.cancel != nil {
-		rs.cancel()
+	if rs != nil {
+		if rs.stopDeadline != nil {
+			rs.stopDeadline()
+			rs.stopDeadline = nil
+		}
+		if rs.cancel != nil {
+			rs.cancel()
+		}
 	}
 
 	// Unregister watch first so SOL stops feeding markers.
@@ -1287,6 +1377,13 @@ func (p *progressAdapter) ReportTransportError(ctx context.Context, jobID string
 	p.orch.mu.Lock()
 	rs := p.orch.running[jobID]
 	p.orch.mu.Unlock()
+	// M5 operator_iso: SOL is best-effort; stream close must not fail the job.
+	if rs != nil && rs.progressCoarse {
+		p.orch.log.Info("sol stream closed during coarse progress; ignoring",
+			"job_id", jobID,
+		)
+		return nil
+	}
 	if rs != nil && !rs.terminalQueued && rs.solReopens < rs.maxSOLReopens {
 		// Allow reopens for a couple of minutes after stage start.
 		if rs.stageStarted.IsZero() || time.Since(rs.stageStarted) < 2*time.Minute {

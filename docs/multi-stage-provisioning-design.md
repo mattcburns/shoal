@@ -804,7 +804,7 @@ Version media URLs when content changes (sushy cache lesson from 7a).
 | **M2** | Prep v1: wipe + `PREP_*` + handoff to image-write Ubuntu | **Implemented** (event-driven `PREP_DONE` → os_install) |
 | **M3** | Offline seed preference #1 then #2: **second_media**, else **config_drive**, for Ubuntu NoCloud | **Implemented** (seed ISO builder + dual-media attach + `auto` resolve; `config_drive` rejected with `image_write`; config_drive write deferred) |
 | **M4** | Flatcar offline Ignition (same preference order) | Documented AC |
-| **M5** | **`operator_iso`** path shared by ESXi + Windows shape (attach + boot + cleanup + coarse progress) | Hardware preferred |
+| **M5** | **`operator_iso`** path shared by ESXi + Windows shape (attach + boot + cleanup + coarse progress) | **Implemented** (coarse stage deadline → provisioned; SOL stall disabled; seed forbidden; esxi\|windows) |
 | **M6** | Profiles + `seed_delivery: auto` + Operator API §6 fields on `POST/GET /v1/jobs` | Happy path without ad-hoc flags; §6.9 ACs |
 | **Later** | Separate designs: ESXi/Windows ISO compose; optional Windows dual-media unattend; single_iso remaster polish | Out of this doc’s v1 slices |
 

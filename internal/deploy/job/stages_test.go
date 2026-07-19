@@ -88,6 +88,48 @@ func TestExpandStagesRejectsScriptedISO(t *testing.T) {
 	}
 }
 
+func TestExpandStagesOperatorISO(t *testing.T) {
+	stages, err := expandStages(models.StartJobRequest{
+		ISOURL:          "http://example/esxi.iso",
+		InstallStrategy: models.InstallStrategyOperatorISO,
+		OsFamily:        models.OSFamilyESXi,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stages) != 1 {
+		t.Fatalf("len=%d", len(stages))
+	}
+	if stages[0].Strategy != models.InstallStrategyOperatorISO {
+		t.Fatalf("strategy=%s", stages[0].Strategy)
+	}
+	if stages[0].Family != models.OSFamilyESXi {
+		t.Fatalf("family=%s", stages[0].Family)
+	}
+	if stages[0].SeedDelivery != models.SeedDeliveryNone {
+		t.Fatalf("seed=%s", stages[0].SeedDelivery)
+	}
+}
+
+func TestExpandStagesOperatorISOWithPrep(t *testing.T) {
+	stages, err := expandStages(models.StartJobRequest{
+		ISOURL:          "http://example/esxi.iso",
+		PrepISOURL:      "http://example/prep.iso",
+		Prep:            "wipe_only",
+		InstallStrategy: models.InstallStrategyOperatorISO,
+		OsFamily:        models.OSFamilyWindows,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stages) != 2 {
+		t.Fatalf("len=%d", len(stages))
+	}
+	if stages[1].Strategy != models.InstallStrategyOperatorISO {
+		t.Fatalf("os strategy=%s", stages[1].Strategy)
+	}
+}
+
 func TestExpandStagesSeedSecondMedia(t *testing.T) {
 	stages, err := expandStages(models.StartJobRequest{
 		ISOURL:          "http://example/os.iso",
