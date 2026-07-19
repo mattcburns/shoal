@@ -24,6 +24,11 @@ CREATE TABLE IF NOT EXISTS jobs (
 ALTER TABLE jobs ADD COLUMN IF NOT EXISTS system_id TEXT;
 ALTER TABLE jobs ADD COLUMN IF NOT EXISTS credential_ref TEXT;
 
+-- Multi-stage provisioning M1: stage runner metadata
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS current_stage TEXT;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS install_strategy TEXT;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS stages_json TEXT;
+
 CREATE TABLE IF NOT EXISTS events (
   id TEXT PRIMARY KEY,
   device_id TEXT NOT NULL,

@@ -65,6 +65,43 @@ const (
 	StateFailed       LifecycleState = "failed"
 )
 
+// Install strategy values (multi-stage design; M1 uses image_write / simulate).
+const (
+	InstallStrategySimulate    = "simulate"
+	InstallStrategyImageWrite  = "image_write"
+	InstallStrategyScriptedISO = "scripted_iso" // reserved; not expanded in M1
+	InstallStrategyOperatorISO = "operator_iso" // reserved; not expanded in M1
+)
+
+// Job stage kinds.
+const (
+	JobStageKindPrep      = "prep"
+	JobStageKindOSInstall = "os_install"
+	JobStageKindVerify    = "verify"
+)
+
+// Job stage runtime states.
+const (
+	JobStageStatePending = "pending"
+	JobStageStateRunning = "running"
+	JobStageStateDone    = "done"
+	JobStageStateFailed  = "failed"
+)
+
+// JobStage is one step in a multi-stage provisioning job (design M1+).
+type JobStage struct {
+	ID           string `json:"id"`
+	Kind         string `json:"kind"` // prep | os_install | verify
+	Strategy     string `json:"strategy,omitempty"`
+	Family       string `json:"family,omitempty"`
+	MediaURL     string `json:"media_url,omitempty"`
+	SeedMediaURL string `json:"seed_media_url,omitempty"`
+	SeedDelivery string `json:"seed_delivery,omitempty"`
+	State        string `json:"state"` // pending | running | done | failed
+	Phase        string `json:"phase,omitempty"`
+	Error        string `json:"error,omitempty"`
+}
+
 // ProvisioningJob is durable job state (JobStore / Postgres jobs table).
 type ProvisioningJob struct {
 	ID            string         `json:"id"`
@@ -86,6 +123,12 @@ type ProvisioningJob struct {
 	// CredentialRef is the secrets-backend key (never a password). Required for
 	// out-of-process cancel/orphan cleanup when SHOAL_SECRETS_DIR is shared.
 	CredentialRef string `json:"credential_ref,omitempty"`
+	// CurrentStage is the active stage id (multi-stage design M1+).
+	CurrentStage string `json:"current_stage,omitempty"`
+	// InstallStrategy is the primary OS install strategy for the job.
+	InstallStrategy string `json:"install_strategy,omitempty"`
+	// Stages is the expanded stage list (derived at Start; durable snapshot).
+	Stages []JobStage `json:"stages,omitempty"`
 }
 
 // RawAssetInput is Discover ingest (API/CLI).
@@ -196,6 +239,10 @@ type StartJobRequest struct {
 	ISOUbuntuBase string `json:"iso_ubuntu_base,omitempty"`
 	// ISOHostname is the autoinstall identity hostname (Phase 7a).
 	ISOHostname string `json:"iso_hostname,omitempty"`
+	// InstallStrategy is optional: simulate | image_write (M1). Other values reserved.
+	InstallStrategy string `json:"install_strategy,omitempty"`
+	// Prep is optional prep policy. M1 only allows empty or "skip"; wipe_only/full rejected.
+	Prep string `json:"prep,omitempty"`
 }
 
 // CancelJobRequest cancels an in-flight provisioning job.

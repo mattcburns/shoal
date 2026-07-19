@@ -3,6 +3,7 @@ package jobstore
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -29,17 +30,22 @@ func (p *Postgres) Insert(ctx context.Context, job models.ProvisioningJob) error
 	if job.UpdatedAt == nil {
 		job.UpdatedAt = &now
 	}
-	_, err := p.db.ExecContext(ctx, `
+	stagesJSON, err := marshalStages(job.Stages)
+	if err != nil {
+		return fmt.Errorf("jobstore: stages: %w", err)
+	}
+	_, err = p.db.ExecContext(ctx, `
 INSERT INTO jobs (
   id, device_id, profile_ref, state, attempt, phase, percent, last_marker_seq,
   started_at, updated_at, error, sol_session_id, iso_url, bmc_endpoint,
-  system_id, credential_ref
-) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
+  system_id, credential_ref, current_stage, install_strategy, stages_json
+) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)`,
 		job.ID, job.DeviceID, job.ProfileRef, string(job.State), job.Attempt,
 		nullString(job.Phase), nullInt(job.Percent), job.LastMarkerSeq,
 		job.StartedAt, job.UpdatedAt, nullString(job.Error), nullString(job.SOLSessionID),
 		nullString(job.ISOURL), nullString(job.BMCEndpoint),
 		nullString(job.SystemID), nullString(job.CredentialRef),
+		nullString(job.CurrentStage), nullString(job.InstallStrategy), nullString(stagesJSON),
 	)
 	if err != nil {
 		return fmt.Errorf("jobstore: insert: %w", err)
@@ -52,7 +58,7 @@ func (p *Postgres) Get(ctx context.Context, id string) (models.ProvisioningJob, 
 	row := p.db.QueryRowContext(ctx, `
 SELECT id, device_id, profile_ref, state, attempt, phase, percent, last_marker_seq,
        started_at, updated_at, error, sol_session_id, iso_url, bmc_endpoint,
-       system_id, credential_ref
+       system_id, credential_ref, current_stage, install_strategy, stages_json
 FROM jobs WHERE id = $1`, id)
 	j, err := scanJob(row)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -69,7 +75,7 @@ func (p *Postgres) ListByState(ctx context.Context, state models.LifecycleState)
 	rows, err := p.db.QueryContext(ctx, `
 SELECT id, device_id, profile_ref, state, attempt, phase, percent, last_marker_seq,
        started_at, updated_at, error, sol_session_id, iso_url, bmc_endpoint,
-       system_id, credential_ref
+       system_id, credential_ref, current_stage, install_strategy, stages_json
 FROM jobs WHERE state = $1`, string(state))
 	if err != nil {
 		return nil, fmt.Errorf("jobstore: list: %w", err)
@@ -127,6 +133,30 @@ WHERE id = $1`, jobID, systemID, solSessionID, credentialRef, now)
 	return nil
 }
 
+// UpdateStages persists stage runner metadata.
+func (p *Postgres) UpdateStages(ctx context.Context, jobID string, currentStage, installStrategy string, stages []models.JobStage) error {
+	stagesJSON, err := marshalStages(stages)
+	if err != nil {
+		return fmt.Errorf("jobstore: stages: %w", err)
+	}
+	now := time.Now().UTC()
+	res, err := p.db.ExecContext(ctx, `
+UPDATE jobs SET
+  current_stage = $2,
+  install_strategy = $3,
+  stages_json = $4,
+  updated_at = $5
+WHERE id = $1`, jobID, nullString(currentStage), nullString(installStrategy), nullString(stagesJSON), now)
+	if err != nil {
+		return fmt.Errorf("jobstore: update stages: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // Transition sets lifecycle state.
 func (p *Postgres) Transition(ctx context.Context, jobID string, to models.LifecycleState, errMsg string) error {
 	now := time.Now().UTC()
@@ -154,13 +184,14 @@ func scanJob(row scannable) (models.ProvisioningJob, error) {
 	var j models.ProvisioningJob
 	var state string
 	var phase, errMsg, solSess, iso, bmc, sysID, credRef sql.NullString
+	var curStage, instStrat, stagesJSON sql.NullString
 	var percent sql.NullInt64
 	var started, updated sql.NullTime
 	err := row.Scan(
 		&j.ID, &j.DeviceID, &j.ProfileRef, &state, &j.Attempt,
 		&phase, &percent, &j.LastMarkerSeq,
 		&started, &updated, &errMsg, &solSess, &iso, &bmc,
-		&sysID, &credRef,
+		&sysID, &credRef, &curStage, &instStrat, &stagesJSON,
 	)
 	if err != nil {
 		return models.ProvisioningJob{}, err
@@ -199,7 +230,29 @@ func scanJob(row scannable) (models.ProvisioningJob, error) {
 	if credRef.Valid {
 		j.CredentialRef = credRef.String
 	}
+	if curStage.Valid {
+		j.CurrentStage = curStage.String
+	}
+	if instStrat.Valid {
+		j.InstallStrategy = instStrat.String
+	}
+	if stagesJSON.Valid && stagesJSON.String != "" {
+		if err := json.Unmarshal([]byte(stagesJSON.String), &j.Stages); err != nil {
+			return models.ProvisioningJob{}, fmt.Errorf("jobstore: stages_json: %w", err)
+		}
+	}
 	return j, nil
+}
+
+func marshalStages(stages []models.JobStage) (string, error) {
+	if len(stages) == 0 {
+		return "", nil
+	}
+	b, err := json.Marshal(stages)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
 }
 
 func nullString(s string) any {

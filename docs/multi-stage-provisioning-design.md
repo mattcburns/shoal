@@ -800,7 +800,7 @@ Version media URLs when content changes (sushy cache lesson from 7a).
 | Slice | Deliverable | AC |
 |-------|-------------|-----|
 | **M0** | This design merged | Docs only |
-| **M1** | Stage runner skeleton; single-stage compat with 7a image-write | 7a still green |
+| **M1** | Stage runner skeleton; single-stage compat with 7a image-write | **Implemented** (single `os_install` stage; job fields + API) |
 | **M2** | Prep v1: wipe + `PREP_*` + handoff to image-write Ubuntu | Nested E2E |
 | **M3** | Offline seed preference #1 then #2: **second_media**, else **config_drive**, for Ubuntu NoCloud | Lab or hardware AC; no HTTP seed |
 | **M4** | Flatcar offline Ignition (same preference order) | Documented AC |

@@ -20,5 +20,7 @@ type Store interface {
 	UpdateProgress(ctx context.Context, jobID string, phase string, percent *int, seq int, errSoft string) error
 	// UpdateRuntime persists BMC runtime coordinates for cancel/orphan cleanup.
 	UpdateRuntime(ctx context.Context, jobID string, systemID, solSessionID, credentialRef string) error
+	// UpdateStages persists multi-stage runner fields (current_stage, strategy, stages list).
+	UpdateStages(ctx context.Context, jobID string, currentStage, installStrategy string, stages []models.JobStage) error
 	Transition(ctx context.Context, jobID string, to models.LifecycleState, errMsg string) error
 }

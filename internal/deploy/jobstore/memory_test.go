@@ -67,3 +67,31 @@ func TestMemoryUpdateRuntime(t *testing.T) {
 		t.Fatalf("%+v", got)
 	}
 }
+
+func TestMemoryUpdateStages(t *testing.T) {
+	ctx := context.Background()
+	s := jobstore.NewMemory()
+	if err := s.Insert(ctx, models.ProvisioningJob{
+		ID: "j3", DeviceID: "d3", State: models.StateProvisioning,
+		Stages: []models.JobStage{{ID: "os_install", Kind: "os_install", State: "pending"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	stages := []models.JobStage{{
+		ID: "os_install", Kind: "os_install", Strategy: "image_write",
+		State: "running", Phase: "WAITING_SOL", MediaURL: "http://x/y.iso",
+	}}
+	if err := s.UpdateStages(ctx, "j3", "os_install", "image_write", stages); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Get(ctx, "j3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.CurrentStage != "os_install" || got.InstallStrategy != "image_write" {
+		t.Fatalf("%+v", got)
+	}
+	if len(got.Stages) != 1 || got.Stages[0].State != "running" || got.Stages[0].Phase != "WAITING_SOL" {
+		t.Fatalf("stages %+v", got.Stages)
+	}
+}
