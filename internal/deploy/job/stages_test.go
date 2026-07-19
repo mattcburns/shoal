@@ -12,7 +12,7 @@ func TestExpandStagesSingleOSInstall(t *testing.T) {
 	stages, err := expandStages(models.StartJobRequest{
 		ISOURL:         "http://example/marker.iso",
 		ISOInstallMode: iso.InstallModeAutoinstall,
-	})
+	}, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -38,7 +38,7 @@ func TestExpandStagesSimulate(t *testing.T) {
 	stages, err := expandStages(models.StartJobRequest{
 		ISOURL:          "http://example/m.iso",
 		InstallStrategy: models.InstallStrategySimulate,
-	})
+	}, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,7 +52,7 @@ func TestExpandStagesWipeOnly(t *testing.T) {
 		ISOURL:     "http://example/os.iso",
 		PrepISOURL: "http://example/prep.iso",
 		Prep:       "wipe_only",
-	})
+	}, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,7 +72,7 @@ func TestExpandStagesWipeOnlyNeedsPrepURL(t *testing.T) {
 	_, err := expandStages(models.StartJobRequest{
 		ISOURL: "http://example/os.iso",
 		Prep:   "wipe_only",
-	})
+	}, 1)
 	if err == nil || !strings.Contains(err.Error(), "prep_iso") {
 		t.Fatalf("got %v", err)
 	}
@@ -85,7 +85,7 @@ func TestExpandStagesScriptedISOFlatcar(t *testing.T) {
 		OsFamily:        models.OSFamilyFlatcar,
 		SeedDelivery:    models.SeedDeliverySecondMedia,
 		SeedISOURL:      "http://example/ignition.iso",
-	})
+	}, 2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,7 +107,7 @@ func TestExpandStagesScriptedISOFlatcarNeedsSeed(t *testing.T) {
 		InstallStrategy: models.InstallStrategyScriptedISO,
 		OsFamily:        models.OSFamilyFlatcar,
 		SeedDelivery:    models.SeedDeliveryNone,
-	})
+	}, 1)
 	if err == nil {
 		t.Fatal("expected missing seed error")
 	}
@@ -118,7 +118,7 @@ func TestExpandStagesScriptedISORejectsESXi(t *testing.T) {
 		ISOURL:          "http://example/esxi.iso",
 		InstallStrategy: models.InstallStrategyScriptedISO,
 		OsFamily:        models.OSFamilyESXi,
-	})
+	}, 1)
 	if err == nil {
 		t.Fatal("expected esxi+scripted_iso error")
 	}
@@ -129,7 +129,7 @@ func TestExpandStagesOperatorISO(t *testing.T) {
 		ISOURL:          "http://example/esxi.iso",
 		InstallStrategy: models.InstallStrategyOperatorISO,
 		OsFamily:        models.OSFamilyESXi,
-	})
+	}, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -154,7 +154,7 @@ func TestExpandStagesOperatorISOWithPrep(t *testing.T) {
 		Prep:            "wipe_only",
 		InstallStrategy: models.InstallStrategyOperatorISO,
 		OsFamily:        models.OSFamilyWindows,
-	})
+	}, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -173,7 +173,7 @@ func TestExpandStagesSeedSecondMedia(t *testing.T) {
 		SeedDelivery:    models.SeedDeliverySecondMedia,
 		SeedISOURL:      "http://example/cidata.iso",
 		OsFamily:        "ubuntu",
-	})
+	}, 2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -194,7 +194,7 @@ func TestExpandStagesRejectsConfigDriveImageWrite(t *testing.T) {
 		ISOURL:          "http://example/os.iso",
 		InstallStrategy: models.InstallStrategyImageWrite,
 		SeedDelivery:    models.SeedDeliveryConfigDrive,
-	})
+	}, 1)
 	if err == nil || !strings.Contains(err.Error(), "config_drive") {
 		t.Fatalf("got %v", err)
 	}
@@ -229,6 +229,47 @@ func TestResolveSeedDelivery(t *testing.T) {
 	_, err = resolveSeedDelivery(models.SeedDeliveryConfigDrive, "", models.InstallStrategyImageWrite, 1)
 	if err == nil {
 		t.Fatal("expected config_drive+image_write error")
+	}
+	// config_drive + scripted_iso
+	got, err = resolveSeedDelivery(models.SeedDeliveryConfigDrive, "", models.InstallStrategyScriptedISO, 1)
+	if err != nil || got != models.SeedDeliveryConfigDrive {
+		t.Fatalf("config_drive scripted: %q %v", got, err)
+	}
+	// auto + scripted + 1 CD → config_drive
+	got, err = resolveSeedDelivery(models.SeedDeliveryAuto, "http://s/seed.iso", models.InstallStrategyScriptedISO, 1)
+	if err != nil || got != models.SeedDeliveryConfigDrive {
+		t.Fatalf("auto single scripted: %q %v", got, err)
+	}
+}
+
+func TestExpandStagesConfigDriveRequiresPrep(t *testing.T) {
+	_, err := expandStages(models.StartJobRequest{
+		ISOURL:          "http://example/live.iso",
+		InstallStrategy: models.InstallStrategyScriptedISO,
+		OsFamily:        models.OSFamilyUbuntu,
+		SeedDelivery:    models.SeedDeliveryConfigDrive,
+		Prep:            "skip",
+	}, 1)
+	if err == nil {
+		t.Fatal("expected config_drive without approve/prep to fail")
+	}
+	stages, err := expandStages(models.StartJobRequest{
+		ISOURL:          "http://example/live.iso",
+		InstallStrategy: models.InstallStrategyScriptedISO,
+		OsFamily:        models.OSFamilyUbuntu,
+		SeedDelivery:    models.SeedDeliveryConfigDrive,
+		PrepISOURL:      "http://example/prep.iso",
+		ApproveDestruct: true,
+		Prep:            "skip", // auto-upgraded to wipe_only
+	}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stages) != 2 {
+		t.Fatalf("len=%d", len(stages))
+	}
+	if stages[1].SeedDelivery != models.SeedDeliveryConfigDrive {
+		t.Fatalf("seed=%s", stages[1].SeedDelivery)
 	}
 }
 

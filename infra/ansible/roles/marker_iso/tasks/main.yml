@@ -1,6 +1,9 @@
 ---
 # Build and publish the Phase 2 SHOAL marker live ISO into the lab ISO HTTP tree.
 # Primary build host: lab VM (L1). Artifact: {{ shoal_iso_server_dir }}/shoal-marker.iso
+#
+# Also installs config_drive seed tooling (mtools/dosfstools + seed.img builder)
+# so single-CD offline NoCloud seeds can be built on the lab host.
 
 - name: Install marker ISO build packages
   ansible.builtin.apt:
@@ -11,6 +14,9 @@
       - xorriso
       - isolinux
       - syslinux-common
+      # config_drive NoCloud FAT seed.img (build-nocloud-seed-img.sh)
+      - mtools
+      - dosfstools
     state: present
     update_cache: true
     cache_valid_time: 3600
@@ -25,11 +31,37 @@
     mode: "0755"
   become: true
 
-- name: Stage build-marker-iso.sh on target
+# Canonical script lives in infra/scripts; keep role files/ as offline fallback.
+- name: Check for canonical build-marker-iso.sh in repo
+  ansible.builtin.stat:
+    path: "{{ playbook_dir }}/../../scripts/build-marker-iso.sh"
+  register: canonical_marker_iso_script
+
+- name: Stage build-marker-iso.sh from infra/scripts
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../../scripts/build-marker-iso.sh"
+    dest: /tmp/shoal-build-marker-iso.sh
+    mode: "0755"
+  when: canonical_marker_iso_script.stat.exists
+
+- name: Stage build-marker-iso.sh from role files (fallback)
   ansible.builtin.copy:
     src: build-marker-iso.sh
     dest: /tmp/shoal-build-marker-iso.sh
     mode: "0755"
+  when: not canonical_marker_iso_script.stat.exists
+
+- name: Check for build-nocloud-seed-img.sh in repo
+  ansible.builtin.stat:
+    path: "{{ playbook_dir }}/../../scripts/build-nocloud-seed-img.sh"
+  register: canonical_seed_img_script
+
+- name: Stage build-nocloud-seed-img.sh (config_drive tooling)
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../../scripts/build-nocloud-seed-img.sh"
+    dest: /tmp/shoal-build-nocloud-seed-img.sh
+    mode: "0755"
+  when: canonical_seed_img_script.stat.exists
 
 - name: Build and publish shoal-marker.iso
   ansible.builtin.command:
@@ -44,4 +76,5 @@
       Marker ISO published to {{ shoal_iso_server_dir }}/shoal-marker.iso
       Operator URL: http://{{ shoal_service_host | default(shoal_lab_vm_host) }}:{{ shoal_iso_server_port }}/shoal-marker.iso
       BMC (lab net): http://{{ shoal_lab_network_gateway }}:{{ shoal_iso_server_port }}/shoal-marker.iso
+      config_drive packages: mtools dosfstools
       {{ marker_iso_build.stdout | default('') }}

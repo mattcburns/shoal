@@ -283,7 +283,9 @@ func (o *Orchestrator) Start(ctx context.Context, req models.StartJobRequest) (m
 		return models.ProvisioningJob{}, fmt.Errorf("job: resolve credentials: %w", err)
 	}
 
-	stages, err := expandStages(req)
+	// Probe CD count early so seed_delivery=auto can choose second_media vs config_drive.
+	nCD := o.probeCDCount(ctx, req, cred)
+	stages, err := expandStages(req, nCD)
 	if err != nil {
 		return models.ProvisioningJob{}, err
 	}
@@ -357,7 +359,7 @@ func (o *Orchestrator) provision(ctx context.Context, job models.ProvisioningJob
 	stages := job.Stages
 	if len(stages) == 0 {
 		var err error
-		stages, err = expandStages(req)
+		stages, err = expandStages(req, 1)
 		if err != nil {
 			return err
 		}
@@ -1079,6 +1081,49 @@ func (o *Orchestrator) checkProfileApproval(ctx context.Context, ref string, app
 		return nil
 	}
 	return fmt.Errorf("job: profile %q requires approval (run: shoal profile approve -ref %s, or pass -approve-destruct)", ref, ref)
+}
+
+// probeCDCount lists CD-capable Virtual Media slots (best-effort; defaults to 1).
+func (o *Orchestrator) probeCDCount(ctx context.Context, req models.StartJobRequest, cred secrets.Credential) int {
+	if o.newBMC == nil {
+		return 1
+	}
+	bmc, err := o.newBMC(redfish.Config{
+		BaseURL:       req.BMCEndpoint,
+		Username:      cred.Username,
+		Password:      cred.Password,
+		AuthMode:      o.authMode,
+		TLSMode:       o.tlsMode,
+		CAFile:        o.caFile,
+		MaxConcurrent: 1,
+	})
+	if err != nil {
+		return 1
+	}
+	if err := bmc.Open(ctx); err != nil {
+		return 1
+	}
+	defer func() { _ = bmc.Close(context.Background()) }()
+	lookup := req.SystemID
+	if lookup == "" {
+		lookup = req.DeviceID
+	}
+	sys, err := bmc.GetSystem(ctx, lookup)
+	if err != nil {
+		sys, err = bmc.GetSystem(ctx, "")
+		if err != nil {
+			return 1
+		}
+	}
+	vms, err := bmc.ListVirtualMedia(ctx, sys.ID)
+	if err != nil {
+		return 1
+	}
+	n := countCDMedia(vms)
+	if n <= 0 {
+		return 1
+	}
+	return n
 }
 
 // resolveISOURL fills req.ISOURL from the profile store when the operator omitted -iso-url.

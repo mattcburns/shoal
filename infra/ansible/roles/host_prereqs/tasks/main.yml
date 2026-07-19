@@ -30,6 +30,9 @@
       - git
       - curl
       - wget
+      # config_drive NoCloud seed.img (build-nocloud-seed-img.sh: mcopy + mkfs.vfat)
+      - mtools
+      - dosfstools
     state: present
   when: ansible_os_family == "Debian"
   tags: [packages]

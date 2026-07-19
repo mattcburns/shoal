@@ -815,7 +815,7 @@ Version media URLs when content changes (sushy cache lesson from 7a).
 | **M0** | This design merged | Docs only |
 | **M1** | Stage runner skeleton; single-stage compat with 7a image-write | **Implemented** (single `os_install` stage; job fields + API) |
 | **M2** | Prep v1: wipe + `PREP_*` + handoff to image-write Ubuntu | **Implemented** (event-driven `PREP_DONE` → os_install) |
-| **M3** | Offline seed preference #1 then #2: **second_media**, else **config_drive**, for Ubuntu NoCloud | **Implemented** (seed ISO builder + dual-media attach + `auto` resolve; `config_drive` rejected with `image_write`; config_drive write deferred) |
+| **M3** | Offline seed preference #1 then #2: **second_media**, else **config_drive**, for Ubuntu NoCloud | **Implemented** (second_media + dual attach; **config_drive** via prep FAT `cidata` after wipe; banned with `image_write`) |
 | **M4** | Flatcar offline Ignition (same preference order) | **Implemented** (`scripted_iso` + Ignition seed ISO + second_media; coarse progress; config_drive deferred) |
 | **M5** | **`operator_iso`** path shared by ESXi + Windows shape (attach + boot + cleanup + coarse progress) | **Implemented** (coarse stage deadline → provisioned; SOL stall disabled; seed forbidden; esxi\|windows) |
 | **M6** | Profiles + `seed_delivery: auto` + Operator API §6 fields on `POST/GET /v1/jobs` | **Implemented** (profile defaults merge into Start; profile-only Ubuntu path; GET stages already present) |
