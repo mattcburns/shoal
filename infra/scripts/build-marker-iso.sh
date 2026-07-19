@@ -249,11 +249,12 @@ printf '%s\n' "$INSTALL_MODE" > "$ROOT/install_mode"
 printf '%s\n' "$INSTALL_TARGET_DEFAULT" > "$ROOT/install_target_default"
 printf '%s\n' "$INSTALL_REBOOT" > "$ROOT/install_reboot"
 printf '%s\n' "$PREP_WIPE_LEVEL" > "$ROOT/prep_wipe_level"
-# Optional NoCloud FAT image for config_drive (written after wipe in prep mode).
+# Optional NoCloud FAT image for config_drive — on ISO FS (not initrd; can be multi‑MiB).
+ISO_SEED_SRC=""
 if [[ -n "${SHOAL_SEED_IMG:-}" && -r "${SHOAL_SEED_IMG}" ]]; then
-  cp "${SHOAL_SEED_IMG}" "$ROOT/seed.img"
-  chmod 644 "$ROOT/seed.img"
-  echo "seed.img: embedded from ${SHOAL_SEED_IMG} ($(wc -c <"$ROOT/seed.img" | tr -d ' ') bytes)"
+  ISO_SEED_SRC="${SHOAL_SEED_IMG}"
+  printf 'seed.img\n' > "$ROOT/seed_on_iso"
+  echo "seed.img: on ISO as /seed.img ($(wc -c <"${SHOAL_SEED_IMG}" | tr -d ' ') bytes) — not in initrd"
 fi
 
 # Init emits markers then powers off. console=ttyS0 from kernel cmdline.
@@ -494,11 +495,38 @@ if [ "$MODE" = "prep" ]; then
   sync 2>/dev/null || true
   emit PREP_WIPE 100 OK "wipe finished target=${TARGET}"
 
-  # config_drive (M3 debt): write prebuilt FAT cidata image to end of disk.
-  # Full-disk image_write must not use this path (dd would destroy it).
-  if [ -f /seed.img ]; then
+  # config_drive: write prebuilt FAT cidata image to end of disk.
+  # seed.img lives on the install ISO (seed_on_iso), not in the initrd.
+  SEED_PATH=""
+  if [ -f /seed_on_iso ]; then
+    emit PREP_SEED 5 OK "mounting media for seed.img"
+    mkdir -p /mnt/cd
+    SEED_PATH=""
+    for tries in 1 2 3 4 5 6 7 8 9 10; do
+      for cd in /dev/sr0 /dev/sr1 /dev/cdrom /dev/vdb /dev/sda; do
+        [ -b "$cd" ] || continue
+        if mount -t iso9660 -o ro "$cd" /mnt/cd 2>/dev/null; then
+          if [ -f /mnt/cd/seed.img ]; then
+            SEED_PATH=/mnt/cd/seed.img
+            break 2
+          fi
+          umount /mnt/cd 2>/dev/null || true
+        fi
+      done
+      sleep 1
+    done
+    if [ -z "$SEED_PATH" ]; then
+      emit ERROR 0 ERROR "prep seed.img not found on install media"
+      sleep 2
+      /bin/busybox poweroff -f 2>/dev/null || true
+      while true; do sleep 3600; done
+    fi
+  elif [ -f /seed.img ]; then
+    SEED_PATH=/seed.img
+  fi
+  if [ -n "$SEED_PATH" ]; then
     emit PREP_SEED 10 OK "writing config_drive seed to end of ${TARGET}"
-    SEED_BYTES="$(wc -c </seed.img 2>/dev/null | tr -d ' ')"
+    SEED_BYTES="$(wc -c <"$SEED_PATH" 2>/dev/null | tr -d ' ')"
     if [ -z "$SEED_BYTES" ] || [ "$SEED_BYTES" = "0" ]; then
       emit ERROR 0 ERROR "prep seed.img empty"
       sleep 2
@@ -516,7 +544,7 @@ if [ "$MODE" = "prep" ]; then
       while true; do sleep 3600; done
     fi
     SEEK=$(( SECTORS - SEED_SECTORS ))
-    if dd if=/seed.img of="$TARGET" bs=512 seek="$SEEK" conv=fsync 2>/dev/null; then
+    if dd if="$SEED_PATH" of="$TARGET" bs=512 seek="$SEEK" conv=fsync 2>/dev/null; then
       sync 2>/dev/null || true
       emit PREP_SEED 100 OK "config_drive seed written label=cidata seek=${SEEK} sectors=${SEED_SECTORS}"
     else
@@ -525,6 +553,7 @@ if [ "$MODE" = "prep" ]; then
       /bin/busybox poweroff -f 2>/dev/null || true
       while true; do sleep 3600; done
     fi
+    umount /mnt/cd 2>/dev/null || true
   fi
 
   emit PREP_DONE 100 OK "prep complete ready for os install"
@@ -670,6 +699,10 @@ if [[ -n "$LDLINUX" ]]; then
   cp "$LDLINUX" "$ISO/boot/isolinux/ldlinux.c32"
 fi
 # Large OS payload on ISO root (streamed from CD by /init — not in initrd).
+if [[ -n "${ISO_SEED_SRC:-}" && -r "${ISO_SEED_SRC}" ]]; then
+  cp "$ISO_SEED_SRC" "$ISO/seed.img"
+  echo "iso: /seed.img ($(wc -c <"$ISO/seed.img" | tr -d ' ') bytes)"
+fi
 if [[ -n "$ISO_PAYLOAD_SRC" && -n "$ISO_PAYLOAD_NAME" ]]; then
   cp "$ISO_PAYLOAD_SRC" "$ISO/$ISO_PAYLOAD_NAME"
   chmod 644 "$ISO/$ISO_PAYLOAD_NAME"

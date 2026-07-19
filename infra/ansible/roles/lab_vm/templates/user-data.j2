@@ -27,6 +27,9 @@ packages:
   - git
   - curl
   - wget
+  # config_drive offline seed (build-nocloud-seed-img.sh on L1)
+  - mtools
+  - dosfstools
 runcmd:
   - systemctl enable --now libvirtd
   - systemctl enable --now docker

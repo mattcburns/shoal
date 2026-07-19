@@ -515,8 +515,16 @@ go run ./cmd/shoal deploy run \
 When the BMC has only one Virtual Media slot, use **prep + config_drive** instead of
 `second_media`:
 
+**Host packages:** `mtools` + `dosfstools` (for `build-nocloud-seed-img.sh`). The
+`marker_iso` Ansible role installs both on the lab VM; on a developer host:
+`sudo apt install mtools dosfstools`.
+
+`SHOAL_SEED_IMG` is placed on the **ISO filesystem** as `/seed.img` (not the initrd)
+so multi‑MiB FAT images stay bootable; prep mounts the install media and `dd`s the
+seed to the end of the wipe target after `PREP_WIPE`.
+
 ```bash
-# 1) FAT NoCloud seed image
+# 1) FAT NoCloud seed image (needs mcopy / mkfs.vfat)
 ./infra/scripts/build-nocloud-seed-img.sh /tmp/cidata.img
 
 # 2) Prep ISO that wipes then dd's seed.img to end of disk
@@ -526,16 +534,24 @@ sudo env SHOAL_INSTALL_MODE=prep SHOAL_INSTALL_TARGET=/dev/vda \
   ./infra/scripts/build-marker-iso.sh /srv/iso/shoal-prep-seed.iso
 
 # 3) Job: wipe+seed prep, then scripted installer (single media attach for OS)
+# Nested VM lab: pass -serial-ssh-host/-key so SOL uses remote virsh ttyconsole.
 go run ./cmd/shoal deploy run \
   -install-strategy scripted_iso -os-family ubuntu \
   -seed-delivery auto \
   -prep wipe_only -approve-destruct \
   -prep-iso-url http://192.168.124.1:8080/shoal-prep-seed.iso \
   -iso-url http://192.168.124.1:8080/ubuntu-live.iso \
-  ...bmc/serial...
+  -serial-target shoal-node-1 \
+  -serial-ssh-host 192.168.122.100 \
+  -serial-ssh-user lab \
+  -serial-ssh-key "$HOME/.ssh/shoal_lab_vm" \
+  ...bmc...
 ```
 
 `auto` with one CD selects **config_drive**; with two CDs and `seed_iso_url` selects **second_media**.
+
+**Lab AC (nested sushy, 1 CD):** prep emits `PREP_SEED` / `PREP_DONE`; `os_install`
+attaches a single media URL with `seed_delivery=config_drive` (no dual Virtual Media).
 
 ### Multi-stage M5: operator_iso (ESXi / Windows)
 
