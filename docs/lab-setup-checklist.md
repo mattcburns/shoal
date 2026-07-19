@@ -16,6 +16,8 @@ L0 is the **Linux hypervisor** that runs the lab VM. **macOS is not a valid L0**
 - [ ] `/dev/kvm` exists on host
 - [ ] CPU virtualization flags present (`vmx` or `svm`)
 - [ ] **Nested virtualization** enabled on L0 (required for L2 sushy nodes)
+- [ ] After `up.yml`: nested `shoal-node-*` domains include **empty CD-ROM** for
+      sushy Virtual Media (`virsh dumpxml shoal-node-1 | grep cdrom`; smoke.yml checks this)
 
 Quick checks:
 ```bash

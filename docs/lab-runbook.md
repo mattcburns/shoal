@@ -38,6 +38,32 @@ ansible-playbook -i infra/ansible/inventory/lab-vm.yml \
   infra/ansible/playbooks/build_marker_iso.yml
 ```
 
+### Nested Virtual Media (sushy + CD tray)
+
+Nested BMC guests (`shoal-node-*`) must have an **empty CD-ROM** device in libvirt.
+sushy-tools **cannot hotplug** a CD; `InsertMedia` fills the tray. Without it, Deploy
+fails with `Target libvirt device Cd does not exist`.
+
+- Template: `infra/ansible/roles/libvirt_lab/templates/vm-node.xml.j2` (empty `sda` CD).
+- Optional dual CD for `second_media` smoke: set `shoal_lab_node_dual_cd: true` and re-run
+  lab node define (domains **restart** once when the template changes).
+- sushy compose mounts libvirt socket + `/var/lib/libvirt/images` for media files.
+- App-side: multi-node media is scoped per system (do not merge all managers’ Cd slots).
+
+**Repair an existing lab** (after pulling this change), on the lab host that owns nested
+libvirt (L1 inside the lab VM for VM-hosted mode):
+
+```bash
+# From L0 against lab-vm inventory — refreshes node XML + restarts domains if needed
+ansible-playbook -i infra/ansible/inventory/lab-vm.yml infra/ansible/playbooks/up.yml \
+  --tags nodes,sushy
+# or full up.yml
+
+# Verify
+ssh lab@192.168.122.100 'sudo virsh dumpxml shoal-node-1 | grep -A6 "device=.cdrom."'
+ansible-playbook -i infra/ansible/inventory/lab-vm.yml infra/ansible/playbooks/smoke.yml
+```
+
 ### Phase 2 app smoke (from L0 against VM lab)
 ```bash
 export SHOAL_BMC_USERNAME=...   # vault

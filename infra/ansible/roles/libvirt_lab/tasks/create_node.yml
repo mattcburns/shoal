@@ -6,6 +6,7 @@
   register: node_info
   failed_when: false
   changed_when: false
+
 - name: Check if node disk exists
   stat:
     path: /var/lib/libvirt/images/{{ node.name }}.qcow2
@@ -31,6 +32,28 @@
   register: node_define
   changed_when: node_info.rc != 0 or node_xml.changed
 
+- name: Check current node state before CD/XML refresh restart
+  command: virsh domstate {{ node.name }}
+  register: node_state_pre
+  changed_when: false
+  failed_when: false
+  when: node_xml.changed and node_info.rc == 0
+
+- name: Restart node so new empty CD tray is live
+  # QEMU cannot hotplug cdrom; redefine alone is not enough while the domain is running.
+  # One-time downtime when the domain template changes (e.g. empty CD for Virtual Media).
+  shell: |
+    set -e
+    virsh destroy {{ node.name }} || true
+    virsh start {{ node.name }}
+  when:
+    - node_xml.changed
+    - node_info.rc == 0
+    - node_state_pre is defined
+    - "'running' in (node_state_pre.stdout | default(''))"
+  register: node_cd_restart
+  changed_when: true
+
 - name: Ensure node autostarts
   command: virsh autostart {{ node.name }}
   register: node_autostart
@@ -42,6 +65,7 @@
   when: node_info.rc != 0
   register: node_start
   changed_when: "'started' in node_start.stdout"
+
 - name: Check current node state
   command: virsh domstate {{ node.name }}
   register: node_state

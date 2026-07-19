@@ -1,0 +1,6 @@
+---
+# Nested BMC guests (L2 under the lab VM / direct host).
+# Empty CD tray is required: sushy-tools cannot hotplug a CD device; InsertMedia
+# fills an existing tray. Without this, boot override fails with
+# "Target libvirt device Cd does not exist".
+shoal_lab_node_dual_cd: false
