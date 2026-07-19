@@ -445,6 +445,45 @@ go run ./cmd/shoal deploy run \
 `PREP_DONE` does **not** complete the job; only the final install `DONE` yields
 `provisioned`. Status JSON shows `current_stage` moving from `prep` → `os_install`.
 
+### Multi-stage M3: offline NoCloud seed (second_media)
+
+Guest must **not** fetch user-data over the network. M3 delivers a tiny CIDATA ISO
+on a **second Virtual Media** slot when the BMC has ≥2 CD devices.
+
+**Build seed ISO (any host with xorriso/genisoimage):**
+
+```bash
+SHOAL_SEED_HOSTNAME=lab-node-1 \
+  ./infra/scripts/build-nocloud-seed-iso.sh /srv/iso/shoal-cidata.iso
+# BMC-reachable URL (nested lab):
+#   http://192.168.124.1:8080/shoal-cidata.iso
+```
+
+**Deploy with dual media** (requires dual-CD BMC or `redfish.NewFakeDualCD` in unit tests).
+Nested sushy-tools typically has **one** CD — second_media will fail with an actionable
+error; for image_write offline seed, bake cloud-init into the payload with
+`prepare-ubuntu-cloud-payload.sh` instead (`seed_delivery=none`).
+
+```bash
+go run ./cmd/shoal deploy run \
+  -device-id shoal-node-1 \
+  -bmc-url http://192.168.122.100:8001 \
+  -bmc-user admin -bmc-pass password \
+  -serial-target shoal-node-1 \
+  -iso-url http://192.168.124.1:8080/ubuntu-live.iso \
+  -seed-delivery second_media \
+  -seed-iso-url http://192.168.124.1:8080/shoal-cidata.iso \
+  -os-family ubuntu \
+  -wait
+```
+
+| Mode | Notes |
+|------|--------|
+| `none` (default) | No runtime seed (7a prepare-time seed is fine) |
+| `second_media` | Install ISO on CD1 + seed ISO on CD2; needs ≥2 CD slots |
+| `auto` | Prefer second_media when ≥2 CDs + `seed_iso_url`; else error if image_write (no config_drive) |
+| `config_drive` | **Forbidden** with `image_write` (full-disk dd wipes partition); write path not implemented yet |
+
 ### Phase 6b: graphics failure-screen OCR
 
 SOL remains the primary progress channel. Graphics OCR is **diagnostic only**.

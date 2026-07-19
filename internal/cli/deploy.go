@@ -74,6 +74,9 @@ func cmdDeployRun(args []string) int {
 	prep := fs.String("prep", "", "skip (default) | wipe_only (M2 multi-stage prep)")
 	prepISO := fs.String("prep-iso-url", os.Getenv("SHOAL_PREP_ISO_URL"), "BMC-reachable prep live ISO (wipe_only)")
 	wipeLevel := fs.String("wipe-level", "", "discard|zero (baked into prep ISO at build; optional)")
+	seedDelivery := fs.String("seed-delivery", "", "none|auto|second_media|config_drive (M3 offline NoCloud; no guest HTTP)")
+	seedISO := fs.String("seed-iso-url", os.Getenv("SHOAL_SEED_ISO_URL"), "BMC-reachable NoCloud cidata ISO (second_media)")
+	osFamily := fs.String("os-family", "", "ubuntu (M3 seed paths); flatcar later")
 	sshHost := fs.String("serial-ssh-host", cfg.SerialSSHHost, "SSH host for nested libvirt serial (VM mode)")
 	sshUser := fs.String("serial-ssh-user", cfg.SerialSSHUser, "SSH user for serial delegate")
 	sshKey := fs.String("serial-ssh-key", cfg.SerialSSHKey, "SSH private key for serial delegate")
@@ -126,6 +129,9 @@ func cmdDeployRun(args []string) int {
 		Prep:             *prep,
 		PrepISOURL:       *prepISO,
 		WipeLevel:        *wipeLevel,
+		SeedDelivery:     *seedDelivery,
+		SeedISOURL:       *seedISO,
+		OsFamily:         *osFamily,
 	}
 	// Cloud image is passed via env for the builder (StartJobRequest has no field yet for 7a.1).
 	if strings.TrimSpace(*cloudImg) != "" {

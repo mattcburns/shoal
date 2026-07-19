@@ -51,6 +51,26 @@ func NewFake() *Fake {
 	}
 }
 
+// NewFakeDualCD returns a Fake with two CD-capable Virtual Media slots (M3 second_media tests).
+func NewFakeDualCD() *Fake {
+	f := NewFake()
+	f.Media["/redfish/v1/Managers/1/VirtualMedia/Cd2"] = VirtualMedia{
+		URI: "/redfish/v1/Managers/1/VirtualMedia/Cd2", Name: "Cd2", ID: "Cd2", SupportsCD: true,
+	}
+	return f
+}
+
+// InsertedImages returns a copy of media URI → image URL (test helper).
+func (f *Fake) InsertedImages() map[string]string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make(map[string]string, len(f.InsertedImage))
+	for k, v := range f.InsertedImage {
+		out[k] = v
+	}
+	return out
+}
+
 func (f *Fake) Open(_ context.Context) error  { return f.OpenErr }
 func (f *Fake) Close(_ context.Context) error { return nil }
 

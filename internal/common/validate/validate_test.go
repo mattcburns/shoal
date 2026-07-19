@@ -101,4 +101,33 @@ func TestStartJobRequest(t *testing.T) {
 	if err := validate.StartJobRequest(prep); err != nil {
 		t.Fatal(err)
 	}
+	// M3: config_drive forbidden with image_write
+	seed := good
+	seed.SeedDelivery = models.SeedDeliveryConfigDrive
+	seed.InstallStrategy = models.InstallStrategyImageWrite
+	if err := validate.StartJobRequest(seed); err == nil {
+		t.Fatal("expected config_drive+image_write to fail")
+	}
+	// second_media needs seed URL
+	seed = good
+	seed.SeedDelivery = models.SeedDeliverySecondMedia
+	t.Setenv("SHOAL_SEED_ISO_URL", "")
+	if err := validate.StartJobRequest(seed); err == nil {
+		t.Fatal("expected second_media without seed URL to fail")
+	}
+	seed.SeedISOURL = "http://lab:8080/cidata.iso"
+	if err := validate.StartJobRequest(seed); err != nil {
+		t.Fatal(err)
+	}
+	// none / empty seed is fine
+	seed.SeedDelivery = ""
+	seed.SeedISOURL = ""
+	if err := validate.StartJobRequest(seed); err != nil {
+		t.Fatal(err)
+	}
+	// bad seed delivery
+	seed.SeedDelivery = "http_guest"
+	if err := validate.StartJobRequest(seed); err == nil {
+		t.Fatal("expected unknown seed_delivery to fail")
+	}
 }

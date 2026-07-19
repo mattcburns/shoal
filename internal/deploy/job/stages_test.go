@@ -88,6 +88,72 @@ func TestExpandStagesRejectsScriptedISO(t *testing.T) {
 	}
 }
 
+func TestExpandStagesSeedSecondMedia(t *testing.T) {
+	stages, err := expandStages(models.StartJobRequest{
+		ISOURL:          "http://example/os.iso",
+		InstallStrategy: models.InstallStrategyImageWrite,
+		SeedDelivery:    models.SeedDeliverySecondMedia,
+		SeedISOURL:      "http://example/cidata.iso",
+		OsFamily:        "ubuntu",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := stages[0]
+	if st.SeedDelivery != models.SeedDeliverySecondMedia {
+		t.Fatalf("delivery=%s", st.SeedDelivery)
+	}
+	if st.SeedMediaURL != "http://example/cidata.iso" {
+		t.Fatalf("seed=%s", st.SeedMediaURL)
+	}
+	if st.Family != "ubuntu" {
+		t.Fatalf("family=%s", st.Family)
+	}
+}
+
+func TestExpandStagesRejectsConfigDriveImageWrite(t *testing.T) {
+	_, err := expandStages(models.StartJobRequest{
+		ISOURL:          "http://example/os.iso",
+		InstallStrategy: models.InstallStrategyImageWrite,
+		SeedDelivery:    models.SeedDeliveryConfigDrive,
+	})
+	if err == nil || !strings.Contains(err.Error(), "config_drive") {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestResolveSeedDelivery(t *testing.T) {
+	// dual CD → second_media for auto
+	got, err := resolveSeedDelivery(models.SeedDeliveryAuto, "http://s/seed.iso", models.InstallStrategyImageWrite, 2)
+	if err != nil || got != models.SeedDeliverySecondMedia {
+		t.Fatalf("auto dual: got %q err=%v", got, err)
+	}
+	// single CD + image_write → error (no config_drive)
+	_, err = resolveSeedDelivery(models.SeedDeliveryAuto, "http://s/seed.iso", models.InstallStrategyImageWrite, 1)
+	if err == nil {
+		t.Fatal("expected auto+1cd+image_write error")
+	}
+	// explicit second_media needs 2 slots
+	_, err = resolveSeedDelivery(models.SeedDeliverySecondMedia, "http://s/seed.iso", models.InstallStrategyImageWrite, 1)
+	if err == nil {
+		t.Fatal("expected second_media with 1 slot to fail")
+	}
+	got, err = resolveSeedDelivery(models.SeedDeliverySecondMedia, "http://s/seed.iso", models.InstallStrategyImageWrite, 2)
+	if err != nil || got != models.SeedDeliverySecondMedia {
+		t.Fatalf("second_media dual: %q %v", got, err)
+	}
+	// none
+	got, err = resolveSeedDelivery(models.SeedDeliveryNone, "", models.InstallStrategyImageWrite, 1)
+	if err != nil || got != models.SeedDeliveryNone {
+		t.Fatalf("none: %q %v", got, err)
+	}
+	// config_drive + image_write
+	_, err = resolveSeedDelivery(models.SeedDeliveryConfigDrive, "", models.InstallStrategyImageWrite, 1)
+	if err == nil {
+		t.Fatal("expected config_drive+image_write error")
+	}
+}
+
 func TestSetStageState(t *testing.T) {
 	stages := []models.JobStage{
 		{ID: "os_install", State: models.JobStageStatePending},

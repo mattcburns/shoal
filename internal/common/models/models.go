@@ -73,6 +73,16 @@ const (
 	InstallStrategyOperatorISO = "operator_iso" // reserved; not expanded in M1
 )
 
+// Seed delivery modes (multi-stage M3 offline NoCloud). Never guest HTTP.
+const (
+	SeedDeliveryNone        = "none"
+	SeedDeliveryAuto        = "auto"
+	SeedDeliverySecondMedia = "second_media"
+	SeedDeliveryConfigDrive = "config_drive"
+	// SeedDeliverySingleISO reserved (preference #3 remaster).
+	SeedDeliverySingleISO = "single_iso"
+)
+
 // Job stage kinds.
 const (
 	JobStageKindPrep      = "prep"
@@ -247,6 +257,13 @@ type StartJobRequest struct {
 	PrepISOURL string `json:"prep_iso_url,omitempty"`
 	// WipeLevel is discard (prefer blkdiscard) or zero (dd first 64MiB). Prep only.
 	WipeLevel string `json:"wipe_level,omitempty"`
+	// SeedDelivery is none (default) | auto | second_media | config_drive (M3).
+	// config_drive is forbidden with install_strategy=image_write (full-disk dd).
+	SeedDelivery string `json:"seed_delivery,omitempty"`
+	// SeedISOURL is BMC-reachable NoCloud/CIDATA ISO for second_media.
+	SeedISOURL string `json:"seed_iso_url,omitempty"`
+	// OsFamily is ubuntu for M3 seed paths (flatcar later).
+	OsFamily string `json:"os_family,omitempty"`
 }
 
 // CancelJobRequest cancels an in-flight provisioning job.
