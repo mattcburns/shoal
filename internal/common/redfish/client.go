@@ -287,6 +287,9 @@ func (c *client) ClearBootOverride(ctx context.Context, systemID string) error {
 }
 
 // ListVirtualMedia lists virtual media for a system, falling back to managers.
+// When systemID is set, only that system's media is returned (or its matching
+// manager). Merging every manager's slots would attach media to the wrong node
+// in multi-BMC labs (sushy-tools exposes one Cd per system/manager).
 func (c *client) ListVirtualMedia(_ context.Context, systemID string) ([]VirtualMedia, error) {
 	api, err := c.apiClient()
 	if err != nil {
@@ -303,19 +306,27 @@ func (c *client) ListVirtualMedia(_ context.Context, systemID string) ([]Virtual
 				out = append(out, mapVM(vm))
 			}
 		}
+		// If the system exposes media, do not merge other systems' managers.
+		if len(out) > 0 {
+			return out, nil
+		}
 	}
 
-	// Also check managers (sushy-tools often exposes VM here).
+	// Fallback: managers. When systemID is known, only the manager with the
+	// same id/uuid (sushy-tools 1:1 mapping) is used.
 	managers, err := api.Service.Managers()
 	if err == nil {
 		for _, m := range managers {
+			if systemID != "" && m.ID != systemID && m.UUID != systemID {
+				// Still allow empty systemID (list all) for diagnostics.
+				continue
+			}
 			vms, vmErr := m.VirtualMedia()
 			if vmErr != nil {
 				continue
 			}
 			for _, vm := range vms {
 				mapped := mapVM(vm)
-				// de-dupe by URI
 				dup := false
 				for _, existing := range out {
 					if existing.URI == mapped.URI {
@@ -325,6 +336,22 @@ func (c *client) ListVirtualMedia(_ context.Context, systemID string) ([]Virtual
 				}
 				if !dup {
 					out = append(out, mapped)
+				}
+			}
+		}
+	}
+
+	// Last resort: if systemID was empty or no manager matched, scan all managers.
+	if len(out) == 0 && systemID == "" {
+		managers, err = api.Service.Managers()
+		if err == nil {
+			for _, m := range managers {
+				vms, vmErr := m.VirtualMedia()
+				if vmErr != nil {
+					continue
+				}
+				for _, vm := range vms {
+					out = append(out, mapVM(vm))
 				}
 			}
 		}
