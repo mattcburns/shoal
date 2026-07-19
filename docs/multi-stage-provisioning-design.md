@@ -494,7 +494,7 @@ shoal deploy run \
   -os-family ubuntu \
   -seed-delivery second_media \
   -iso-url http://mgmt:8080/ubuntu-live.iso \
-  -seed-url http://mgmt:8080/cidata-host7.iso \
+  -seed-iso-url http://mgmt:8080/cidata-host7.iso \
   -wait
 ```
 
@@ -522,7 +522,7 @@ shoal deploy run \
 | `credential_ref` | Opaque BMC (and seed-render) secret handle |
 | `serial_target` | Libvirt domain or SOL target for Observe |
 | `iso_url` / `media_url` | Installer or marker ISO (**BMC-reachable**; mgmt HTTP OK) |
-| `seed_url` | Second Virtual Media seed ISO URL (when `seed_delivery=second_media`) |
+| `seed_iso_url` | Second Virtual Media seed ISO URL (when `seed_delivery=second_media`) |
 | `install_strategy` | `operator_iso` \| `scripted_iso` \| `image_write` \| `simulate` |
 | `seed_delivery` | `auto` \| `second_media` \| `config_drive` \| `single_iso` \| `none` |
 | `os_family` | `ubuntu` \| `flatcar` \| `esxi` \| `windows` |
@@ -802,7 +802,7 @@ Version media URLs when content changes (sushy cache lesson from 7a).
 | **M0** | This design merged | Docs only |
 | **M1** | Stage runner skeleton; single-stage compat with 7a image-write | **Implemented** (single `os_install` stage; job fields + API) |
 | **M2** | Prep v1: wipe + `PREP_*` + handoff to image-write Ubuntu | **Implemented** (event-driven `PREP_DONE` → os_install) |
-| **M3** | Offline seed preference #1 then #2: **second_media**, else **config_drive**, for Ubuntu NoCloud | Lab or hardware AC; no HTTP seed |
+| **M3** | Offline seed preference #1 then #2: **second_media**, else **config_drive**, for Ubuntu NoCloud | **Implemented** (seed ISO builder + dual-media attach + `auto` resolve; `config_drive` rejected with `image_write`; config_drive write deferred) |
 | **M4** | Flatcar offline Ignition (same preference order) | Documented AC |
 | **M5** | **`operator_iso`** path shared by ESXi + Windows shape (attach + boot + cleanup + coarse progress) | Hardware preferred |
 | **M6** | Profiles + `seed_delivery: auto` + Operator API §6 fields on `POST/GET /v1/jobs` | Happy path without ad-hoc flags; §6.9 ACs |

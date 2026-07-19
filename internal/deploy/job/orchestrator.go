@@ -8,6 +8,8 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log/slog"
+	"os"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -259,10 +261,7 @@ func (o *Orchestrator) Start(ctx context.Context, req models.StartJobRequest) (m
 	if err != nil {
 		return models.ProvisioningJob{}, err
 	}
-	strategy := ""
-	if len(stages) > 0 {
-		strategy = stages[0].Strategy
-	}
+	strategy := installStrategyFromStages(stages)
 
 	profile := profileRef
 	now := time.Now().UTC()
@@ -338,8 +337,8 @@ func (o *Orchestrator) provision(ctx context.Context, job models.ProvisioningJob
 		}
 	}
 	strategy := job.InstallStrategy
-	if strategy == "" && len(stages) > 0 {
-		strategy = stages[0].Strategy
+	if strategy == "" {
+		strategy = installStrategyFromStages(stages)
 	}
 	if err := o.store.UpdateStages(ctx, job.ID, stages[0].ID, strategy, stages); err != nil {
 		return fmt.Errorf("persist stages: %w", err)
@@ -418,12 +417,60 @@ func (o *Orchestrator) startStage(ctx context.Context, job models.ProvisioningJo
 	if err != nil {
 		return fmt.Errorf("list virtual media: %w", err)
 	}
-	mediaURI := pickCDMedia(vms)
-	if mediaURI == "" {
+	primaryURI, secondaryURI := pickCDMediaPair(vms)
+	if primaryURI == "" {
 		return fmt.Errorf("no CD-capable virtual media slot")
 	}
-	if err := bmc.InsertVirtualMedia(ctx, mediaURI, mediaURL); err != nil {
+
+	// M3: resolve offline seed and optionally attach second_media seed ISO.
+	seedDelivery := models.SeedDeliveryNone
+	seedURL := ""
+	if stage.Kind == models.JobStageKindOSInstall {
+		seedURL = strings.TrimSpace(stage.SeedMediaURL)
+		if seedURL == "" {
+			seedURL = strings.TrimSpace(req.SeedISOURL)
+		}
+		if seedURL == "" {
+			seedURL = strings.TrimSpace(os.Getenv("SHOAL_SEED_ISO_URL"))
+		}
+		requested := stage.SeedDelivery
+		if requested == "" {
+			requested = req.SeedDelivery
+		}
+		stageStrategy := stage.Strategy
+		if stageStrategy == "" {
+			stageStrategy = strategy
+		}
+		var resErr error
+		seedDelivery, resErr = resolveSeedDelivery(requested, seedURL, stageStrategy, countCDMedia(vms))
+		if resErr != nil {
+			return resErr
+		}
+		if seedDelivery == models.SeedDeliverySecondMedia {
+			if secondaryURI == "" {
+				return fmt.Errorf("job: second_media resolved but no secondary CD slot")
+			}
+			if seedURL == "" {
+				return fmt.Errorf("job: second_media requires seed ISO URL")
+			}
+		}
+		// Persist resolved delivery on the stage for job status.
+		stages = setStageSeed(stages, stage.ID, seedDelivery, seedURL)
+		_ = o.store.UpdateStages(ctx, job.ID, stage.ID, strategy, stages)
+	}
+
+	if err := bmc.InsertVirtualMedia(ctx, primaryURI, mediaURL); err != nil {
 		return fmt.Errorf("insert media: %w", err)
+	}
+	if seedDelivery == models.SeedDeliverySecondMedia {
+		if err := bmc.InsertVirtualMedia(ctx, secondaryURI, seedURL); err != nil {
+			return fmt.Errorf("insert seed media: %w", err)
+		}
+		o.log.Info("second_media seed attached",
+			"job_id", job.ID,
+			"install_media", primaryURI,
+			"seed_media", secondaryURI,
+		)
 	}
 	if err := bmc.SetBootOverrideOnceCD(ctx, sys.ID); err != nil {
 		return fmt.Errorf("boot override: %w", err)
@@ -609,16 +656,52 @@ func (o *Orchestrator) advanceAfterPrepDone(jobID string) {
 	}
 }
 
-func pickCDMedia(vms []redfish.VirtualMedia) string {
+// pickCDMediaPair returns primary (boot) and secondary CD-capable media URIs.
+// URIs are sorted so selection is stable across Fake map iteration order.
+func pickCDMediaPair(vms []redfish.VirtualMedia) (primary, secondary string) {
+	var cds []string
 	for _, vm := range vms {
 		if vm.SupportsCD {
-			return vm.URI
+			cds = append(cds, vm.URI)
 		}
 	}
-	if len(vms) > 0 {
-		return vms[0].URI
+	sort.Strings(cds)
+	if len(cds) == 0 {
+		if len(vms) > 0 {
+			return vms[0].URI, ""
+		}
+		return "", ""
 	}
-	return ""
+	if len(cds) == 1 {
+		return cds[0], ""
+	}
+	return cds[0], cds[1]
+}
+
+func countCDMedia(vms []redfish.VirtualMedia) int {
+	n := 0
+	for _, vm := range vms {
+		if vm.SupportsCD {
+			n++
+		}
+	}
+	return n
+}
+
+// setStageSeed updates seed fields on the stage with id.
+func setStageSeed(stages []models.JobStage, id, delivery, seedURL string) []models.JobStage {
+	out := make([]models.JobStage, len(stages))
+	copy(out, stages)
+	for i := range out {
+		if out[i].ID == id {
+			out[i].SeedDelivery = delivery
+			if seedURL != "" {
+				out[i].SeedMediaURL = seedURL
+			}
+			break
+		}
+	}
+	return out
 }
 
 // Cancel requests terminal handling for a job.

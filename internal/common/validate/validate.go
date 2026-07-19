@@ -193,7 +193,53 @@ func StartJobRequest(r models.StartJobRequest) error {
 	if w := strings.TrimSpace(strings.ToLower(r.WipeLevel)); w != "" && w != "discard" && w != "zero" {
 		return fmt.Errorf("validate: wipe_level must be discard or zero")
 	}
+
+	// Multi-stage M3: offline seed delivery (no guest HTTP).
+	seed := strings.TrimSpace(strings.ToLower(r.SeedDelivery))
+	switch seed {
+	case "", models.SeedDeliveryNone, models.SeedDeliveryAuto,
+		models.SeedDeliverySecondMedia, models.SeedDeliveryConfigDrive:
+		// ok
+	case models.SeedDeliverySingleISO:
+		return fmt.Errorf("validate: seed_delivery single_iso not implemented (use second_media or prepare-time seed)")
+	default:
+		return fmt.Errorf("validate: unknown seed_delivery %q", r.SeedDelivery)
+	}
+	if fam := strings.TrimSpace(strings.ToLower(r.OsFamily)); fam != "" && fam != "ubuntu" {
+		return fmt.Errorf("validate: os_family %q not supported yet (M3: ubuntu only)", r.OsFamily)
+	}
+	if seedURL := strings.TrimSpace(r.SeedISOURL); seedURL != "" {
+		if !strings.HasPrefix(seedURL, "http://") && !strings.HasPrefix(seedURL, "https://") {
+			return fmt.Errorf("validate: seed_iso_url must be an http(s) URL reachable by the BMC")
+		}
+	}
+	// Full-disk image_write overwrites any config-drive partition; forbid the combination.
+	if seed == models.SeedDeliveryConfigDrive && installStrategyIsImageWrite(r) {
+		return fmt.Errorf("validate: seed_delivery config_drive is incompatible with install_strategy image_write (full-disk dd destroys the partition); use prepare-ubuntu-cloud-payload for offline seed, or second_media with a dual-CD BMC")
+	}
+	if seed == models.SeedDeliverySecondMedia && strings.TrimSpace(r.SeedISOURL) == "" {
+		if strings.TrimSpace(os.Getenv("SHOAL_SEED_ISO_URL")) == "" {
+			return fmt.Errorf("validate: seed_delivery second_media requires seed_iso_url or SHOAL_SEED_ISO_URL")
+		}
+	}
 	return nil
+}
+
+// installStrategyIsImageWrite mirrors deploy/job strategy defaults for validation.
+func installStrategyIsImageWrite(r models.StartJobRequest) bool {
+	if s := strings.TrimSpace(r.InstallStrategy); s != "" {
+		return s == models.InstallStrategyImageWrite
+	}
+	mode := strings.TrimSpace(strings.ToLower(r.ISOInstallMode))
+	switch mode {
+	case "write", "autoinstall", "":
+		// empty mode defaults to image_write in expandStages
+		return true
+	case "simulate":
+		return false
+	default:
+		return true
+	}
 }
 
 // CancelJobRequest requires job_id.

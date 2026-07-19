@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -375,6 +376,124 @@ func TestOrchestratorOrphanReconcile(t *testing.T) {
 	}
 	if got.State != models.StateFailed {
 		t.Fatalf("orphan state %s", got.State)
+	}
+}
+
+func TestOrchestratorSecondMediaDualInsert(t *testing.T) {
+	ctx := context.Background()
+	store := jobstore.NewMemory()
+	sec := secrets.NewMemory()
+	fakeBMC := redfish.NewFakeDualCD()
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	pr, pw := io.Pipe()
+	watch := sol.NewWatchService(log, nil)
+	watch.NewTransport = func(session models.WatchSession) sol.Transport {
+		return sol.NewReaderTransport(pr)
+	}
+	orch := job.NewOrchestrator(job.Options{
+		Log: log, Store: store, Secrets: sec,
+		NewBMC:  func(cfg redfish.Config) (redfish.BMC, error) { return fakeBMC, nil },
+		Watches: watch, AuthMode: "basic", TLSMode: "off",
+	})
+	defer orch.Stop()
+	watch.SetProgress(orch.ProgressPort())
+
+	installURL := "http://iso/install.iso"
+	seedURL := "http://iso/cidata.iso"
+	j, err := orch.Start(ctx, models.StartJobRequest{
+		DeviceID:        "lab-node-1",
+		BMCEndpoint:     "http://bmc.test",
+		BMCUsername:     "admin",
+		BMCPassword:     "secret",
+		SerialTarget:    "lab-node-1",
+		ISOURL:          installURL,
+		SeedDelivery:    models.SeedDeliverySecondMedia,
+		SeedISOURL:      seedURL,
+		InstallStrategy: models.InstallStrategySimulate,
+	})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	imgs := fakeBMC.InsertedImages()
+	if len(imgs) != 2 {
+		t.Fatalf("want 2 media inserts, got %v", imgs)
+	}
+	var foundInstall, foundSeed bool
+	for _, u := range imgs {
+		if u == installURL {
+			foundInstall = true
+		}
+		if u == seedURL {
+			foundSeed = true
+		}
+	}
+	if !foundInstall || !foundSeed {
+		t.Fatalf("expected install+seed URLs, got %v", imgs)
+	}
+	// Stage should record resolved second_media
+	loaded, err := store.Get(ctx, j.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.Stages) != 1 {
+		t.Fatalf("stages=%d", len(loaded.Stages))
+	}
+	if loaded.Stages[0].SeedDelivery != models.SeedDeliverySecondMedia {
+		t.Fatalf("seed_delivery=%s", loaded.Stages[0].SeedDelivery)
+	}
+	if loaded.Stages[0].SeedMediaURL != seedURL {
+		t.Fatalf("seed_media_url=%s", loaded.Stages[0].SeedMediaURL)
+	}
+
+	writeMarker(t, pw, "SHOAL|1|1|2026-06-19T04:10:00Z|DONE|100|OK|done")
+	_ = pw.Close()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		final, _ := store.Get(ctx, j.ID)
+		if final.State == models.StateProvisioned {
+			if fakeBMC.MediaInserted() {
+				t.Fatal("cleanup should eject both media")
+			}
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("job did not reach provisioned")
+}
+
+func TestOrchestratorSecondMediaFailsWithOneCD(t *testing.T) {
+	ctx := context.Background()
+	store := jobstore.NewMemory()
+	fakeBMC := redfish.NewFake() // single CD
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	watch := sol.NewWatchService(log, nil)
+	watch.NewTransport = func(session models.WatchSession) sol.Transport {
+		return sol.NewReaderTransport(io.NopCloser(strings.NewReader("")))
+	}
+	orch := job.NewOrchestrator(job.Options{
+		Log: log, Store: store, Secrets: secrets.NewMemory(),
+		NewBMC:  func(cfg redfish.Config) (redfish.BMC, error) { return fakeBMC, nil },
+		Watches: watch, AuthMode: "basic", TLSMode: "off",
+	})
+	defer orch.Stop()
+	watch.SetProgress(orch.ProgressPort())
+
+	_, err := orch.Start(ctx, models.StartJobRequest{
+		DeviceID:        "lab-node-1",
+		BMCEndpoint:     "http://bmc.test",
+		BMCUsername:     "admin",
+		BMCPassword:     "secret",
+		SerialTarget:    "lab-node-1",
+		ISOURL:          "http://iso/install.iso",
+		SeedDelivery:    models.SeedDeliverySecondMedia,
+		SeedISOURL:      "http://iso/cidata.iso",
+		InstallStrategy: models.InstallStrategySimulate,
+	})
+	if err == nil {
+		t.Fatal("expected second_media with 1 CD to fail")
+	}
+	if !strings.Contains(err.Error(), "second_media") && !strings.Contains(err.Error(), "Virtual Media") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
