@@ -93,6 +93,11 @@ type runState struct {
 	terminalOnce sync.Once
 	// advanceOnce ensures PREP_DONE only advances once.
 	advanceOnce sync.Once
+	// stageStarted is when the current stage's SOL watch was registered.
+	// Early stream closes (domain reboot after media swap) are retried.
+	stageStarted  time.Time
+	solReopens    int
+	maxSOLReopens int
 }
 
 type terminalEvent struct {
@@ -428,6 +433,16 @@ func (o *Orchestrator) startStage(ctx context.Context, job models.ProvisioningJo
 			return fmt.Errorf("power on/restart: %w (also: %v)", err2, err)
 		}
 	}
+	// After media swap / ForceRestart, give nested serial a moment to settle.
+	settle := 2 * time.Second
+	if idx > 0 {
+		settle = 8 * time.Second
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(settle):
+	}
 
 	phase := "WAITING_SOL"
 	if stage.Kind == models.JobStageKindPrep {
@@ -461,6 +476,11 @@ func (o *Orchestrator) startStage(ctx context.Context, job models.ProvisioningJo
 		_ = bmc.CleanupMediaAndBoot(ctx, sys.ID)
 		return fmt.Errorf("register watch: %w", err)
 	}
+	rs.stageStarted = time.Now().UTC()
+	rs.solReopens = 0
+	if rs.maxSOLReopens == 0 {
+		rs.maxSOLReopens = 4
+	}
 	o.log.Info("stage media attached",
 		"job_id", job.ID,
 		"device_id", job.DeviceID,
@@ -470,6 +490,59 @@ func (o *Orchestrator) startStage(ctx context.Context, job models.ProvisioningJo
 		"kind", stage.Kind,
 	)
 	return nil
+}
+
+// reopenSOL re-registers the SOL watch after an early stream drop (stage handoff).
+func (o *Orchestrator) reopenSOL(jobID string) {
+	o.mu.Lock()
+	rs := o.running[jobID]
+	o.mu.Unlock()
+	if rs == nil {
+		return
+	}
+	if rs.terminalQueued {
+		return
+	}
+	job, err := o.store.Get(context.Background(), jobID)
+	if err != nil || job.State != models.StateProvisioning {
+		return
+	}
+	// Unregister current session if any.
+	if rs.sessionID != "" && o.watches != nil {
+		_ = o.watches.Unregister(context.Background(), rs.sessionID)
+	}
+	time.Sleep(4 * time.Second)
+	if rs.terminalQueued {
+		return
+	}
+	rs.solReopens++
+	sessionID := fmt.Sprintf("sol-%s-r%d", jobID, rs.solReopens)
+	rs.sessionID = sessionID
+	_ = o.store.UpdateRuntime(context.Background(), jobID, rs.systemID, sessionID, rs.credential)
+	stall := rs.stallTimeout
+	if stall <= 0 {
+		stall = DefaultSOLStall
+	}
+	session := models.WatchSession{
+		ID:           sessionID,
+		JobID:        jobID,
+		DeviceID:     rs.deviceID,
+		Transport:    "libvirt",
+		Target:       rs.serialTarget,
+		StartedAt:    time.Now().UTC(),
+		StallTimeout: stall,
+	}
+	if err := o.watches.Register(context.Background(), session); err != nil {
+		o.log.Error("sol reopen failed", "job_id", jobID, "err", err.Error())
+		o.enqueueTerminal(jobID, ReasonTransport)
+		return
+	}
+	rs.stageStarted = time.Now().UTC()
+	o.log.Info("sol watch reopened after stream drop",
+		"job_id", jobID,
+		"session_id", sessionID,
+		"reopen", rs.solReopens,
+	)
 }
 
 // advanceAfterPrepDone completes the prep stage and starts os_install (M2).
@@ -516,7 +589,8 @@ func (o *Orchestrator) advanceAfterPrepDone(jobID string) {
 		return
 	}
 	_ = o.store.UpdateStages(ctx, jobID, models.JobStageKindOSInstall, job.InstallStrategy, stages)
-	_ = o.store.UpdateProgress(ctx, jobID, "STAGE_ADVANCE", nil, 0, "prep done; starting os_install")
+	// Clear soft error from prior progress; phase only for observability.
+	_ = o.store.UpdateProgress(ctx, jobID, "STAGE_ADVANCE", nil, 0, "")
 
 	cred, err := o.secrets.Get(ctx, rs.credential)
 	if err != nil {
@@ -1125,6 +1199,21 @@ func (p *progressAdapter) ReportTransportError(ctx context.Context, jobID string
 	// Ignore stream close after DONE/cancel/stall already committed (e.g. guest poweroff).
 	if !p.stillProvisioning(ctx, jobID) {
 		return nil
+	}
+	// After stage handoff / ForceRestart, nested serial often drops once; reopen SOL.
+	p.orch.mu.Lock()
+	rs := p.orch.running[jobID]
+	p.orch.mu.Unlock()
+	if rs != nil && !rs.terminalQueued && rs.solReopens < rs.maxSOLReopens {
+		// Allow reopens for a couple of minutes after stage start.
+		if rs.stageStarted.IsZero() || time.Since(rs.stageStarted) < 2*time.Minute {
+			p.orch.log.Warn("sol stream closed early; reopening",
+				"job_id", jobID,
+				"reopen", rs.solReopens+1,
+			)
+			go p.orch.reopenSOL(jobID)
+			return nil
+		}
 	}
 	msg := "transport error"
 	if err != nil {

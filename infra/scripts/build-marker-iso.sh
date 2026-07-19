@@ -488,9 +488,13 @@ if [ "$MODE" = "prep" ]; then
   sync 2>/dev/null || true
   emit PREP_WIPE 100 OK "wipe finished target=${TARGET}"
   emit PREP_DONE 100 OK "prep complete ready for os install"
-  sleep 1
-  /bin/busybox poweroff -f 2>/dev/null || /bin/busybox reboot -f 2>/dev/null || true
-  while true; do sleep 3600; done
+  # Stay powered on with heartbeats so the orchestrator can swap Virtual Media
+  # and ForceRestart into the OS install ISO without losing the serial PTY
+  # (poweroff left nested libvirt serial unusable for the next stage).
+  while true; do
+    sleep 15
+    emit PREP_DONE - HEARTBEAT "awaiting os install media swap"
+  done
 fi
 
 if [ "$MODE" = "write" ] && [ -n "$PAYLOAD" ] && [ -f "$PAYLOAD" ]; then
