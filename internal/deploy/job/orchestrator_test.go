@@ -379,6 +379,77 @@ func TestOrchestratorOrphanReconcile(t *testing.T) {
 	}
 }
 
+func TestOrchestratorScriptedISOFlatcarDualMediaCoarse(t *testing.T) {
+	ctx := context.Background()
+	store := jobstore.NewMemory()
+	fakeBMC := redfish.NewFakeDualCD()
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	watch := sol.NewWatchService(log, nil)
+	watch.NewTransport = func(session models.WatchSession) sol.Transport {
+		return sol.NewReaderTransport(io.NopCloser(strings.NewReader("")))
+	}
+	orch := job.NewOrchestrator(job.Options{
+		Log: log, Store: store, Secrets: secrets.NewMemory(),
+		NewBMC:  func(cfg redfish.Config) (redfish.BMC, error) { return fakeBMC, nil },
+		Watches: watch, AuthMode: "basic", TLSMode: "off",
+	})
+	defer orch.Stop()
+	watch.SetProgress(orch.ProgressPort())
+
+	installURL := "http://iso/flatcar.iso"
+	seedURL := "http://iso/ignition.iso"
+	j, err := orch.Start(ctx, models.StartJobRequest{
+		DeviceID:        "flatcar-1",
+		BMCEndpoint:     "http://bmc.test",
+		BMCUsername:     "admin",
+		BMCPassword:     "secret",
+		ISOURL:          installURL,
+		InstallStrategy: models.InstallStrategyScriptedISO,
+		OsFamily:        models.OSFamilyFlatcar,
+		SeedDelivery:    models.SeedDeliverySecondMedia,
+		SeedISOURL:      seedURL,
+		StageTimeout:    80 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	imgs := fakeBMC.InsertedImages()
+	if len(imgs) != 2 {
+		t.Fatalf("want 2 inserts, got %v", imgs)
+	}
+	var foundInstall, foundSeed bool
+	for _, u := range imgs {
+		if u == installURL {
+			foundInstall = true
+		}
+		if u == seedURL {
+			foundSeed = true
+		}
+	}
+	if !foundInstall || !foundSeed {
+		t.Fatalf("expected install+ignition seed, got %v", imgs)
+	}
+	if j.InstallStrategy != models.InstallStrategyScriptedISO {
+		t.Fatalf("strategy=%s", j.InstallStrategy)
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	var final models.ProvisioningJob
+	for time.Now().Before(deadline) {
+		final, _ = store.Get(ctx, j.ID)
+		if final.State == models.StateProvisioned {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if final.State != models.StateProvisioned {
+		t.Fatalf("want provisioned, got %s err=%s phase=%s", final.State, final.Error, final.Phase)
+	}
+	if fakeBMC.MediaInserted() {
+		t.Fatal("cleanup should eject both media")
+	}
+}
+
 func TestOrchestratorOperatorISOCoarseDeadline(t *testing.T) {
 	ctx := context.Background()
 	store := jobstore.NewMemory()

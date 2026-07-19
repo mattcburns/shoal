@@ -699,6 +699,19 @@ boot override, transition job to failed/canceled. Same mandatory cleanup as toda
 - No `ignition.config.url=http://…`.
 - Progress may be coarse; verify stage important.
 
+**M4 implementation:**
+
+| Piece | Detail |
+|-------|--------|
+| Strategy | `install_strategy=scripted_iso`, `os_family=flatcar` |
+| Installer media | Operator-supplied Flatcar ISO (`iso_url`, BMC-reachable) |
+| Seed media | `infra/scripts/build-ignition-seed-iso.sh` → ISO with `config.ign` + `ignition/config.ign` (label `ignition`) |
+| Delivery | `seed_delivery=second_media` (or `auto` when ≥2 CD slots) |
+| Progress | Coarse stage deadline (same as M5); not install verification |
+| Fidelity | Nested sushy often 1 CD — dual-media unit-tested; stock Flatcar may need installer media that consumes offline Ignition (operator custom/cmdline); document gap |
+
+`config_drive` and `single_iso` remaster remain deferred.
+
 ### 7.4 VMware ESXi and Windows (same v1 boat)
 
 Both are **`operator_iso`** for the first product slice: operator builds the ready
@@ -803,7 +816,7 @@ Version media URLs when content changes (sushy cache lesson from 7a).
 | **M1** | Stage runner skeleton; single-stage compat with 7a image-write | **Implemented** (single `os_install` stage; job fields + API) |
 | **M2** | Prep v1: wipe + `PREP_*` + handoff to image-write Ubuntu | **Implemented** (event-driven `PREP_DONE` → os_install) |
 | **M3** | Offline seed preference #1 then #2: **second_media**, else **config_drive**, for Ubuntu NoCloud | **Implemented** (seed ISO builder + dual-media attach + `auto` resolve; `config_drive` rejected with `image_write`; config_drive write deferred) |
-| **M4** | Flatcar offline Ignition (same preference order) | Documented AC |
+| **M4** | Flatcar offline Ignition (same preference order) | **Implemented** (`scripted_iso` + Ignition seed ISO + second_media; coarse progress; config_drive deferred) |
 | **M5** | **`operator_iso`** path shared by ESXi + Windows shape (attach + boot + cleanup + coarse progress) | **Implemented** (coarse stage deadline → provisioned; SOL stall disabled; seed forbidden; esxi\|windows) |
 | **M6** | Profiles + `seed_delivery: auto` + Operator API §6 fields on `POST/GET /v1/jobs` | Happy path without ad-hoc flags; §6.9 ACs |
 | **Later** | Separate designs: ESXi/Windows ISO compose; optional Windows dual-media unattend; single_iso remaster polish | Out of this doc’s v1 slices |

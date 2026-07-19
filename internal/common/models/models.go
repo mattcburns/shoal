@@ -69,7 +69,7 @@ const (
 const (
 	InstallStrategySimulate    = "simulate"
 	InstallStrategyImageWrite  = "image_write"
-	InstallStrategyScriptedISO = "scripted_iso" // reserved; M4+
+	InstallStrategyScriptedISO = "scripted_iso" // M4: Flatcar/Ubuntu installer + offline seed
 	InstallStrategyOperatorISO = "operator_iso" // M5: ESXi/Windows operator media
 )
 

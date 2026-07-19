@@ -78,13 +78,49 @@ func TestExpandStagesWipeOnlyNeedsPrepURL(t *testing.T) {
 	}
 }
 
-func TestExpandStagesRejectsScriptedISO(t *testing.T) {
-	_, err := expandStages(models.StartJobRequest{
-		ISOURL:          "http://example/m.iso",
+func TestExpandStagesScriptedISOFlatcar(t *testing.T) {
+	stages, err := expandStages(models.StartJobRequest{
+		ISOURL:          "http://example/flatcar.iso",
 		InstallStrategy: models.InstallStrategyScriptedISO,
+		OsFamily:        models.OSFamilyFlatcar,
+		SeedDelivery:    models.SeedDeliverySecondMedia,
+		SeedISOURL:      "http://example/ignition.iso",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stages[0].Strategy != models.InstallStrategyScriptedISO {
+		t.Fatalf("strategy=%s", stages[0].Strategy)
+	}
+	if stages[0].Family != models.OSFamilyFlatcar {
+		t.Fatalf("family=%s", stages[0].Family)
+	}
+	if stages[0].SeedMediaURL != "http://example/ignition.iso" {
+		t.Fatalf("seed=%s", stages[0].SeedMediaURL)
+	}
+}
+
+func TestExpandStagesScriptedISOFlatcarNeedsSeed(t *testing.T) {
+	t.Setenv("SHOAL_SEED_ISO_URL", "")
+	_, err := expandStages(models.StartJobRequest{
+		ISOURL:          "http://example/flatcar.iso",
+		InstallStrategy: models.InstallStrategyScriptedISO,
+		OsFamily:        models.OSFamilyFlatcar,
+		SeedDelivery:    models.SeedDeliveryNone,
 	})
 	if err == nil {
-		t.Fatal("expected error")
+		t.Fatal("expected missing seed error")
+	}
+}
+
+func TestExpandStagesScriptedISORejectsESXi(t *testing.T) {
+	_, err := expandStages(models.StartJobRequest{
+		ISOURL:          "http://example/esxi.iso",
+		InstallStrategy: models.InstallStrategyScriptedISO,
+		OsFamily:        models.OSFamilyESXi,
+	})
+	if err == nil {
+		t.Fatal("expected esxi+scripted_iso error")
 	}
 }
 
