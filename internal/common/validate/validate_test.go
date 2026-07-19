@@ -86,11 +86,16 @@ func TestStartJobRequest(t *testing.T) {
 	if err := validate.StartJobRequest(build); err != nil {
 		t.Fatal(err)
 	}
-	// M1: prep wipe not allowed
+	// M2: prep wipe requires approve + prep ISO
 	prep := good
 	prep.Prep = "wipe_only"
 	if err := validate.StartJobRequest(prep); err == nil {
-		t.Fatal("expected prep wipe error")
+		t.Fatal("expected prep wipe without approve to fail")
+	}
+	prep.ApproveDestruct = true
+	prep.PrepISOURL = "http://lab:8080/shoal-prep.iso"
+	if err := validate.StartJobRequest(prep); err != nil {
+		t.Fatal(err)
 	}
 	prep.Prep = "skip"
 	if err := validate.StartJobRequest(prep); err != nil {

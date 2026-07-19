@@ -71,7 +71,9 @@ func cmdDeployRun(args []string) int {
 	cloudImg := fs.String("ubuntu-cloud-img", os.Getenv("SHOAL_UBUNTU_CLOUD_IMG"), "Ubuntu cloud image for autoinstall build (preferred)")
 	isoHostname := fs.String("iso-hostname", "", "autoinstall hostname when building")
 	installStrategy := fs.String("install-strategy", "", "simulate|image_write (M1); reserved: scripted_iso|operator_iso")
-	prep := fs.String("prep", "", "prep policy (M1: empty or skip only)")
+	prep := fs.String("prep", "", "skip (default) | wipe_only (M2 multi-stage prep)")
+	prepISO := fs.String("prep-iso-url", os.Getenv("SHOAL_PREP_ISO_URL"), "BMC-reachable prep live ISO (wipe_only)")
+	wipeLevel := fs.String("wipe-level", "", "discard|zero (baked into prep ISO at build; optional)")
 	sshHost := fs.String("serial-ssh-host", cfg.SerialSSHHost, "SSH host for nested libvirt serial (VM mode)")
 	sshUser := fs.String("serial-ssh-user", cfg.SerialSSHUser, "SSH user for serial delegate")
 	sshKey := fs.String("serial-ssh-key", cfg.SerialSSHKey, "SSH private key for serial delegate")
@@ -122,6 +124,8 @@ func cmdDeployRun(args []string) int {
 		ISOHostname:      *isoHostname,
 		InstallStrategy:  *installStrategy,
 		Prep:             *prep,
+		PrepISOURL:       *prepISO,
+		WipeLevel:        *wipeLevel,
 	}
 	// Cloud image is passed via env for the builder (StartJobRequest has no field yet for 7a.1).
 	if strings.TrimSpace(*cloudImg) != "" {

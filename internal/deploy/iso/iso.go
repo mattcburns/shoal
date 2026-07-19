@@ -17,6 +17,7 @@ const (
 	InstallModeSimulate    = "simulate"    // Phase 2 marker demo (default)
 	InstallModeWrite       = "write"       // Phase 6a: write /payload with real SOL progress
 	InstallModeAutoinstall = "autoinstall" // Phase 7a: Ubuntu autoinstall remaster
+	InstallModePrep        = "prep"        // M2: wipe disk + PREP_* markers
 )
 
 // BuildInput describes a live-image build request.
@@ -94,15 +95,18 @@ func (b *ScriptBuilder) Build(ctx context.Context, in BuildInput) (Artifact, err
 	if mode == "" {
 		mode = InstallModeSimulate
 	}
-	if mode != InstallModeSimulate && mode != InstallModeWrite && mode != InstallModeAutoinstall {
-		return Artifact{}, fmt.Errorf("iso: invalid install mode %q (want simulate|write|autoinstall)", mode)
+	if mode != InstallModeSimulate && mode != InstallModeWrite && mode != InstallModeAutoinstall && mode != InstallModePrep {
+		return Artifact{}, fmt.Errorf("iso: invalid install mode %q (want simulate|write|autoinstall|prep)", mode)
 	}
 
 	name := strings.TrimSpace(in.Name)
 	if name == "" {
-		if mode == InstallModeAutoinstall {
+		switch mode {
+		case InstallModeAutoinstall:
 			name = "shoal-ubuntu-autoinstall.iso"
-		} else {
+		case InstallModePrep:
+			name = "shoal-prep.iso"
+		default:
 			name = "shoal-marker.iso"
 		}
 	}
@@ -213,29 +217,34 @@ func (b *ScriptBuilder) Build(ctx context.Context, in BuildInput) (Artifact, err
 			return Artifact{}, fmt.Errorf("iso: autoinstall requires SHOAL_UBUNTU_CLOUD_IMG (preferred nested-lab path) or payload-file or SHOAL_UBUNTU_ISO")
 		}
 		// Payload: prefer file path (binary-safe); else inline text via env.
-		// Callers must not pass passwords.
-		if payloadFile != "" {
-			st, err := os.Stat(payloadFile)
-			if err != nil {
-				return Artifact{}, fmt.Errorf("iso: payload file: %w", err)
+		// Secrets must not be passed. Prep mode needs no payload.
+		if mode != InstallModePrep {
+			if payloadFile != "" {
+				st, err := os.Stat(payloadFile)
+				if err != nil {
+					return Artifact{}, fmt.Errorf("iso: payload file: %w", err)
+				}
+				if st.IsDir() {
+					return Artifact{}, fmt.Errorf("iso: payload file is a directory")
+				}
+				cmd.Env = append(cmd.Env, "SHOAL_PAYLOAD_FILE="+payloadFile)
+			} else if p := strings.TrimSpace(in.EmbeddedPayload); p != "" {
+				if looksSecretPayload(p) {
+					return Artifact{}, fmt.Errorf("iso: embedded_payload must not contain secret-like content")
+				}
+				cmd.Env = append(cmd.Env, "SHOAL_EMBEDDED_PAYLOAD="+p)
 			}
-			if st.IsDir() {
-				return Artifact{}, fmt.Errorf("iso: payload file is a directory")
-			}
-			cmd.Env = append(cmd.Env, "SHOAL_PAYLOAD_FILE="+payloadFile)
-		} else if p := strings.TrimSpace(in.EmbeddedPayload); p != "" {
-			if looksSecretPayload(p) {
-				return Artifact{}, fmt.Errorf("iso: embedded_payload must not contain secret-like content")
-			}
-			cmd.Env = append(cmd.Env, "SHOAL_EMBEDDED_PAYLOAD="+p)
 		}
 		if t := strings.TrimSpace(in.InstallTarget); t != "" {
 			cmd.Env = append(cmd.Env, "SHOAL_INSTALL_TARGET="+t)
-		} else if mode == InstallModeAutoinstall {
+		} else if mode == InstallModeAutoinstall || mode == InstallModePrep {
 			cmd.Env = append(cmd.Env, "SHOAL_INSTALL_TARGET=/dev/vda")
 		}
 		if mode == InstallModeAutoinstall {
 			cmd.Env = append(cmd.Env, "SHOAL_INSTALL_REBOOT=1")
+		}
+		if mode == InstallModePrep {
+			cmd.Env = append(cmd.Env, "SHOAL_INSTALL_REBOOT=0")
 		}
 	}
 

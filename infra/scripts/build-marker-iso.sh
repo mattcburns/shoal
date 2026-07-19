@@ -95,9 +95,9 @@ fi
 
 INSTALL_MODE="${SHOAL_INSTALL_MODE:-simulate}"
 case "$INSTALL_MODE" in
-  simulate|write|autoinstall) ;;
+  simulate|write|autoinstall|prep) ;;
   *)
-    echo "error: SHOAL_INSTALL_MODE must be simulate|write|autoinstall (got $INSTALL_MODE)" >&2
+    echo "error: SHOAL_INSTALL_MODE must be simulate|write|autoinstall|prep (got $INSTALL_MODE)" >&2
     exit 1
     ;;
 esac
@@ -111,9 +111,19 @@ if [[ "$INSTALL_MODE" == "autoinstall" ]]; then
     SHOAL_INSTALL_TARGET="/dev/vda"
   fi
 fi
-# Baked default target for write mode (can be overridden by kernel cmdline shoal.target=).
+# prep: wipe install disk and emit PREP_* markers (multi-stage M2); no OS payload.
+if [[ "$INSTALL_MODE" == "prep" ]]; then
+  if [[ -z "${SHOAL_INSTALL_TARGET:-}" ]]; then
+    SHOAL_INSTALL_TARGET="/dev/vda"
+  fi
+  # Power off after wipe so orchestrator can attach OS media cleanly.
+  SHOAL_INSTALL_REBOOT="${SHOAL_INSTALL_REBOOT:-0}"
+fi
+# Baked default target for write/prep mode (overridable via kernel cmdline shoal.target=).
 INSTALL_TARGET_DEFAULT="${SHOAL_INSTALL_TARGET:-}"
 INSTALL_REBOOT="${SHOAL_INSTALL_REBOOT:-0}"
+# Wipe style for prep: discard (try blkdiscard) or zero (dd first N MiB of disk).
+PREP_WIPE_LEVEL="${SHOAL_PREP_WIPE_LEVEL:-discard}"
 
 echo "kernel:  $KERNEL"
 echo "busybox: $BUSYBOX"
@@ -238,6 +248,7 @@ fi
 printf '%s\n' "$INSTALL_MODE" > "$ROOT/install_mode"
 printf '%s\n' "$INSTALL_TARGET_DEFAULT" > "$ROOT/install_target_default"
 printf '%s\n' "$INSTALL_REBOOT" > "$ROOT/install_reboot"
+printf '%s\n' "$PREP_WIPE_LEVEL" > "$ROOT/prep_wipe_level"
 
 # Init emits markers then powers off. console=ttyS0 from kernel cmdline.
 cat > "$ROOT/init" << 'INIT'
@@ -422,6 +433,66 @@ if [ -f /install_reboot ]; then
   REBOOT="$(cat /install_reboot 2>/dev/null | tr -d '\n' || echo 0)"
 fi
 
+WIPE_LEVEL="discard"
+if [ -f /prep_wipe_level ]; then
+  WIPE_LEVEL="$(cat /prep_wipe_level 2>/dev/null | tr -d '\n' || echo discard)"
+fi
+
+if [ "$MODE" = "prep" ]; then
+  emit PREP_BOOT 0 OK "prep live image started"
+  sleep 1
+  emit PREP_BOOT - HEARTBEAT ""
+  if [ -z "$TARGET" ]; then
+    for cand in /dev/vda /dev/sda /dev/nvme0n1; do
+      if [ -b "$cand" ]; then TARGET="$cand"; break; fi
+    done
+  fi
+  if [ -z "$TARGET" ] || [ ! -b "$TARGET" ]; then
+    emit ERROR 0 ERROR "prep: no wipe target block device"
+    sleep 2
+    /bin/busybox poweroff -f 2>/dev/null || true
+    while true; do sleep 3600; done
+  fi
+  emit PREP_WIPE 10 OK "wipe start target=${TARGET} level=${WIPE_LEVEL}"
+  wiped=0
+  if [ "$WIPE_LEVEL" = "discard" ]; then
+    # busybox may not have blkdiscard; try if present
+    if command -v blkdiscard >/dev/null 2>&1; then
+      if blkdiscard -f "$TARGET" 2>/dev/null; then
+        wiped=1
+        emit PREP_WIPE 80 OK "blkdiscard ok target=${TARGET}"
+      fi
+    fi
+  fi
+  if [ "$wiped" = "0" ]; then
+    # Destroy partition table + FS superblocks (first 64 MiB) — enough for reimage.
+    emit PREP_WIPE 30 OK "zeroing start of ${TARGET}"
+    (
+      while true; do
+        sleep 10
+        emit PREP_WIPE - HEARTBEAT "zeroing ${TARGET}"
+      done
+    ) &
+    HBPID=$!
+    if dd if=/dev/zero of="$TARGET" bs=1M count=64 conv=fsync 2>/dev/null; then
+      kill "$HBPID" 2>/dev/null || true
+      emit PREP_WIPE 90 OK "zeroed 64MiB target=${TARGET}"
+    else
+      kill "$HBPID" 2>/dev/null || true
+      emit ERROR 0 ERROR "prep wipe dd failed target=${TARGET}"
+      sleep 2
+      /bin/busybox poweroff -f 2>/dev/null || true
+      while true; do sleep 3600; done
+    fi
+  fi
+  sync 2>/dev/null || true
+  emit PREP_WIPE 100 OK "wipe finished target=${TARGET}"
+  emit PREP_DONE 100 OK "prep complete ready for os install"
+  sleep 1
+  /bin/busybox poweroff -f 2>/dev/null || /bin/busybox reboot -f 2>/dev/null || true
+  while true; do sleep 3600; done
+fi
+
 if [ "$MODE" = "write" ] && [ -n "$PAYLOAD" ] && [ -f "$PAYLOAD" ]; then
   emit DISK_PREP 5 OK "resolving install target"
   # Resolve write target.
@@ -566,7 +637,6 @@ CMDLINE="initrd=/boot/initrd.img console=ttyS0,115200n8 console=tty0 quiet shoal
 if [[ -n "$INSTALL_TARGET_DEFAULT" ]]; then
   CMDLINE="${CMDLINE} shoal.target=${INSTALL_TARGET_DEFAULT}"
 fi
-
 cat > "$ISO/boot/isolinux/isolinux.cfg" << CFG
 DEFAULT shoal
 PROMPT 0
@@ -579,6 +649,8 @@ CFG
 VOLID="SHOAL_MARKER"
 if [[ "$INSTALL_MODE" = "write" ]]; then
   VOLID="SHOAL_INSTALL"
+elif [[ "$INSTALL_MODE" = "prep" ]]; then
+  VOLID="SHOAL_PREP"
 fi
 
 mkdir -p "$(dirname "$OUT")"

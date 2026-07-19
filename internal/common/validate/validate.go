@@ -3,6 +3,7 @@ package validate
 
 import (
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/mattcburns/shoal/internal/common/models"
@@ -169,8 +170,28 @@ func StartJobRequest(r models.StartJobRequest) error {
 			return fmt.Errorf("validate: unknown install_strategy %q", s)
 		}
 	}
-	if p := strings.TrimSpace(strings.ToLower(r.Prep)); p != "" && p != "skip" {
-		return fmt.Errorf("validate: prep %q not implemented (M1 allows only skip)", r.Prep)
+	prep := strings.TrimSpace(strings.ToLower(r.Prep))
+	switch prep {
+	case "", "skip":
+		// ok
+	case "wipe_only":
+		if !r.ApproveDestruct {
+			return fmt.Errorf("validate: prep wipe_only requires approve_destruct")
+		}
+		prepISO := strings.TrimSpace(r.PrepISOURL)
+		if prepISO == "" {
+			prepISO = strings.TrimSpace(os.Getenv("SHOAL_PREP_ISO_URL"))
+		}
+		if prepISO == "" {
+			return fmt.Errorf("validate: prep wipe_only requires prep_iso_url or SHOAL_PREP_ISO_URL")
+		}
+	case "full":
+		return fmt.Errorf("validate: prep full not implemented (use wipe_only)")
+	default:
+		return fmt.Errorf("validate: unknown prep %q", r.Prep)
+	}
+	if w := strings.TrimSpace(strings.ToLower(r.WipeLevel)); w != "" && w != "discard" && w != "zero" {
+		return fmt.Errorf("validate: wipe_level must be discard or zero")
 	}
 	return nil
 }
