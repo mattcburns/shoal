@@ -237,13 +237,19 @@ type WatchSession struct {
 	ID           string        `json:"id"`
 	JobID        string        `json:"job_id"`
 	DeviceID     string        `json:"device_id"`
-	Transport    string        `json:"transport"` // "libvirt" | "redfish_sol" | "ipmi_sol"
-	Target       string        `json:"target"`    // console path or BMC URI
+	Transport    string        `json:"transport"` // "libvirt" | "redfish_sol"
+	Target       string        `json:"target"`    // console path (libvirt) or BMC base URL (redfish_sol)
 	StartedAt    time.Time     `json:"started_at"`
 	StallTimeout time.Duration `json:"stall_timeout"` // e.g. 90s; 0 = watch default
 	// StallDisabled skips the silence stall timer (M5 operator_iso coarse progress).
 	// Zero StallTimeout still means default when StallDisabled is false.
 	StallDisabled bool `json:"stall_disabled,omitempty"`
+	// RedfishSystemID selects the ComputerSystem when Transport == "redfish_sol"
+	// (a BMC base URL may host multiple systems). Empty = single-system BMC.
+	RedfishSystemID string `json:"redfish_system_id,omitempty"`
+	// CredentialRef resolves BMC username/password via the secrets backend when
+	// Transport == "redfish_sol". Never the raw secret (Golden Rule 3).
+	CredentialRef string `json:"credential_ref,omitempty"`
 }
 
 // DeviceIdentity is NetBox-facing identity fields.
@@ -264,10 +270,15 @@ type StartJobRequest struct {
 	BMCEndpoint string `json:"bmc_endpoint"`           // Redfish base URL
 	BMCUsername string `json:"bmc_username,omitempty"` // stored to secrets; not logged
 	BMCPassword string `json:"bmc_password,omitempty"` // stored to secrets; never returned
-	// SerialTarget is libvirt domain or SOL target. Optional for operator_iso (M5 coarse).
-	SerialTarget  string `json:"serial_target"`
-	SystemID      string `json:"system_id,omitempty"`
-	CredentialRef string `json:"credential_ref,omitempty"` // alt: pre-seeded secret (skip user/pass)
+	// SerialTarget is libvirt domain or SOL target. Optional for operator_iso (M5 coarse)
+	// and for serial_transport=redfish_sol (target is derived from BMCEndpoint instead).
+	SerialTarget string `json:"serial_target"`
+	// SerialTransport overrides the orchestrator's default serial transport for this
+	// job ("libvirt" | "redfish_sol"). Empty = orchestrator default (SHOAL_SERIAL_TRANSPORT,
+	// itself defaulting to "libvirt" so existing lab behavior is unchanged).
+	SerialTransport string `json:"serial_transport,omitempty"`
+	SystemID        string `json:"system_id,omitempty"`
+	CredentialRef   string `json:"credential_ref,omitempty"` // alt: pre-seeded secret (skip user/pass)
 	// StallTimeout is the SOL silence window before ReportStall (0 = Orchestrator default).
 	// Ignored for operator_iso (stall disabled under coarse progress).
 	StallTimeout time.Duration `json:"stall_timeout,omitempty"`

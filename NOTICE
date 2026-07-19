@@ -39,6 +39,11 @@ github.com/stmcginnis/gofish
   License:  BSD-3-Clause
   Copyright (c) 2019, Sean McGinnis
 
+github.com/coder/websocket
+  Version:  v1.8.12
+  License:  ISC
+  Copyright (c) 2023 Anmol Sethi <hi@nhooyr.io>
+
 golang.org/x/crypto
   Version:  v0.31.0
   License:  BSD-3-Clause

@@ -216,8 +216,16 @@ func StartJobRequest(r models.StartJobRequest) error {
 	strategy := strings.TrimSpace(r.InstallStrategy)
 	operatorISO := strategy == models.InstallStrategyOperatorISO
 	scriptedISO := strategy == models.InstallStrategyScriptedISO
-	// Coarse progress strategies may omit serial (operator_iso / scripted_iso).
-	if strings.TrimSpace(r.SerialTarget) == "" && !operatorISO && !scriptedISO {
+	serialTransport := strings.TrimSpace(r.SerialTransport)
+	switch serialTransport {
+	case "", "libvirt", "redfish_sol":
+	default:
+		return fmt.Errorf("validate: unknown serial_transport %q", serialTransport)
+	}
+	redfishSOL := serialTransport == "redfish_sol"
+	// Coarse progress strategies may omit serial (operator_iso / scripted_iso), as may
+	// redfish_sol (target is derived from bmc_endpoint, not serial_target).
+	if strings.TrimSpace(r.SerialTarget) == "" && !operatorISO && !scriptedISO && !redfishSOL {
 		return fmt.Errorf("validate: serial_target is required")
 	}
 	hasUserPass := r.BMCUsername != "" || r.BMCPassword != ""

@@ -52,21 +52,22 @@ const (
 
 // Orchestrator owns lifecycle transitions, BMC actions, and cleanup.
 type Orchestrator struct {
-	log           *slog.Logger
-	store         jobstore.Store
-	secrets       secrets.Backend
-	newBMC        redfish.Factory
-	watches       watchport.WatchRegistrar
-	netbox        netbox.LifecycleWriter // optional; identity lifecycle only
-	profiles      profile.Store          // optional; Phase 5b approval gate
-	isoBaseURL    string                 // Phase 5c: resolve profile iso_base → URL
-	isoBuilder    iso.Builder            // optional Phase 6a dynamic build
-	isoPublishDir string
-	isoDynamic    bool // SHOAL_ISO_DYNAMIC: build when ISOURL empty + publish configured
-	authMode      string
-	tlsMode       string
-	caFile        string
-	failOrphan    bool
+	log                    *slog.Logger
+	store                  jobstore.Store
+	secrets                secrets.Backend
+	newBMC                 redfish.Factory
+	watches                watchport.WatchRegistrar
+	netbox                 netbox.LifecycleWriter // optional; identity lifecycle only
+	profiles               profile.Store          // optional; Phase 5b approval gate
+	isoBaseURL             string                 // Phase 5c: resolve profile iso_base → URL
+	isoBuilder             iso.Builder            // optional Phase 6a dynamic build
+	isoPublishDir          string
+	isoDynamic             bool // SHOAL_ISO_DYNAMIC: build when ISOURL empty + publish configured
+	authMode               string
+	tlsMode                string
+	caFile                 string
+	failOrphan             bool
+	defaultSerialTransport string
 
 	mu       sync.Mutex
 	running  map[string]*runState // jobID -> state
@@ -130,6 +131,10 @@ type Options struct {
 	TLSMode             string
 	CAFile              string
 	ReconcileFailOrphan bool
+	// DefaultSerialTransport is the orchestrator-wide serial transport
+	// ("libvirt" | "redfish_sol") used when StartJobRequest.SerialTransport is
+	// empty. Empty here means "libvirt" (unchanged behavior).
+	DefaultSerialTransport string
 }
 
 // NewOrchestrator constructs an Orchestrator and starts the terminal worker.
@@ -150,24 +155,25 @@ func NewOrchestrator(opts Options) *Orchestrator {
 		tlsMode = "off"
 	}
 	o := &Orchestrator{
-		log:           log,
-		store:         opts.Store,
-		secrets:       opts.Secrets,
-		newBMC:        opts.NewBMC,
-		watches:       opts.Watches,
-		netbox:        opts.NetBox,
-		profiles:      opts.Profiles,
-		isoBaseURL:    opts.ISOBaseURL,
-		isoBuilder:    opts.ISOBuilder,
-		isoPublishDir: opts.ISOPublishDir,
-		isoDynamic:    opts.ISODynamic,
-		authMode:      auth,
-		tlsMode:       tlsMode,
-		caFile:        opts.CAFile,
-		failOrphan:    opts.ReconcileFailOrphan, // composition root passes config default true
-		running:       make(map[string]*runState),
-		terminal:      make(chan terminalEvent, 64),
-		stopCh:        make(chan struct{}),
+		log:                    log,
+		store:                  opts.Store,
+		secrets:                opts.Secrets,
+		newBMC:                 opts.NewBMC,
+		watches:                opts.Watches,
+		netbox:                 opts.NetBox,
+		profiles:               opts.Profiles,
+		isoBaseURL:             opts.ISOBaseURL,
+		isoBuilder:             opts.ISOBuilder,
+		isoPublishDir:          opts.ISOPublishDir,
+		isoDynamic:             opts.ISODynamic,
+		authMode:               auth,
+		tlsMode:                tlsMode,
+		caFile:                 opts.CAFile,
+		failOrphan:             opts.ReconcileFailOrphan, // composition root passes config default true
+		defaultSerialTransport: opts.DefaultSerialTransport,
+		running:                make(map[string]*runState),
+		terminal:               make(chan terminalEvent, 64),
+		stopCh:                 make(chan struct{}),
 	}
 	o.wg.Add(1)
 	go o.terminalLoop()
@@ -551,29 +557,46 @@ func (o *Orchestrator) startStage(ctx context.Context, job models.ProvisioningJo
 		_ = o.store.UpdateRuntime(ctx, job.ID, sys.ID, sessionID, rs.credential)
 	}
 
+	transport := o.resolveSerialTransport(req)
 	serialTarget := strings.TrimSpace(req.SerialTarget)
-	if serialTarget != "" {
+	target := serialTarget
+	redfishSystemID := ""
+	credRef := ""
+	switch transport {
+	case "redfish_sol":
+		target = req.BMCEndpoint
+		redfishSystemID = sys.ID
+		credRef = rs.credential
+	case "libvirt", "":
+		if serialTarget == "" && !coarse {
+			_ = bmc.CleanupMediaAndBoot(ctx, sys.ID)
+			return fmt.Errorf("serial_target is required for marker-based stages")
+		}
+	default:
+		_ = bmc.CleanupMediaAndBoot(ctx, sys.ID)
+		return fmt.Errorf("job: unsupported serial_transport %q", transport)
+	}
+	if target != "" {
 		stall := rs.stallTimeout
 		if stall <= 0 {
 			stall = DefaultSOLStall
 		}
 		session := models.WatchSession{
-			ID:            sessionID,
-			JobID:         job.ID,
-			DeviceID:      req.DeviceID,
-			Transport:     "libvirt",
-			Target:        serialTarget,
-			StartedAt:     time.Now().UTC(),
-			StallTimeout:  stall,
-			StallDisabled: coarse,
+			ID:              sessionID,
+			JobID:           job.ID,
+			DeviceID:        req.DeviceID,
+			Transport:       transport,
+			Target:          target,
+			RedfishSystemID: redfishSystemID,
+			CredentialRef:   credRef,
+			StartedAt:       time.Now().UTC(),
+			StallTimeout:    stall,
+			StallDisabled:   coarse,
 		}
 		if err := o.watches.Register(ctx, session); err != nil {
 			_ = bmc.CleanupMediaAndBoot(ctx, sys.ID)
 			return fmt.Errorf("register watch: %w", err)
 		}
-	} else if !coarse {
-		_ = bmc.CleanupMediaAndBoot(ctx, sys.ID)
-		return fmt.Errorf("serial_target is required for marker-based stages")
 	}
 	rs.stageStarted = time.Now().UTC()
 	rs.solReopens = 0
@@ -653,6 +676,20 @@ func (o *Orchestrator) armCoarseDeadline(jobID string, rs *runState, deadline ti
 func intPtr(n int) *int { return &n }
 
 // reopenSOL re-registers the SOL watch after an early stream drop (stage handoff).
+// resolveSerialTransport picks the serial transport for a job: the per-job
+// StartJobRequest.SerialTransport override wins when set, else the
+// orchestrator-wide default (Options.DefaultSerialTransport /
+// SHOAL_SERIAL_TRANSPORT), else "libvirt" (unchanged existing behavior).
+func (o *Orchestrator) resolveSerialTransport(req models.StartJobRequest) string {
+	if t := strings.TrimSpace(req.SerialTransport); t != "" {
+		return t
+	}
+	if o.defaultSerialTransport != "" {
+		return o.defaultSerialTransport
+	}
+	return "libvirt"
+}
+
 func (o *Orchestrator) reopenSOL(jobID string) {
 	o.mu.Lock()
 	rs := o.running[jobID]
@@ -683,14 +720,25 @@ func (o *Orchestrator) reopenSOL(jobID string) {
 	if stall <= 0 {
 		stall = DefaultSOLStall
 	}
+	transport := o.resolveSerialTransport(rs.req)
+	target := rs.serialTarget
+	redfishSystemID := ""
+	credRef := ""
+	if transport == "redfish_sol" {
+		target = rs.bmcURL
+		redfishSystemID = rs.systemID
+		credRef = rs.credential
+	}
 	session := models.WatchSession{
-		ID:           sessionID,
-		JobID:        jobID,
-		DeviceID:     rs.deviceID,
-		Transport:    "libvirt",
-		Target:       rs.serialTarget,
-		StartedAt:    time.Now().UTC(),
-		StallTimeout: stall,
+		ID:              sessionID,
+		JobID:           jobID,
+		DeviceID:        rs.deviceID,
+		Transport:       transport,
+		Target:          target,
+		RedfishSystemID: redfishSystemID,
+		CredentialRef:   credRef,
+		StartedAt:       time.Now().UTC(),
+		StallTimeout:    stall,
 	}
 	if err := o.watches.Register(context.Background(), session); err != nil {
 		o.log.Error("sol reopen failed", "job_id", jobID, "err", err.Error())

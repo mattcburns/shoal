@@ -19,6 +19,14 @@ type Transport interface {
 	Close() error
 }
 
+// errorTransport fails Open with a fixed error. Used for unrecognized
+// session.Transport values so unknown/unwired transports fail loudly instead
+// of silently running as libvirt (or anything else).
+type errorTransport struct{ err error }
+
+func (e *errorTransport) Open(context.Context, string) (<-chan string, error) { return nil, e.err }
+func (e *errorTransport) Close() error                                        { return nil }
+
 // ReaderTransport reads lines from an io.Reader (tests / injected pipes).
 type ReaderTransport struct {
 	mu     sync.Mutex
