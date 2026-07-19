@@ -39,6 +39,10 @@ type Config struct {
 	SerialSSHKey  string
 	// SerialSSHSudo runs remote virsh/cat with sudo -n (default true when host set).
 	SerialSSHSudo bool
+	// SerialTransport is the orchestrator-wide default serial transport
+	// ("libvirt" | "redfish_sol") when a job doesn't override it via
+	// StartJobRequest.SerialTransport. Default "libvirt" (unchanged behavior).
+	SerialTransport string
 	// FewShotDir is append-only learned few-shot JSONL storage (empty = learning disabled).
 	FewShotDir string
 	// ProfileDir is JSON profile store for Phase 5b (empty disables profile load/approve).
@@ -76,6 +80,7 @@ func Load() (Config, error) {
 		SerialSSHUser:        envOr("SHOAL_SERIAL_SSH_USER", "lab"),
 		SerialSSHKey:         envOr("SHOAL_SERIAL_SSH_KEY", ""),
 		SerialSSHSudo:        true,
+		SerialTransport:      strings.ToLower(envOr("SHOAL_SERIAL_TRANSPORT", "libvirt")),
 		FewShotDir:           os.Getenv("SHOAL_FEWSHOT_DIR"),
 		ProfileDir:           os.Getenv("SHOAL_PROFILE_DIR"),
 		APIToken:             os.Getenv("SHOAL_API_TOKEN"),
@@ -133,6 +138,11 @@ func (c Config) validateBasics() error {
 	}
 	if c.RedfishTLSMode == "custom_ca" && c.RedfishCAFile == "" {
 		return fmt.Errorf("config: SHOAL_REDFISH_CA_FILE required when TLS mode is custom_ca")
+	}
+	switch c.SerialTransport {
+	case "libvirt", "redfish_sol":
+	default:
+		return fmt.Errorf("config: invalid SHOAL_SERIAL_TRANSPORT %q", c.SerialTransport)
 	}
 	if c.AIProvider != "" {
 		switch c.AIProvider {

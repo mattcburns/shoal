@@ -3,6 +3,8 @@ package redfish
 import (
 	"context"
 	"fmt"
+	"io"
+	"strings"
 	"sync"
 )
 
@@ -31,6 +33,10 @@ type Fake struct {
 	// Screenshot is returned by CaptureScreenshot when set.
 	Screenshot    *Screenshot
 	ScreenshotErr error
+
+	// SOLStream / SOLErr are returned by OpenSOL when set.
+	SOLStream SOLStream
+	SOLErr    error
 }
 
 // NewFake returns a Fake with one system and one CD virtual media slot.
@@ -257,6 +263,28 @@ func (f *Fake) CaptureScreenshot(_ context.Context, _ string, kind ScreenshotKin
 			Message: "fake BMC has no screenshot (set Fake.Screenshot for tests)",
 		}},
 	}, fmt.Errorf("fake: screenshot not configured")
+}
+
+func (f *Fake) OpenSOL(_ context.Context, _ string) (SOLStream, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.SOLErr != nil {
+		return SOLStream{}, f.SOLErr
+	}
+	if f.SOLStream.ReadCloser == nil {
+		return SOLStream{}, fmt.Errorf("fake: SOL not configured (set Fake.SOLStream for tests)")
+	}
+	return f.SOLStream, nil
+}
+
+// NewFakeSOLLines returns a SOLStream that yields the given lines (each
+// newline-terminated) from an in-memory reader — a test helper for OpenSOL
+// consumers that don't need to drive a live io.Pipe.
+func NewFakeSOLLines(kind SOLConnectKind, lines ...string) SOLStream {
+	return SOLStream{
+		ReadCloser: io.NopCloser(strings.NewReader(strings.Join(lines, "\n") + "\n")),
+		Kind:       kind,
+	}
 }
 
 // MediaInserted reports whether any media is inserted (test helper).

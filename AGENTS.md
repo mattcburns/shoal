@@ -281,6 +281,7 @@ go run ./cmd/shoal deploy run \
 | `SHOAL_FEWSHOT_DIR` | Append-only learned few-shot JSONL (confirm learning). Lab Ansible default: `/var/lib/shoal/fewshot` via `shoal_fewshot_dir` + `env.j2`. Empty disables confirm |
 | `SHOAL_PROFILE_DIR` | JSON provisioning profiles + approval records (Phase 5b). Lab Ansible default: `/var/lib/shoal/profiles` via `shoal_profile_dir` + `env.j2`. Empty disables non-spike profile load |
 | `SHOAL_API_TOKEN` | Phase 6d: if non-empty, require `Authorization: Bearer …` for `/v1/*`. Empty = open (lab default). Never log. |
+| `SHOAL_SERIAL_TRANSPORT` | `libvirt` (default, unchanged lab behavior) \| `redfish_sol`. Orchestrator-wide default; `StartJobRequest.serial_transport` overrides per job. Real-hardware only; see `docs/real-hardware-sol-runbook.md`. |
 
 
 Full table and Ansible extension points: design doc §8.1.
@@ -422,7 +423,12 @@ Live-server remaster (`SHOAL_UBUNTU_ISO`) is alternate/stretch. **7b/7c deferred
   Leaving them set bricks the next boot.
 - **SOL ownership:** Observe holds the single SOL session for a node during a
   job (register via `watchport`). Lab uses libvirt serial; real hardware uses
-  Redfish/IPMI SOL transports behind `sol.Transport`.
+  the `redfish_sol` transport (`internal/observe/sol/redfish_transport.go` +
+  `internal/common/redfish/sol.go`) behind `sol.Transport`. **Redfish only —
+  never raw IPMI**, even for BMCs that only advertise IPMI SOL. `redfish_sol`
+  is unit-tested only (sushy-tools has no SOL); see
+  `docs/real-hardware-sol-runbook.md` before relying on it against real
+  hardware.
 - Capture real Redfish responses into the **record/replay corpus**
   (`testdata/redfish/`) when you hit a new vendor/firmware shape, and add a
   fixture-based test. Pin gofish version in `go.mod`.

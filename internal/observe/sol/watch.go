@@ -49,7 +49,11 @@ func NewWatchService(log *slog.Logger, progress jobport.JobProgress) *WatchServi
 			case "libvirt", "":
 				return &LibvirtTransport{}
 			default:
-				return &LibvirtTransport{}
+				// Unrecognized transport (including "redfish_sol" when the
+				// composition root hasn't wired a real factory, or any
+				// legacy/typo value) must fail loudly rather than silently
+				// tailing a libvirt console that doesn't exist.
+				return &errorTransport{err: fmt.Errorf("sol: unsupported serial transport %q", session.Transport)}
 			}
 		},
 	}

@@ -1151,6 +1151,8 @@ Implementation notes:
 | `github.com/stmcginnis/gofish` | runtime (required) | Redfish sessions, Virtual Media, boot override, power — adopted **day one** so Phase 2 is not blocked on a greenfield Redfish client. Wrapped behind `internal/common/redfish`; types do not leak to call sites. |
 | `github.com/jackc/pgx/v5` | runtime (default) | Postgres driver for lab telemetry/jobs DB on `:5433` |
 | `modernc.org/sqlite` | runtime (optional demo) | Pure-Go SQLite if someone runs without Compose; not required for lab ACs |
+| `github.com/coder/websocket` | runtime (required) | Real Redfish SOL transport: native WebSocket SOL dial for recognized BMC vendors (`internal/common/redfish/sol.go`); gofish has no client-side streaming/WebSocket support. Context-native `Read`/`Close` fits the cancellation-bounded `sol.Transport` contract. |
+| `golang.org/x/crypto` (`ssh` subpackage) | runtime (required) | Real Redfish SOL transport: SSH fallback for `OpenSOL` when — and only when — Redfish's own capability metadata (`ComputerSystem.SerialConsole.SSH`) advertises SSH, using password auth against BMC credentials. Was already an indirect transitive dependency (pulled in by gofish/pgx); promoted to direct use in `internal/common/redfish/sol.go`. Never used for raw IPMI. |
 | `honnef.co/go/tools/cmd/staticcheck` | toolchain | Static analysis beyond `go vet`; not linked into binary |
 
 **Toolchain install (AGENTS / CI):**

@@ -188,12 +188,21 @@ func cmdServe(args []string) int {
 		// Wire Orchestrator so cancel works and orphans are reconciled on boot.
 		secretBackend := openSecrets(cfg)
 		watchSvc := sol.NewWatchService(log, nil)
-		watchSvc.NewTransport = sol.NewTransportFactory(sol.SSHSerialConfig{
-			Host:    cfg.SerialSSHHost,
-			User:    cfg.SerialSSHUser,
-			KeyPath: cfg.SerialSSHKey,
-			UseSudo: cfg.SerialSSHSudo,
-		})
+		watchSvc.NewTransport = sol.NewCombinedTransportFactory(
+			sol.RedfishSOLConfig{
+				NewBMC:   redfish.NewBMC,
+				Secrets:  secretBackend,
+				AuthMode: cfg.RedfishAuthMode,
+				TLSMode:  cfg.RedfishTLSMode,
+				CAFile:   cfg.RedfishCAFile,
+			},
+			sol.SSHSerialConfig{
+				Host:    cfg.SerialSSHHost,
+				User:    cfg.SerialSSHUser,
+				KeyPath: cfg.SerialSSHKey,
+				UseSudo: cfg.SerialSSHSudo,
+			},
+		)
 		var nb netbox.LifecycleWriter
 		if cfg.NetBoxURL != "" && cfg.NetBoxToken != "" {
 			nb = netbox.New(cfg.NetBoxURL, cfg.NetBoxToken)
@@ -208,20 +217,21 @@ func cmdServe(args []string) int {
 			}
 		}
 		orchOpts := job.Options{
-			Log:                 log,
-			Store:               store,
-			Secrets:             secretBackend,
-			NewBMC:              redfish.NewBMC,
-			Watches:             watchSvc,
-			NetBox:              nb,
-			Profiles:            profStore,
-			ISOBaseURL:          cfg.ISOBaseURL,
-			ISOPublishDir:       cfg.ISOPublishDir,
-			ISODynamic:          cfg.ISODynamic,
-			AuthMode:            cfg.RedfishAuthMode,
-			TLSMode:             cfg.RedfishTLSMode,
-			CAFile:              cfg.RedfishCAFile,
-			ReconcileFailOrphan: cfg.ReconcileFailOrphans,
+			Log:                    log,
+			Store:                  store,
+			Secrets:                secretBackend,
+			NewBMC:                 redfish.NewBMC,
+			Watches:                watchSvc,
+			NetBox:                 nb,
+			Profiles:               profStore,
+			ISOBaseURL:             cfg.ISOBaseURL,
+			ISOPublishDir:          cfg.ISOPublishDir,
+			ISODynamic:             cfg.ISODynamic,
+			AuthMode:               cfg.RedfishAuthMode,
+			TLSMode:                cfg.RedfishTLSMode,
+			CAFile:                 cfg.RedfishCAFile,
+			ReconcileFailOrphan:    cfg.ReconcileFailOrphans,
+			DefaultSerialTransport: cfg.SerialTransport,
 		}
 		if cfg.ISOPublishDir != "" && cfg.ISOBaseURL != "" {
 			orchOpts.ISOBuilder = iso.NewScriptBuilder(cfg.ISOBuildScript, log)

@@ -78,6 +78,7 @@ func cmdDeployRun(args []string) int {
 	seedISO := fs.String("seed-iso-url", os.Getenv("SHOAL_SEED_ISO_URL"), "BMC-reachable seed ISO (NoCloud or Ignition)")
 	osFamily := fs.String("os-family", "", "ubuntu|flatcar|esxi|windows")
 	stageTimeout := fs.Duration("stage-timeout", 0, "coarse wait for operator_iso/scripted_iso (default 60m)")
+	serialTransport := fs.String("serial-transport", cfg.SerialTransport, "libvirt|redfish_sol serial transport (see docs/real-hardware-sol-runbook.md)")
 	sshHost := fs.String("serial-ssh-host", cfg.SerialSSHHost, "SSH host for nested libvirt serial (VM mode)")
 	sshUser := fs.String("serial-ssh-user", cfg.SerialSSHUser, "SSH user for serial delegate")
 	sshKey := fs.String("serial-ssh-key", cfg.SerialSSHKey, "SSH private key for serial delegate")
@@ -117,6 +118,7 @@ func cmdDeployRun(args []string) int {
 		BMCUsername:      *bmcUser,
 		BMCPassword:      *bmcPass,
 		SerialTarget:     *serial,
+		SerialTransport:  *serialTransport,
 		SystemID:         *systemID,
 		StallTimeout:     *stallTimeout,
 		ApproveDestruct:  *approveDestruct,
@@ -153,12 +155,21 @@ func cmdDeployRun(args []string) int {
 
 	// Wire Observe watch service with progress from orchestrator (two-step inject).
 	watchSvc := sol.NewWatchService(log, nil)
-	watchSvc.NewTransport = sol.NewTransportFactory(sol.SSHSerialConfig{
-		Host:    cfg.SerialSSHHost,
-		User:    cfg.SerialSSHUser,
-		KeyPath: cfg.SerialSSHKey,
-		UseSudo: cfg.SerialSSHSudo,
-	})
+	watchSvc.NewTransport = sol.NewCombinedTransportFactory(
+		sol.RedfishSOLConfig{
+			NewBMC:   redfish.NewBMC,
+			Secrets:  secretBackend,
+			AuthMode: cfg.RedfishAuthMode,
+			TLSMode:  cfg.RedfishTLSMode,
+			CAFile:   cfg.RedfishCAFile,
+		},
+		sol.SSHSerialConfig{
+			Host:    cfg.SerialSSHHost,
+			User:    cfg.SerialSSHUser,
+			KeyPath: cfg.SerialSSHKey,
+			UseSudo: cfg.SerialSSHSudo,
+		},
+	)
 	var nb netbox.LifecycleWriter
 	if cfg.NetBoxURL != "" && cfg.NetBoxToken != "" {
 		nb = netbox.New(cfg.NetBoxURL, cfg.NetBoxToken)
@@ -177,21 +188,22 @@ func cmdDeployRun(args []string) int {
 		isoBuilder = iso.NewScriptBuilder(cfg.ISOBuildScript, log)
 	}
 	orch := job.NewOrchestrator(job.Options{
-		Log:                 log,
-		Store:               store,
-		Secrets:             secretBackend,
-		NewBMC:              redfish.NewBMC,
-		Watches:             watchSvc,
-		NetBox:              nb,
-		Profiles:            profStore,
-		ISOBaseURL:          cfg.ISOBaseURL,
-		ISOBuilder:          isoBuilder,
-		ISOPublishDir:       cfg.ISOPublishDir,
-		ISODynamic:          cfg.ISODynamic,
-		AuthMode:            cfg.RedfishAuthMode,
-		TLSMode:             cfg.RedfishTLSMode,
-		CAFile:              cfg.RedfishCAFile,
-		ReconcileFailOrphan: cfg.ReconcileFailOrphans,
+		Log:                    log,
+		Store:                  store,
+		Secrets:                secretBackend,
+		NewBMC:                 redfish.NewBMC,
+		Watches:                watchSvc,
+		NetBox:                 nb,
+		Profiles:               profStore,
+		ISOBaseURL:             cfg.ISOBaseURL,
+		ISOBuilder:             isoBuilder,
+		ISOPublishDir:          cfg.ISOPublishDir,
+		ISODynamic:             cfg.ISODynamic,
+		AuthMode:               cfg.RedfishAuthMode,
+		TLSMode:                cfg.RedfishTLSMode,
+		CAFile:                 cfg.RedfishCAFile,
+		ReconcileFailOrphan:    cfg.ReconcileFailOrphans,
+		DefaultSerialTransport: cfg.SerialTransport,
 	})
 	defer orch.Stop()
 	watchSvc.SetProgress(orch.ProgressPort())
@@ -314,27 +326,37 @@ func cmdDeployCancel(args []string) int {
 	// Cancel needs a live orchestrator with BMC factory for cleanup.
 	secretBackend := openSecrets(cfg)
 	watchSvc := sol.NewWatchService(log, nil)
-	watchSvc.NewTransport = sol.NewTransportFactory(sol.SSHSerialConfig{
-		Host:    cfg.SerialSSHHost,
-		User:    cfg.SerialSSHUser,
-		KeyPath: cfg.SerialSSHKey,
-		UseSudo: cfg.SerialSSHSudo,
-	})
+	watchSvc.NewTransport = sol.NewCombinedTransportFactory(
+		sol.RedfishSOLConfig{
+			NewBMC:   redfish.NewBMC,
+			Secrets:  secretBackend,
+			AuthMode: cfg.RedfishAuthMode,
+			TLSMode:  cfg.RedfishTLSMode,
+			CAFile:   cfg.RedfishCAFile,
+		},
+		sol.SSHSerialConfig{
+			Host:    cfg.SerialSSHHost,
+			User:    cfg.SerialSSHUser,
+			KeyPath: cfg.SerialSSHKey,
+			UseSudo: cfg.SerialSSHSudo,
+		},
+	)
 	var nb netbox.LifecycleWriter
 	if cfg.NetBoxURL != "" && cfg.NetBoxToken != "" {
 		nb = netbox.New(cfg.NetBoxURL, cfg.NetBoxToken)
 	}
 	orch := job.NewOrchestrator(job.Options{
-		Log:                 log,
-		Store:               store,
-		Secrets:             secretBackend,
-		NewBMC:              redfish.NewBMC,
-		Watches:             watchSvc,
-		NetBox:              nb,
-		AuthMode:            cfg.RedfishAuthMode,
-		TLSMode:             cfg.RedfishTLSMode,
-		CAFile:              cfg.RedfishCAFile,
-		ReconcileFailOrphan: cfg.ReconcileFailOrphans,
+		Log:                    log,
+		Store:                  store,
+		Secrets:                secretBackend,
+		NewBMC:                 redfish.NewBMC,
+		Watches:                watchSvc,
+		NetBox:                 nb,
+		AuthMode:               cfg.RedfishAuthMode,
+		TLSMode:                cfg.RedfishTLSMode,
+		CAFile:                 cfg.RedfishCAFile,
+		ReconcileFailOrphan:    cfg.ReconcileFailOrphans,
+		DefaultSerialTransport: cfg.SerialTransport,
 	})
 	defer orch.Stop()
 	watchSvc.SetProgress(orch.ProgressPort())

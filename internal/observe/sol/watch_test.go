@@ -169,3 +169,35 @@ func TestWatchServiceStall(t *testing.T) {
 	}
 	t.Fatal("stall not reported")
 }
+
+// TestWatchServiceDefaultTransportRejectsUnknown proves the default
+// NewTransport factory (used when a caller never wires a combinator) fails
+// loudly for an unrecognized session.Transport instead of silently tailing a
+// libvirt console that doesn't exist.
+func TestWatchServiceDefaultTransportRejectsUnknown(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	prog := &recordingProgress{}
+	w := sol.NewWatchService(log, prog) // default NewTransport, not overridden
+
+	err := w.Register(context.Background(), models.WatchSession{
+		ID: "s1", JobID: "j1", DeviceID: "d1",
+		Transport: "redfish_sol", Target: "x",
+		StallTimeout: time.Minute,
+	})
+	if err == nil {
+		t.Fatal("expected error for unwired redfish_sol transport, got nil")
+	}
+	if w.ActiveCount() != 0 {
+		t.Fatalf("expected no active watch after failed Open, got %d", w.ActiveCount())
+	}
+
+	// A legacy/typo value must also fail, never silently fall back to libvirt.
+	err = w.Register(context.Background(), models.WatchSession{
+		ID: "s2", JobID: "j2", DeviceID: "d2",
+		Transport: "ipmi_sol", Target: "x",
+		StallTimeout: time.Minute,
+	})
+	if err == nil {
+		t.Fatal("expected error for ipmi_sol transport, got nil")
+	}
+}
