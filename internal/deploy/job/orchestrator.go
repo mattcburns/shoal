@@ -219,13 +219,10 @@ func (o *Orchestrator) Get(ctx context.Context, jobID string) (models.Provisioni
 // When NetBox is configured, best-effort lifecycle_state=provisioning is written
 // (failure is logged and does not block BMC actions).
 // Profiles with NeedsApproval/DestructSteps require store approval or ApproveDestruct.
-// When ISOURL is empty and a non-spike profile is loaded, iso_base is resolved via
-// SHOAL_ISO_BASE_URL (Phase 5c). Optional BuildISO / SHOAL_ISO_DYNAMIC builds and
-// publishes a live image first (Phase 6a).
+// M6: non-spike profiles fill empty strategy/prep/seed/family/media fields before validate.
+// When ISOURL is empty, media_url / iso_base resolve via SHOAL_ISO_BASE_URL (Phase 5c).
+// Optional BuildISO / SHOAL_ISO_DYNAMIC builds and publishes a live image first (Phase 6a).
 func (o *Orchestrator) Start(ctx context.Context, req models.StartJobRequest) (models.ProvisioningJob, error) {
-	if err := validate.StartJobRequest(req); err != nil {
-		return models.ProvisioningJob{}, err
-	}
 	if o.watches == nil {
 		return models.ProvisioningJob{}, fmt.Errorf("job: watch registrar not configured")
 	}
@@ -234,12 +231,35 @@ func (o *Orchestrator) Start(ctx context.Context, req models.StartJobRequest) (m
 	if profileRef == "" {
 		profileRef = "spike"
 	}
+	req.ProfileRef = profileRef
+
+	// M6: apply profile defaults before validation so profile-only starts work.
+	var prof models.ProvisioningProfile
+	if profileRef != "" && profileRef != "spike" {
+		if o.profiles == nil {
+			return models.ProvisioningJob{}, fmt.Errorf("job: profile %q requires SHOAL_PROFILE_DIR (profile store not configured)", profileRef)
+		}
+		rec, err := o.profiles.Get(ctx, profileRef)
+		if err != nil {
+			return models.ProvisioningJob{}, fmt.Errorf("job: load profile %q: %w", profileRef, err)
+		}
+		prof = rec.Profile
+		applyProfileDefaults(&req, prof)
+		if err := resolveProfileURLs(&req, prof, o.isoBaseURL); err != nil {
+			return models.ProvisioningJob{}, err
+		}
+	}
+
+	if err := validate.StartJobRequest(req); err != nil {
+		return models.ProvisioningJob{}, err
+	}
 	if err := o.checkProfileApproval(ctx, profileRef, req.ApproveDestruct); err != nil {
 		return models.ProvisioningJob{}, err
 	}
 	if err := o.maybeBuildISO(ctx, &req, profileRef); err != nil {
 		return models.ProvisioningJob{}, err
 	}
+	// Legacy resolve if still empty (iso_base only path when media_url not used).
 	if err := o.resolveISOURL(ctx, &req, profileRef); err != nil {
 		return models.ProvisioningJob{}, err
 	}

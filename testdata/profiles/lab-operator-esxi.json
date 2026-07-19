@@ -1,0 +1,10 @@
+{
+  "ref": "lab-operator-esxi",
+  "media_url": "http://192.168.124.1:8080/esxi-custom.iso",
+  "os_family": "esxi",
+  "install_strategy": "operator_iso",
+  "seed_delivery": "none",
+  "prep": "skip",
+  "stage_timeout": "60m",
+  "needs_approval": false
+}

@@ -1,0 +1,9 @@
+{
+  "ref": "lab-ubuntu-image-write",
+  "iso_base": "shoal-ubuntu-m1-test",
+  "os_family": "ubuntu",
+  "install_strategy": "image_write",
+  "seed_delivery": "none",
+  "prep": "skip",
+  "needs_approval": false
+}

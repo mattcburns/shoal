@@ -193,14 +193,31 @@ type ProfileRequirements struct {
 }
 
 // ProvisioningProfile is a schema-validated AI or operator profile.
+// Multi-stage M6 fields fill StartJobRequest defaults when the request omits them
+// (request wins when non-empty).
 type ProvisioningProfile struct {
 	Ref              string   `json:"ref"`
-	ISOBase          string   `json:"iso_base"`
+	ISOBase          string   `json:"iso_base,omitempty"` // basename or URL; required unless MediaURL set
 	EmbeddedPayload  string   `json:"embedded_payload,omitempty"`
 	PostInstallSteps []string `json:"post_install_steps,omitempty"`
 	// DestructSteps require AllowDestruct + explicit operator approval before Deploy runs them.
 	DestructSteps []string `json:"destruct_steps,omitempty"`
 	NeedsApproval bool     `json:"needs_approval"`
+
+	// Multi-stage defaults (M6).
+	OSFamily        string `json:"os_family,omitempty"`        // ubuntu | flatcar | esxi | windows
+	InstallStrategy string `json:"install_strategy,omitempty"` // simulate | image_write | scripted_iso | operator_iso
+	SeedDelivery    string `json:"seed_delivery,omitempty"`    // none | auto | second_media | config_drive
+	SeedISOBase     string `json:"seed_iso_base,omitempty"`    // resolve via SHOAL_ISO_BASE_URL
+	SeedISOURL      string `json:"seed_iso_url,omitempty"`     // full BMC-reachable seed URL
+	Prep            string `json:"prep,omitempty"`             // skip | wipe_only
+	WipeLevel       string `json:"wipe_level,omitempty"`       // discard | zero
+	PrepISOBase     string `json:"prep_iso_base,omitempty"`
+	PrepISOURL      string `json:"prep_iso_url,omitempty"`
+	MediaURL        string `json:"media_url,omitempty"`    // full install ISO URL (preferred over iso_base resolve)
+	ISOHostname     string `json:"iso_hostname,omitempty"` // optional hostname for builds
+	// StageTimeout is a Go duration string for coarse paths (e.g. "60m").
+	StageTimeout string `json:"stage_timeout,omitempty"`
 }
 
 // DeviceStatus is the Observe aggregate view.
