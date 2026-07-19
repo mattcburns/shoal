@@ -5,10 +5,13 @@ services:
     # sushy-emulator reads its settings from a Python config file mounted at
     # /root/sushy/conf.py; the SUSHY_TOOLS_* environment variables are not used
     # by this image.
+    # libvirt: need the socket for domain ops; images dir for Virtual Media ISO files
+    # written into the default storage pool (nested nodes must already have empty CD trays).
     volumes:
       - {{ shoal_sushy_dir }}/conf.py:/root/sushy/conf.py:ro
       - {{ shoal_sushy_dir }}/auth.htpasswd:/root/sushy/auth.htpasswd:ro
-      - /var/run/libvirt:/var/run/libvirt:ro
+      - /var/run/libvirt:/var/run/libvirt
+      - /var/lib/libvirt/images:/var/lib/libvirt/images
     ports:
       - "{{ shoal_sushy_port }}:{{ shoal_sushy_port }}"
     restart: unless-stopped

@@ -27,6 +27,21 @@
       <source file='/var/lib/libvirt/images/{{ node.name }}.qcow2'/>
       <target dev='vda' bus='virtio'/>
     </disk>
+    {# Empty CD tray for Redfish Virtual Media (sushy InsertMedia / change-media). #}
+    <disk type='file' device='cdrom'>
+      <driver name='qemu' type='raw'/>
+      <target dev='sda' bus='sata'/>
+      <readonly/>
+    </disk>
+{% if shoal_lab_node_dual_cd | default(false) | bool %}
+    {# Optional second tray for seed_delivery=second_media lab smoke. #}
+    <disk type='file' device='cdrom'>
+      <driver name='qemu' type='raw'/>
+      <target dev='sdb' bus='sata'/>
+      <readonly/>
+    </disk>
+{% endif %}
+    <controller type='sata' index='0'/>
     <interface type='network'>
       <mac address='{{ node.mac }}'/>
       <source network='shoal-lab-net'/>

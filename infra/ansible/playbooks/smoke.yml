@@ -159,6 +159,39 @@
         loop_var: res
         label: "{{ res.node.name }}"
 
+    # Nested domains need an empty CD tray for sushy Virtual Media (no CD hotplug).
+    - name: Check nested node empty CD tray for Virtual Media
+      ansible.builtin.shell: |
+        set -e
+        xml="$(virsh dumpxml {{ node.name }})"
+        echo "$xml" | grep -q "device='cdrom'"
+      args:
+        executable: /bin/bash
+      loop: "{{ shoal_bmc_nodes }}"
+      loop_control:
+        loop_var: node
+        label: "{{ node.name }}"
+      delegate_to: "{{ shoal_serial_delegate }}"
+      become: true
+      environment:
+        LIBVIRT_DEFAULT_URI: qemu:///system
+      register: smoke_cdrom
+      changed_when: false
+      failed_when: false
+
+    - name: Assert every nested node has a CD-ROM device
+      ansible.builtin.assert:
+        that:
+          - res.rc == 0
+        fail_msg: >-
+          No empty CD tray on {{ res.node.name }}. Re-run lab_up / libvirt_lab so
+          vm-node.xml.j2 includes device=cdrom (required for sushy InsertMedia).
+        success_msg: "CD tray present for Virtual Media on {{ res.node.name }}"
+      loop: "{{ smoke_cdrom.results }}"
+      loop_control:
+        loop_var: res
+        label: "{{ res.node.name }}"
+
     - name: Assert HTTP dependency checks
       ansible.builtin.assert:
         that:

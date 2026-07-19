@@ -29,12 +29,23 @@
     src: docker-compose.sushy.yml.j2
     dest: "{{ shoal_sushy_dir }}/docker-compose.sushy.yml"
     mode: '0644'
+  register: sushy_compose_file
   tags: [compose]
+
+- name: Recreate sushy-tools when compose volumes/config change
+  shell: |
+    cd {{ shoal_sushy_dir }}
+    docker compose -f docker-compose.sushy.yml up -d --force-recreate
+  when: sushy_compose_file.changed
+  register: sushy_recreate
+  changed_when: true
+  tags: [start, compose]
 
 - name: Start sushy-tools container
   shell: |
     cd {{ shoal_sushy_dir }}
     docker compose -f docker-compose.sushy.yml up -d
+  when: not sushy_compose_file.changed
   register: sushy_start
   changed_when: >
     'Creating' in ((sushy_start.stdout | default('')) ~ (sushy_start.stderr | default('')))
