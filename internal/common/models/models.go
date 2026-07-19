@@ -241,8 +241,12 @@ type StartJobRequest struct {
 	ISOHostname string `json:"iso_hostname,omitempty"`
 	// InstallStrategy is optional: simulate | image_write (M1). Other values reserved.
 	InstallStrategy string `json:"install_strategy,omitempty"`
-	// Prep is optional prep policy. M1 only allows empty or "skip"; wipe_only/full rejected.
+	// Prep is optional: skip (default) | wipe_only (M2 multi-stage prep).
 	Prep string `json:"prep,omitempty"`
+	// PrepISOURL is the BMC-reachable prep live ISO (required when prep=wipe_only unless SHOAL_PREP_ISO_URL).
+	PrepISOURL string `json:"prep_iso_url,omitempty"`
+	// WipeLevel is discard (prefer blkdiscard) or zero (dd first 64MiB). Prep only.
+	WipeLevel string `json:"wipe_level,omitempty"`
 }
 
 // CancelJobRequest cancels an in-flight provisioning job.

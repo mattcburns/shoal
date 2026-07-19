@@ -78,12 +78,26 @@ type runState struct {
 	sessionID  string
 	credential string
 	bmcURL     string
+	// serialTarget / stallTimeout / deviceID retained for stage advance (M2).
+	serialTarget string
+	stallTimeout time.Duration
+	deviceID     string
+	// req is the original start request (needed to re-enter startStage after prep).
+	// Credentials live in secrets backend; password fields must never be logged.
+	req models.StartJobRequest
 	// terminalQueued is set under Orchestrator.mu so only the first terminal
 	// reason (cancel, DONE, stall, transport, …) is accepted. Without this,
 	// Unregister-driven stream close races cancel and can win with "sol transport error".
 	terminalQueued bool
 	// terminalOnce ensures HandleTerminal runs once
 	terminalOnce sync.Once
+	// advanceOnce ensures PREP_DONE only advances once.
+	advanceOnce sync.Once
+	// stageStarted is when the current stage's SOL watch was registered.
+	// Early stream closes (domain reboot after media swap) are retried.
+	stageStarted  time.Time
+	solReopens    int
+	maxSOLReopens int
 }
 
 type terminalEvent struct {
@@ -276,12 +290,20 @@ func (o *Orchestrator) Start(ctx context.Context, req models.StartJobRequest) (m
 	o.syncNetBoxLifecycle(ctx, req.DeviceID, models.StateProvisioning)
 
 	jobCtx, cancel := context.WithCancel(context.Background())
+	stall := req.StallTimeout
+	if stall <= 0 {
+		stall = DefaultSOLStall
+	}
 	rs := &runState{
-		cancel:     cancel,
-		systemID:   req.SystemID,
-		credential: credRef,
-		bmcURL:     req.BMCEndpoint,
-		sessionID:  sessionID,
+		cancel:       cancel,
+		systemID:     req.SystemID,
+		credential:   credRef,
+		bmcURL:       req.BMCEndpoint,
+		sessionID:    sessionID,
+		serialTarget: req.SerialTarget,
+		stallTimeout: stall,
+		deviceID:     req.DeviceID,
+		req:          req,
 	}
 	o.mu.Lock()
 	o.running[jobID] = rs
@@ -304,8 +326,8 @@ func (o *Orchestrator) Start(ctx context.Context, req models.StartJobRequest) (m
 	return out, nil
 }
 
-// provision runs the multi-stage job loop. M1 always has one os_install stage
-// (image_write/simulate media attach). Later slices add prep media swap.
+// provision expands stages and starts only the first stage. Later stages start
+// when ApplyMarker sees PREP_DONE (M2 event-driven advance).
 func (o *Orchestrator) provision(ctx context.Context, job models.ProvisioningJob, req models.StartJobRequest, cred secrets.Credential, rs *runState) error {
 	stages := job.Stages
 	if len(stages) == 0 {
@@ -319,49 +341,39 @@ func (o *Orchestrator) provision(ctx context.Context, job models.ProvisioningJob
 	if strategy == "" && len(stages) > 0 {
 		strategy = stages[0].Strategy
 	}
-
-	for i := range stages {
-		st := stages[i]
-		stages = setStageState(stages, st.ID, models.JobStageStateRunning, "STARTING", "")
-		if err := o.store.UpdateStages(ctx, job.ID, st.ID, strategy, stages); err != nil {
-			return fmt.Errorf("persist stages: %w", err)
-		}
-		o.log.Info("stage start",
-			"job_id", job.ID,
-			"stage", st.ID,
-			"kind", st.Kind,
-			"strategy", st.Strategy,
-		)
-
-		var stageErr error
-		switch st.Kind {
-		case models.JobStageKindOSInstall:
-			stageErr = o.runOSInstallStage(ctx, job, req, cred, rs, st)
-		default:
-			stageErr = fmt.Errorf("job: stage kind %q not implemented", st.Kind)
-		}
-		if stageErr != nil {
-			stages = setStageState(stages, st.ID, models.JobStageStateFailed, "ERROR", stageErr.Error())
-			_ = o.store.UpdateStages(ctx, job.ID, st.ID, strategy, stages)
-			return stageErr
-		}
-		// M1: os_install returns after SOL watch is registered; terminal DONE is async.
-		// Mark stage running with WAITING_SOL; HandleTerminal finalizes the job.
-		stages = setStageState(stages, st.ID, models.JobStageStateRunning, "WAITING_SOL", "")
-		_ = o.store.UpdateStages(ctx, job.ID, st.ID, strategy, stages)
+	if err := o.store.UpdateStages(ctx, job.ID, stages[0].ID, strategy, stages); err != nil {
+		return fmt.Errorf("persist stages: %w", err)
 	}
-	return nil
+	job.Stages = stages
+	job.CurrentStage = stages[0].ID
+	job.InstallStrategy = strategy
+	return o.startStage(ctx, job, req, cred, rs, 0)
 }
 
-// runOSInstallStage attaches Virtual Media, boots once from CD, and registers SOL watch.
-// Terminal DONE is handled asynchronously via ApplyMarker → HandleTerminal (M1: job-terminal).
-func (o *Orchestrator) runOSInstallStage(ctx context.Context, job models.ProvisioningJob, req models.StartJobRequest, cred secrets.Credential, rs *runState, stage models.JobStage) error {
+// startStage attaches stage media, boots CD once, and registers SOL watch.
+func (o *Orchestrator) startStage(ctx context.Context, job models.ProvisioningJob, req models.StartJobRequest, cred secrets.Credential, rs *runState, idx int) error {
+	if idx < 0 || idx >= len(job.Stages) {
+		return fmt.Errorf("job: invalid stage index %d", idx)
+	}
+	stage := job.Stages[idx]
+	strategy := job.InstallStrategy
+	stages := setStageState(job.Stages, stage.ID, models.JobStageStateRunning, "STARTING", "")
+	if err := o.store.UpdateStages(ctx, job.ID, stage.ID, strategy, stages); err != nil {
+		return fmt.Errorf("persist stages: %w", err)
+	}
+	o.log.Info("stage start",
+		"job_id", job.ID,
+		"stage", stage.ID,
+		"kind", stage.Kind,
+		"strategy", stage.Strategy,
+	)
+
 	mediaURL := strings.TrimSpace(stage.MediaURL)
-	if mediaURL == "" {
+	if mediaURL == "" && stage.Kind == models.JobStageKindOSInstall {
 		mediaURL = strings.TrimSpace(req.ISOURL)
 	}
 	if mediaURL == "" {
-		return fmt.Errorf("os_install: media_url is empty")
+		return fmt.Errorf("%s: media_url is empty", stage.Kind)
 	}
 
 	bmc, err := o.newBMC(redfish.Config{
@@ -381,14 +393,12 @@ func (o *Orchestrator) runOSInstallStage(ctx context.Context, job models.Provisi
 	}
 	defer func() { _ = bmc.Close(context.Background()) }()
 
-	// Prefer explicit SystemID; else match Redfish Name to DeviceID (lab: shoal-node-1).
 	lookup := req.SystemID
 	if lookup == "" {
 		lookup = req.DeviceID
 	}
 	sys, err := bmc.GetSystem(ctx, lookup)
 	if err != nil {
-		// Last resort: if DeviceID lookup failed and SystemID was empty, try empty only when single system.
 		if req.SystemID == "" && req.DeviceID != "" {
 			sys, err = bmc.GetSystem(ctx, "")
 		}
@@ -397,10 +407,12 @@ func (o *Orchestrator) runOSInstallStage(ctx context.Context, job models.Provisi
 		}
 	}
 	rs.systemID = sys.ID
-	// Persist runtime coords so a different process can cancel/orphan-cleanup.
 	if err := o.store.UpdateRuntime(ctx, job.ID, sys.ID, rs.sessionID, rs.credential); err != nil {
 		return fmt.Errorf("persist runtime: %w", err)
 	}
+
+	// Best-effort eject previous media before insert (stage handoff).
+	_ = bmc.CleanupMediaAndBoot(ctx, sys.ID)
 
 	vms, err := bmc.ListVirtualMedia(ctx, sys.ID)
 	if err != nil {
@@ -416,23 +428,43 @@ func (o *Orchestrator) runOSInstallStage(ctx context.Context, job models.Provisi
 	if err := bmc.SetBootOverrideOnceCD(ctx, sys.ID); err != nil {
 		return fmt.Errorf("boot override: %w", err)
 	}
-	// Prefer ForceRestart so an already-on system reboots into the new media.
-	// Fall back to On for powered-off domains (sushy maps both onto libvirt).
 	if err := bmc.Power(ctx, sys.ID, "ForceRestart"); err != nil {
 		if err2 := bmc.Power(ctx, sys.ID, "On"); err2 != nil {
 			return fmt.Errorf("power on/restart: %w (also: %v)", err2, err)
 		}
 	}
+	// After media swap / ForceRestart, give nested serial a moment to settle.
+	settle := 2 * time.Second
+	if idx > 0 {
+		settle = 8 * time.Second
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(settle):
+	}
 
-	_ = o.store.UpdateProgress(ctx, job.ID, "WAITING_SOL", nil, 0, "")
+	phase := "WAITING_SOL"
+	if stage.Kind == models.JobStageKindPrep {
+		phase = "PREP_BOOT"
+	}
+	_ = o.store.UpdateProgress(ctx, job.ID, phase, nil, 0, "")
+	stages = setStageState(stages, stage.ID, models.JobStageStateRunning, phase, "")
+	_ = o.store.UpdateStages(ctx, job.ID, stage.ID, strategy, stages)
 
-	stall := req.StallTimeout
+	stall := rs.stallTimeout
 	if stall <= 0 {
-		// Live ISO boot can take well over 90s before the first marker.
 		stall = DefaultSOLStall
 	}
+	// New session id per stage so Unregister of previous stage does not race.
+	sessionID := rs.sessionID
+	if idx > 0 {
+		sessionID = "sol-" + job.ID + "-s" + fmt.Sprintf("%d", idx)
+		rs.sessionID = sessionID
+		_ = o.store.UpdateRuntime(ctx, job.ID, sys.ID, sessionID, rs.credential)
+	}
 	session := models.WatchSession{
-		ID:           rs.sessionID,
+		ID:           sessionID,
 		JobID:        job.ID,
 		DeviceID:     req.DeviceID,
 		Transport:    "libvirt",
@@ -440,22 +472,141 @@ func (o *Orchestrator) runOSInstallStage(ctx context.Context, job models.Provisi
 		StartedAt:    time.Now().UTC(),
 		StallTimeout: stall,
 	}
-	_ = o.store.UpdateProgress(ctx, job.ID, "WAITING_SOL", nil, 0, "")
-
 	if err := o.watches.Register(ctx, session); err != nil {
 		_ = bmc.CleanupMediaAndBoot(ctx, sys.ID)
 		return fmt.Errorf("register watch: %w", err)
 	}
-	o.log.Info("job started",
+	rs.stageStarted = time.Now().UTC()
+	rs.solReopens = 0
+	if rs.maxSOLReopens == 0 {
+		rs.maxSOLReopens = 4
+	}
+	o.log.Info("stage media attached",
 		"job_id", job.ID,
 		"device_id", job.DeviceID,
 		"bmc", req.BMCEndpoint,
 		"iso_url", mediaURL,
 		"stage", stage.ID,
-		"strategy", stage.Strategy,
-		// never log password
+		"kind", stage.Kind,
 	)
 	return nil
+}
+
+// reopenSOL re-registers the SOL watch after an early stream drop (stage handoff).
+func (o *Orchestrator) reopenSOL(jobID string) {
+	o.mu.Lock()
+	rs := o.running[jobID]
+	o.mu.Unlock()
+	if rs == nil {
+		return
+	}
+	if rs.terminalQueued {
+		return
+	}
+	job, err := o.store.Get(context.Background(), jobID)
+	if err != nil || job.State != models.StateProvisioning {
+		return
+	}
+	// Unregister current session if any.
+	if rs.sessionID != "" && o.watches != nil {
+		_ = o.watches.Unregister(context.Background(), rs.sessionID)
+	}
+	time.Sleep(4 * time.Second)
+	if rs.terminalQueued {
+		return
+	}
+	rs.solReopens++
+	sessionID := fmt.Sprintf("sol-%s-r%d", jobID, rs.solReopens)
+	rs.sessionID = sessionID
+	_ = o.store.UpdateRuntime(context.Background(), jobID, rs.systemID, sessionID, rs.credential)
+	stall := rs.stallTimeout
+	if stall <= 0 {
+		stall = DefaultSOLStall
+	}
+	session := models.WatchSession{
+		ID:           sessionID,
+		JobID:        jobID,
+		DeviceID:     rs.deviceID,
+		Transport:    "libvirt",
+		Target:       rs.serialTarget,
+		StartedAt:    time.Now().UTC(),
+		StallTimeout: stall,
+	}
+	if err := o.watches.Register(context.Background(), session); err != nil {
+		o.log.Error("sol reopen failed", "job_id", jobID, "err", err.Error())
+		o.enqueueTerminal(jobID, ReasonTransport)
+		return
+	}
+	rs.stageStarted = time.Now().UTC()
+	o.log.Info("sol watch reopened after stream drop",
+		"job_id", jobID,
+		"session_id", sessionID,
+		"reopen", rs.solReopens,
+	)
+}
+
+// advanceAfterPrepDone completes the prep stage and starts os_install (M2).
+func (o *Orchestrator) advanceAfterPrepDone(jobID string) {
+	o.mu.Lock()
+	rs := o.running[jobID]
+	o.mu.Unlock()
+	if rs == nil {
+		o.log.Warn("prep advance: no runState", "job_id", jobID)
+		return
+	}
+	var run bool
+	rs.advanceOnce.Do(func() { run = true })
+	if !run {
+		return
+	}
+
+	ctx := context.Background()
+	job, err := o.store.Get(ctx, jobID)
+	if err != nil {
+		o.log.Error("prep advance get job", "job_id", jobID, "err", err.Error())
+		return
+	}
+	if job.CurrentStage != models.JobStageKindPrep && job.CurrentStage != "" {
+		// Allow empty current during race; still require a prep stage present.
+		if stageIndex(job.Stages, models.JobStageKindPrep) < 0 {
+			return
+		}
+	}
+	if job.State != models.StateProvisioning {
+		return
+	}
+
+	// Unregister prep SOL session.
+	if rs.sessionID != "" && o.watches != nil {
+		_ = o.watches.Unregister(ctx, rs.sessionID)
+	}
+
+	// Mark prep done.
+	stages := setStageState(job.Stages, models.JobStageKindPrep, models.JobStageStateDone, "PREP_DONE", "")
+	osIdx := stageIndex(stages, models.JobStageKindOSInstall)
+	if osIdx < 0 {
+		o.enqueueTerminal(jobID, ReasonMarkerError)
+		return
+	}
+	_ = o.store.UpdateStages(ctx, jobID, models.JobStageKindOSInstall, job.InstallStrategy, stages)
+	// Clear soft error from prior progress; phase only for observability.
+	_ = o.store.UpdateProgress(ctx, jobID, "STAGE_ADVANCE", nil, 0, "")
+
+	cred, err := o.secrets.Get(ctx, rs.credential)
+	if err != nil {
+		o.log.Error("prep advance secrets", "job_id", jobID, "err", err.Error())
+		o.enqueueTerminal(jobID, ReasonBMC)
+		return
+	}
+	job.Stages = stages
+	job.CurrentStage = models.JobStageKindOSInstall
+	req := rs.req
+	if err := o.startStage(ctx, job, req, cred, rs, osIdx); err != nil {
+		o.log.Error("os_install start after prep failed", "job_id", jobID, "err", err.Error())
+		stages = setStageState(stages, models.JobStageKindOSInstall, models.JobStageStateFailed, "ERROR", err.Error())
+		_ = o.store.UpdateStages(ctx, jobID, models.JobStageKindOSInstall, job.InstallStrategy, stages)
+		o.enqueueTerminal(jobID, ReasonBMC)
+	}
 }
 
 func pickCDMedia(vms []redfish.VirtualMedia) string {
@@ -1002,7 +1153,33 @@ func (p *progressAdapter) ApplyMarker(ctx context.Context, jobID string, m model
 	if err := p.orch.store.UpdateProgress(ctx, jobID, phase, m.Percent, m.Seq, soft); err != nil {
 		return err
 	}
+	// Best-effort stage phase mirror.
+	if j, err := p.orch.store.Get(ctx, jobID); err == nil && j.CurrentStage != "" && len(j.Stages) > 0 {
+		stages := setStageState(j.Stages, j.CurrentStage, models.JobStageStateRunning, phase, soft)
+		_ = p.orch.store.UpdateStages(ctx, jobID, j.CurrentStage, j.InstallStrategy, stages)
+	}
+
+	// M2: PREP_DONE advances to os_install — not a job-terminal event.
+	if strings.EqualFold(m.Phase, "PREP_DONE") && (m.State == "OK" || m.State == "") {
+		job, err := p.orch.store.Get(ctx, jobID)
+		if err == nil && (job.CurrentStage == models.JobStageKindPrep || stageIndex(job.Stages, models.JobStageKindPrep) >= 0) {
+			// If DONE-shaped marker on prep only: advance when still on prep.
+			if job.CurrentStage == models.JobStageKindPrep || job.CurrentStage == "" {
+				go p.orch.advanceAfterPrepDone(jobID)
+				return nil
+			}
+		}
+	}
+
 	if sol.IsTerminal(m) {
+		// DONE during prep stage is a misbehaving image — fail the job.
+		if strings.EqualFold(m.Phase, "DONE") {
+			if j, err := p.orch.store.Get(ctx, jobID); err == nil && j.CurrentStage == models.JobStageKindPrep {
+				_ = p.orch.store.UpdateProgress(ctx, jobID, "ERROR", nil, m.Seq, "DONE during prep stage")
+				p.orch.enqueueTerminal(jobID, ReasonMarkerError)
+				return nil
+			}
+		}
 		reason := TerminalReason(sol.TerminalReasonFromMarker(m))
 		p.orch.enqueueTerminal(jobID, reason)
 	}
@@ -1022,6 +1199,21 @@ func (p *progressAdapter) ReportTransportError(ctx context.Context, jobID string
 	// Ignore stream close after DONE/cancel/stall already committed (e.g. guest poweroff).
 	if !p.stillProvisioning(ctx, jobID) {
 		return nil
+	}
+	// After stage handoff / ForceRestart, nested serial often drops once; reopen SOL.
+	p.orch.mu.Lock()
+	rs := p.orch.running[jobID]
+	p.orch.mu.Unlock()
+	if rs != nil && !rs.terminalQueued && rs.solReopens < rs.maxSOLReopens {
+		// Allow reopens for a couple of minutes after stage start.
+		if rs.stageStarted.IsZero() || time.Since(rs.stageStarted) < 2*time.Minute {
+			p.orch.log.Warn("sol stream closed early; reopening",
+				"job_id", jobID,
+				"reopen", rs.solReopens+1,
+			)
+			go p.orch.reopenSOL(jobID)
+			return nil
+		}
 	}
 	msg := "transport error"
 	if err != nil {

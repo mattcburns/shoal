@@ -410,6 +410,41 @@ go run ./cmd/shoal deploy iso build \
 Cloud image-write typically finishes in a few minutes once media is attached;
 live autoinstall (if used) can take 20–60+ minutes on nested CPU.
 
+### Multi-stage M2: prep wipe then OS install
+
+One job can run a **prep** stage (wipe disk + `PREP_*` SOL markers) then advance to
+**os_install** (cloud image-write ISO). Requires M2 binary and two media URLs.
+
+**Build prep ISO (L1):**
+
+```bash
+sudo env SHOAL_INSTALL_MODE=prep SHOAL_INSTALL_TARGET=/dev/vda \
+  SHOAL_ISO_NAME=shoal-prep.iso \
+  ./infra/scripts/build-marker-iso.sh /srv/iso/shoal-prep.iso
+```
+
+**Deploy wipe + install** (operator host; approve wipe):
+
+```bash
+go run ./cmd/shoal deploy run \
+  -device-id shoal-node-1 \
+  -bmc-url http://192.168.122.100:8001 \
+  -bmc-user admin -bmc-pass password \
+  -serial-target shoal-node-1 \
+  -serial-ssh-host 192.168.122.100 \
+  -serial-ssh-user lab \
+  -serial-ssh-key "$HOME/.ssh/shoal_lab_vm" \
+  -prep wipe_only \
+  -approve-destruct \
+  -prep-iso-url http://192.168.124.1:8080/shoal-prep.iso \
+  -iso-url http://192.168.124.1:8080/shoal-ubuntu-m1-test.iso \
+  -install-strategy image_write \
+  -stall-timeout 15m -wait-timeout 30m -wait
+```
+
+`PREP_DONE` does **not** complete the job; only the final install `DONE` yields
+`provisioned`. Status JSON shows `current_stage` moving from `prep` → `os_install`.
+
 ### Phase 6b: graphics failure-screen OCR
 
 SOL remains the primary progress channel. Graphics OCR is **diagnostic only**.

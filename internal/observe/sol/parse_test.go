@@ -82,4 +82,18 @@ func TestIsTerminal(t *testing.T) {
 	}
 }
 
+func TestIsStageComplete(t *testing.T) {
+	m, ok := sol.ParseLine("SHOAL|1|1|2026-06-19T04:11:02Z|PREP_DONE|100|OK|ready")
+	if !ok || sol.IsTerminal(m) {
+		t.Fatal("PREP_DONE must not be job-terminal")
+	}
+	if !sol.IsStageComplete(m) {
+		t.Fatal("PREP_DONE must be stage-complete")
+	}
+	m, ok = sol.ParseLine("SHOAL|1|2|2026-06-19T04:11:02Z|DONE|100|OK|x")
+	if !ok || !sol.IsStageComplete(m) {
+		t.Fatal("DONE should be stage-complete")
+	}
+}
+
 func intPtr(v int) *int { return &v }

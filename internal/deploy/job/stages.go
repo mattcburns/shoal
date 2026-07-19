@@ -2,38 +2,62 @@ package job
 
 import (
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/mattcburns/shoal/internal/common/models"
 	"github.com/mattcburns/shoal/internal/deploy/iso"
 )
 
-// expandStages derives the stage list for a StartJobRequest (multi-stage design M1).
-// M1 always returns a single os_install stage; multi-stage expansion lands in M2+.
+// expandStages derives the stage list for a StartJobRequest (multi-stage design).
+// M1: single os_install. M2: optional prep wipe + os_install.
 func expandStages(req models.StartJobRequest) ([]models.JobStage, error) {
-	if p := strings.TrimSpace(strings.ToLower(req.Prep)); p != "" && p != "skip" {
-		return nil, fmt.Errorf("job: prep %q not implemented (M1 allows only skip)", req.Prep)
-	}
 	strategy, err := resolveInstallStrategy(req)
 	if err != nil {
 		return nil, err
 	}
-	// M1: scripted_iso / operator_iso are accepted by validate but not expanded yet.
 	switch strategy {
 	case models.InstallStrategyScriptedISO, models.InstallStrategyOperatorISO:
-		return nil, fmt.Errorf("job: install_strategy %q not implemented in M1 (use image_write or simulate)", strategy)
+		return nil, fmt.Errorf("job: install_strategy %q not implemented (use image_write or simulate)", strategy)
 	}
 
-	media := strings.TrimSpace(req.ISOURL)
-	stage := models.JobStage{
+	installMedia := strings.TrimSpace(req.ISOURL)
+	osStage := models.JobStage{
 		ID:           models.JobStageKindOSInstall,
 		Kind:         models.JobStageKindOSInstall,
 		Strategy:     strategy,
-		MediaURL:     media,
+		MediaURL:     installMedia,
 		SeedDelivery: "none",
 		State:        models.JobStageStatePending,
 	}
-	return []models.JobStage{stage}, nil
+
+	prep := strings.TrimSpace(strings.ToLower(req.Prep))
+	switch prep {
+	case "", "skip":
+		return []models.JobStage{osStage}, nil
+	case "wipe_only":
+		prepURL := strings.TrimSpace(req.PrepISOURL)
+		if prepURL == "" {
+			prepURL = strings.TrimSpace(os.Getenv("SHOAL_PREP_ISO_URL"))
+		}
+		if prepURL == "" {
+			return nil, fmt.Errorf("job: prep wipe_only requires prep_iso_url or SHOAL_PREP_ISO_URL")
+		}
+		if installMedia == "" {
+			return nil, fmt.Errorf("job: prep wipe_only requires iso_url for os_install stage")
+		}
+		prepStage := models.JobStage{
+			ID:       models.JobStageKindPrep,
+			Kind:     models.JobStageKindPrep,
+			MediaURL: prepURL,
+			State:    models.JobStageStatePending,
+		}
+		return []models.JobStage{prepStage, osStage}, nil
+	case "full":
+		return nil, fmt.Errorf("job: prep full not implemented (use wipe_only)")
+	default:
+		return nil, fmt.Errorf("job: unknown prep %q", req.Prep)
+	}
 }
 
 func resolveInstallStrategy(req models.StartJobRequest) (string, error) {
@@ -47,7 +71,6 @@ func resolveInstallStrategy(req models.StartJobRequest) (string, error) {
 	case iso.InstallModeSimulate:
 		return models.InstallStrategySimulate, nil
 	case "":
-		// Default: treat as image_write-compatible media attach (7a cloud ISO, marker write, etc.).
 		return models.InstallStrategyImageWrite, nil
 	default:
 		return models.InstallStrategyImageWrite, nil
@@ -71,4 +94,14 @@ func setStageState(stages []models.JobStage, id, state, phase, errMsg string) []
 		}
 	}
 	return out
+}
+
+// stageIndex returns the index of stage id, or -1.
+func stageIndex(stages []models.JobStage, id string) int {
+	for i := range stages {
+		if stages[i].ID == id {
+			return i
+		}
+	}
+	return -1
 }

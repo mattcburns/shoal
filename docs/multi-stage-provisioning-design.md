@@ -801,7 +801,7 @@ Version media URLs when content changes (sushy cache lesson from 7a).
 |-------|-------------|-----|
 | **M0** | This design merged | Docs only |
 | **M1** | Stage runner skeleton; single-stage compat with 7a image-write | **Implemented** (single `os_install` stage; job fields + API) |
-| **M2** | Prep v1: wipe + `PREP_*` + handoff to image-write Ubuntu | Nested E2E |
+| **M2** | Prep v1: wipe + `PREP_*` + handoff to image-write Ubuntu | **Implemented** (event-driven `PREP_DONE` → os_install) |
 | **M3** | Offline seed preference #1 then #2: **second_media**, else **config_drive**, for Ubuntu NoCloud | Lab or hardware AC; no HTTP seed |
 | **M4** | Flatcar offline Ignition (same preference order) | Documented AC |
 | **M5** | **`operator_iso`** path shared by ESXi + Windows shape (attach + boot + cleanup + coarse progress) | Hardware preferred |

@@ -92,6 +92,20 @@ func IsTerminal(m models.SOLMarker) bool {
 	return false
 }
 
+// IsStageComplete reports whether the marker ends the current stage's SOL session
+// without ending the job (e.g. multi-stage PREP_DONE). Watch must stop cleanly
+// so Unregister/stream close does not surface as a transport error.
+func IsStageComplete(m models.SOLMarker) bool {
+	if IsTerminal(m) {
+		return true
+	}
+	if strings.EqualFold(m.Phase, "PREP_DONE") && (m.State == "OK" || m.State == "" || m.State == "HEARTBEAT") {
+		// PREP_DONE is emitted with state OK from the prep image.
+		return m.State == "OK" || m.State == ""
+	}
+	return false
+}
+
 // TerminalReasonFromMarker maps a terminal marker to a reason string used by Deploy.
 func TerminalReasonFromMarker(m models.SOLMarker) string {
 	if strings.EqualFold(m.Phase, "DONE") && m.State == "OK" {

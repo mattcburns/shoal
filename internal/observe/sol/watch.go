@@ -202,10 +202,10 @@ func (w *WatchService) run(ctx context.Context, aw *activeWatch, lines <-chan st
 			if err := progress.ApplyMarker(context.Background(), aw.session.JobID, m); err != nil {
 				w.log.Error("apply marker failed", "job_id", aw.session.JobID, "err", err.Error())
 			}
-			// Terminal markers: orchestrator is notified via jobport; stop the
-			// watch loop so guest poweroff does not race as a transport error and
-			// so Unregister is not stuck draining a dead serial stream.
-			if IsTerminal(m) {
+			// Stage-complete or job-terminal markers: stop the watch loop so
+			// guest poweroff / Unregister does not race as a transport error.
+			// PREP_DONE is stage-complete only (job continues on next media).
+			if IsStageComplete(m) {
 				return
 			}
 		}

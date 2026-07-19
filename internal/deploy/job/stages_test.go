@@ -47,13 +47,34 @@ func TestExpandStagesSimulate(t *testing.T) {
 	}
 }
 
-func TestExpandStagesRejectsPrepWipe(t *testing.T) {
+func TestExpandStagesWipeOnly(t *testing.T) {
+	stages, err := expandStages(models.StartJobRequest{
+		ISOURL:     "http://example/os.iso",
+		PrepISOURL: "http://example/prep.iso",
+		Prep:       "wipe_only",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stages) != 2 {
+		t.Fatalf("len=%d", len(stages))
+	}
+	if stages[0].Kind != models.JobStageKindPrep || stages[0].MediaURL != "http://example/prep.iso" {
+		t.Fatalf("prep %+v", stages[0])
+	}
+	if stages[1].Kind != models.JobStageKindOSInstall || stages[1].MediaURL != "http://example/os.iso" {
+		t.Fatalf("os %+v", stages[1])
+	}
+}
+
+func TestExpandStagesWipeOnlyNeedsPrepURL(t *testing.T) {
+	t.Setenv("SHOAL_PREP_ISO_URL", "")
 	_, err := expandStages(models.StartJobRequest{
-		ISOURL: "http://example/m.iso",
+		ISOURL: "http://example/os.iso",
 		Prep:   "wipe_only",
 	})
-	if err == nil || !strings.Contains(err.Error(), "not implemented") {
-		t.Fatalf("want not implemented, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "prep_iso") {
+		t.Fatalf("got %v", err)
 	}
 }
 
