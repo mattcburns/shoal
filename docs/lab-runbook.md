@@ -484,6 +484,31 @@ go run ./cmd/shoal deploy run \
 | `auto` | Prefer second_media when ≥2 CDs + `seed_iso_url`; else error if image_write (no config_drive) |
 | `config_drive` | **Forbidden** with `image_write` (full-disk dd wipes partition); write path not implemented yet |
 
+### Multi-stage M5: operator_iso (ESXi / Windows)
+
+Operator supplies a **ready** install ISO (kickstart / Autounattend already on media).
+Shoal attaches, boots CD once, waits, then cleans up. **No seed fields** (config is on the ISO).
+
+**Coarse progress:** ESXi/Windows do not emit `SHOAL|…` markers. The job becomes
+`provisioned` when **`stage_timeout` elapses** (default **60m**, or
+`SHOAL_OPERATOR_ISO_TIMEOUT`). This is **not** guest install verification — confirm
+the host out of band. Optional SOL is best-effort (stall disabled); serial may be omitted.
+
+```bash
+go run ./cmd/shoal deploy run \
+  -device-id host-7 \
+  -bmc-url https://bmc/redfish/v1 \
+  -bmc-user admin -bmc-pass '…' \
+  -install-strategy operator_iso \
+  -os-family esxi \
+  -iso-url http://192.168.124.1:8080/esxi-custom.iso \
+  -stage-timeout 90m \
+  -wait
+```
+
+Nested sushy can smoke-test attach + short `-stage-timeout` only; it does **not** prove
+ESXi/Windows install. Prefer real BMC hardware for true AC.
+
 ### Phase 6b: graphics failure-screen OCR
 
 SOL remains the primary progress channel. Graphics OCR is **diagnostic only**.

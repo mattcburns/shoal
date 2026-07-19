@@ -379,6 +379,92 @@ func TestOrchestratorOrphanReconcile(t *testing.T) {
 	}
 }
 
+func TestOrchestratorOperatorISOCoarseDeadline(t *testing.T) {
+	ctx := context.Background()
+	store := jobstore.NewMemory()
+	fakeBMC := redfish.NewFake()
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	watch := sol.NewWatchService(log, nil)
+	// No SOL markers; coarse path must not stall-fail.
+	watch.NewTransport = func(session models.WatchSession) sol.Transport {
+		return sol.NewReaderTransport(io.NopCloser(strings.NewReader("")))
+	}
+	orch := job.NewOrchestrator(job.Options{
+		Log: log, Store: store, Secrets: secrets.NewMemory(),
+		NewBMC:  func(cfg redfish.Config) (redfish.BMC, error) { return fakeBMC, nil },
+		Watches: watch, AuthMode: "basic", TLSMode: "off",
+	})
+	defer orch.Stop()
+	watch.SetProgress(orch.ProgressPort())
+
+	j, err := orch.Start(ctx, models.StartJobRequest{
+		DeviceID:        "esxi-1",
+		BMCEndpoint:     "http://bmc.test",
+		BMCUsername:     "admin",
+		BMCPassword:     "secret",
+		ISOURL:          "http://iso/esxi-custom.iso",
+		InstallStrategy: models.InstallStrategyOperatorISO,
+		OsFamily:        models.OSFamilyESXi,
+		StageTimeout:    80 * time.Millisecond,
+		// no serial_target — pure coarse wait
+	})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if !fakeBMC.MediaInserted() {
+		t.Fatal("expected media inserted")
+	}
+	if j.InstallStrategy != models.InstallStrategyOperatorISO {
+		t.Fatalf("strategy=%s", j.InstallStrategy)
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	var final models.ProvisioningJob
+	for time.Now().Before(deadline) {
+		final, _ = store.Get(ctx, j.ID)
+		if final.State == models.StateProvisioned {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if final.State != models.StateProvisioned {
+		t.Fatalf("want provisioned, got %s err=%s phase=%s", final.State, final.Error, final.Phase)
+	}
+	if fakeBMC.MediaInserted() || !fakeBMC.BootCleared() {
+		t.Fatal("cleanup incomplete after coarse DONE")
+	}
+}
+
+func TestOrchestratorOperatorISORejectsSeed(t *testing.T) {
+	ctx := context.Background()
+	store := jobstore.NewMemory()
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	watch := sol.NewWatchService(log, nil)
+	orch := job.NewOrchestrator(job.Options{
+		Log: log, Store: store, Secrets: secrets.NewMemory(),
+		NewBMC:  func(cfg redfish.Config) (redfish.BMC, error) { return redfish.NewFake(), nil },
+		Watches: watch, AuthMode: "basic", TLSMode: "off",
+	})
+	defer orch.Stop()
+	watch.SetProgress(orch.ProgressPort())
+
+	_, err := orch.Start(ctx, models.StartJobRequest{
+		DeviceID:        "esxi-1",
+		BMCEndpoint:     "http://bmc.test",
+		BMCUsername:     "admin",
+		BMCPassword:     "secret",
+		ISOURL:          "http://iso/esxi.iso",
+		InstallStrategy: models.InstallStrategyOperatorISO,
+		OsFamily:        models.OSFamilyESXi,
+		SeedDelivery:    models.SeedDeliverySecondMedia,
+		SeedISOURL:      "http://iso/seed.iso",
+		StageTimeout:    time.Second,
+	})
+	if err == nil {
+		t.Fatal("expected seed with operator_iso to fail validate")
+	}
+}
+
 func TestOrchestratorSecondMediaDualInsert(t *testing.T) {
 	ctx := context.Background()
 	store := jobstore.NewMemory()

@@ -130,4 +130,28 @@ func TestStartJobRequest(t *testing.T) {
 	if err := validate.StartJobRequest(seed); err == nil {
 		t.Fatal("expected unknown seed_delivery to fail")
 	}
+	// M5 operator_iso
+	op := good
+	op.InstallStrategy = models.InstallStrategyOperatorISO
+	op.OsFamily = models.OSFamilyESXi
+	op.SerialTarget = "" // allowed for operator_iso
+	if err := validate.StartJobRequest(op); err != nil {
+		t.Fatal(err)
+	}
+	op.OsFamily = models.OSFamilyUbuntu
+	if err := validate.StartJobRequest(op); err == nil {
+		t.Fatal("expected ubuntu+operator_iso to fail")
+	}
+	op.OsFamily = models.OSFamilyESXi
+	op.SeedDelivery = models.SeedDeliverySecondMedia
+	op.SeedISOURL = "http://lab:8080/seed.iso"
+	if err := validate.StartJobRequest(op); err == nil {
+		t.Fatal("expected operator_iso with seed to fail")
+	}
+	// non-operator still needs serial
+	noSerial := good
+	noSerial.SerialTarget = ""
+	if err := validate.StartJobRequest(noSerial); err == nil {
+		t.Fatal("expected serial_target required without operator_iso")
+	}
 }

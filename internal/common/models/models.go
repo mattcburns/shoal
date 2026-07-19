@@ -69,8 +69,24 @@ const (
 const (
 	InstallStrategySimulate    = "simulate"
 	InstallStrategyImageWrite  = "image_write"
-	InstallStrategyScriptedISO = "scripted_iso" // reserved; not expanded in M1
-	InstallStrategyOperatorISO = "operator_iso" // reserved; not expanded in M1
+	InstallStrategyScriptedISO = "scripted_iso" // reserved; M4+
+	InstallStrategyOperatorISO = "operator_iso" // M5: ESXi/Windows operator media
+)
+
+// OS families for install / seed paths.
+const (
+	OSFamilyUbuntu  = "ubuntu"
+	OSFamilyFlatcar = "flatcar"
+	OSFamilyESXi    = "esxi"
+	OSFamilyWindows = "windows"
+)
+
+// Progress policies (how a stage reaches terminal success).
+const (
+	// ProgressPolicyMarkers requires SHOAL|… SOL markers (default for image_write/simulate/prep).
+	ProgressPolicyMarkers = "markers"
+	// ProgressPolicyCoarse completes on stage deadline without SOL markers (operator_iso).
+	ProgressPolicyCoarse = "coarse"
 )
 
 // Seed delivery modes (multi-stage M3 offline NoCloud). Never guest HTTP.
@@ -207,7 +223,10 @@ type WatchSession struct {
 	Transport    string        `json:"transport"` // "libvirt" | "redfish_sol" | "ipmi_sol"
 	Target       string        `json:"target"`    // console path or BMC URI
 	StartedAt    time.Time     `json:"started_at"`
-	StallTimeout time.Duration `json:"stall_timeout"` // e.g. 90s
+	StallTimeout time.Duration `json:"stall_timeout"` // e.g. 90s; 0 = watch default
+	// StallDisabled skips the silence stall timer (M5 operator_iso coarse progress).
+	// Zero StallTimeout still means default when StallDisabled is false.
+	StallDisabled bool `json:"stall_disabled,omitempty"`
 }
 
 // DeviceIdentity is NetBox-facing identity fields.
@@ -222,17 +241,22 @@ type DeviceIdentity struct {
 
 // StartJobRequest carries Phase 2 binding fields; NetBox-only resolution is post-Phase 3 optional.
 type StartJobRequest struct {
-	DeviceID      string `json:"device_id"`
-	ProfileRef    string `json:"profile_ref,omitempty"`
-	ISOURL        string `json:"iso_url"`
-	BMCEndpoint   string `json:"bmc_endpoint"`           // Redfish base URL
-	BMCUsername   string `json:"bmc_username,omitempty"` // stored to secrets; not logged
-	BMCPassword   string `json:"bmc_password,omitempty"` // stored to secrets; never returned
-	SerialTarget  string `json:"serial_target"`          // libvirt domain or SOL target
+	DeviceID    string `json:"device_id"`
+	ProfileRef  string `json:"profile_ref,omitempty"`
+	ISOURL      string `json:"iso_url"`
+	BMCEndpoint string `json:"bmc_endpoint"`           // Redfish base URL
+	BMCUsername string `json:"bmc_username,omitempty"` // stored to secrets; not logged
+	BMCPassword string `json:"bmc_password,omitempty"` // stored to secrets; never returned
+	// SerialTarget is libvirt domain or SOL target. Optional for operator_iso (M5 coarse).
+	SerialTarget  string `json:"serial_target"`
 	SystemID      string `json:"system_id,omitempty"`
 	CredentialRef string `json:"credential_ref,omitempty"` // alt: pre-seeded secret (skip user/pass)
 	// StallTimeout is the SOL silence window before ReportStall (0 = Orchestrator default).
+	// Ignored for operator_iso (stall disabled under coarse progress).
 	StallTimeout time.Duration `json:"stall_timeout,omitempty"`
+	// StageTimeout is max wait for operator_iso coarse stage (0 = default 60m).
+	// Deadline → provisioned (optimistic; not guest verification).
+	StageTimeout time.Duration `json:"stage_timeout,omitempty"`
 	// ApproveDestruct acknowledges NeedsApproval / DestructSteps on the profile (Phase 5b).
 	// Does not bypass a missing profile store entry; only supplies operator consent.
 	ApproveDestruct bool `json:"approve_destruct,omitempty"`
@@ -249,7 +273,7 @@ type StartJobRequest struct {
 	ISOUbuntuBase string `json:"iso_ubuntu_base,omitempty"`
 	// ISOHostname is the autoinstall identity hostname (Phase 7a).
 	ISOHostname string `json:"iso_hostname,omitempty"`
-	// InstallStrategy is optional: simulate | image_write (M1). Other values reserved.
+	// InstallStrategy is optional: simulate | image_write | operator_iso (M5). scripted_iso reserved.
 	InstallStrategy string `json:"install_strategy,omitempty"`
 	// Prep is optional: skip (default) | wipe_only (M2 multi-stage prep).
 	Prep string `json:"prep,omitempty"`
@@ -259,10 +283,11 @@ type StartJobRequest struct {
 	WipeLevel string `json:"wipe_level,omitempty"`
 	// SeedDelivery is none (default) | auto | second_media | config_drive (M3).
 	// config_drive is forbidden with install_strategy=image_write (full-disk dd).
+	// operator_iso requires none (config baked into operator media).
 	SeedDelivery string `json:"seed_delivery,omitempty"`
 	// SeedISOURL is BMC-reachable NoCloud/CIDATA ISO for second_media.
 	SeedISOURL string `json:"seed_iso_url,omitempty"`
-	// OsFamily is ubuntu for M3 seed paths (flatcar later).
+	// OsFamily is ubuntu | esxi | windows (flatcar later). Required for operator_iso.
 	OsFamily string `json:"os_family,omitempty"`
 }
 

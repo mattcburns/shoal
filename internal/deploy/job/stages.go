@@ -12,14 +12,14 @@ import (
 // expandStages derives the stage list for a StartJobRequest (multi-stage design).
 // M1: single os_install. M2: optional prep wipe + os_install.
 // M3: offline seed fields on os_install (second_media / config_drive / auto).
+// M5: operator_iso (ESXi/Windows) with coarse progress — no seed.
 func expandStages(req models.StartJobRequest) ([]models.JobStage, error) {
 	strategy, err := resolveInstallStrategy(req)
 	if err != nil {
 		return nil, err
 	}
-	switch strategy {
-	case models.InstallStrategyScriptedISO, models.InstallStrategyOperatorISO:
-		return nil, fmt.Errorf("job: install_strategy %q not implemented (use image_write or simulate)", strategy)
+	if strategy == models.InstallStrategyScriptedISO {
+		return nil, fmt.Errorf("job: install_strategy scripted_iso not implemented yet (use image_write, operator_iso, or simulate)")
 	}
 
 	seedDelivery, seedURL, err := normalizeSeedRequest(req, strategy)
@@ -71,6 +71,10 @@ func expandStages(req models.StartJobRequest) ([]models.JobStage, error) {
 // normalizeSeedRequest applies defaults for seed fields before stage expansion.
 // Final mode for "auto" is chosen at startStage once Virtual Media is listed.
 func normalizeSeedRequest(req models.StartJobRequest, strategy string) (delivery, seedURL string, err error) {
+	if strategy == models.InstallStrategyOperatorISO {
+		// Operator media already contains unattended config.
+		return models.SeedDeliveryNone, "", nil
+	}
 	delivery = strings.TrimSpace(strings.ToLower(req.SeedDelivery))
 	seedURL = strings.TrimSpace(req.SeedISOURL)
 	if seedURL == "" {
