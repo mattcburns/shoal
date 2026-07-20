@@ -1,7 +1,7 @@
 # NetBox integration: visual telemetry, events, and job context
 
 **Status:** Backend API slice (N1-N3) and plugin MVP (N4-N5: Status + Events tabs)
-implemented; Jobs/Sensors tabs (N6) and beyond not started  
+and plugin Jobs/Sensors tabs (N6) implemented; N7+ not started  
 **Date:** July 2026  
 **Audience:** Human architect + coding agents  
 **Related:** Design SoT `SHOAL_COMPREHENSIVE_DESIGN_AND_IMPLEMENTATION_PLAN.md` (v2.0.9+);
@@ -271,8 +271,8 @@ Plugin shows a button: “Open sensor dashboard” with `device_id` variable.
 |-----|---------|------|--------|
 | **Shoal Status** | Lifecycle, power, active job, phase | `GET …/status` | ✅ N5 |
 | **Shoal Events** | Table: ts, severity, type, component, message | `GET …/events` | ✅ N5 |
-| **Jobs** | Table of recent jobs; link to expand phase/error | `GET …/jobs` | N6, not started |
-| **Sensors** | Latest readings table; optional sparkline later | `GET …/sensors` | N6, not started |
+| **Jobs** | Table of recent jobs (id, state, phase, percent, profile, updated, error) | `GET …/jobs` | ✅ N6 |
+| **Sensors** | Flat readings table (sensor, value, unit, ts); no sparkline yet | `GET …/sensors` | ✅ N6 |
 
 Empty states: “No events yet — has Observe poll run?” with lab runbook link.
 
@@ -362,7 +362,7 @@ NetBox plugin ──GET jobs by device──► Shoal
 | **N3** | ✅ Shoal API: `GET /v1/jobs/{id}/log` | Done — honest empty state confirmed: `job_log` has no production writer yet (`WriteJobLog` is only called from tests), so this endpoint correctly returns `{"lines":[]}` until a writer lands; that writer work is a separate, not-yet-scoped slice |
 | **N4** | ✅ Config context for Shoal base URL (no new custom fields needed — see §4.2) | Done — `extras/netbox-plugin-shoal`, Ansible `plugins.py` wiring |
 | **N5** | ✅ NetBox plugin MVP: Status + Events tabs | Done — `extras/netbox-plugin-shoal/netbox_shoal/views.py`; verified live in the lab (both tabs render real job/event data and the designed empty states) |
-| **N6** | Plugin Jobs + Sensors tabs | Lab demo |
+| **N6** | ✅ Plugin Jobs + Sensors tabs | Done — `ShoalJobsView`/`ShoalSensorsView`; verified live in the lab |
 | **N7** | Optional Grafana dashboard + plugin link | Lab compose |
 | **N8** | Optional Orchestrator write of `shoal_last_job_id` pointer | NetBox shows last job link |
 

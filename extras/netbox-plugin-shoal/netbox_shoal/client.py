@@ -49,3 +49,16 @@ def get_status(device_id):
 def get_events(device_id, limit=50):
     """GET /v1/devices/{id}/events?limit= -> ({"device_id","events":[...]}, error)."""
     return _get("/v1/devices/%s/events" % device_id, params={"limit": limit})
+
+
+def get_jobs(device_id, limit=50, state=None):
+    """GET /v1/devices/{id}/jobs?limit=&state= -> ({"device_id","jobs":[...]}, error)."""
+    params = {"limit": limit}
+    if state:
+        params["state"] = state
+    return _get("/v1/devices/%s/jobs" % device_id, params=params)
+
+
+def get_sensors(device_id, limit=50):
+    """GET /v1/devices/{id}/sensors?limit= -> ({"device_id","readings":[...]}, error)."""
+    return _get("/v1/devices/%s/sensors" % device_id, params={"limit": limit})

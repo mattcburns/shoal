@@ -134,5 +134,82 @@ class GetEventsTests(unittest.TestCase):
         self.assertEqual(kwargs["params"], {"limit": 50})
 
 
+class GetJobsTests(unittest.TestCase):
+    def setUp(self):
+        settings.PLUGINS_CONFIG = {
+            "netbox_shoal": {
+                "SHOAL_BASE_URL": "http://shoal.example:8088",
+                "SHOAL_API_TOKEN": "",
+                "SHOAL_REQUEST_TIMEOUT": 10,
+            }
+        }
+
+    @mock.patch("netbox_shoal.client.requests.get")
+    def test_get_jobs_url_and_default_limit(self, mock_get):
+        mock_get.return_value = FakeResponse({"device_id": "1", "jobs": []})
+        client.get_jobs("1")
+        args, kwargs = mock_get.call_args
+        self.assertEqual(args[0], "http://shoal.example:8088/v1/devices/1/jobs")
+        self.assertEqual(kwargs["params"], {"limit": 50})
+
+    @mock.patch("netbox_shoal.client.requests.get")
+    def test_get_jobs_omits_state_when_not_given(self, mock_get):
+        mock_get.return_value = FakeResponse({"device_id": "1", "jobs": []})
+        client.get_jobs("1", limit=10)
+        _, kwargs = mock_get.call_args
+        self.assertNotIn("state", kwargs["params"])
+
+    @mock.patch("netbox_shoal.client.requests.get")
+    def test_get_jobs_passes_state_filter(self, mock_get):
+        mock_get.return_value = FakeResponse({"device_id": "1", "jobs": []})
+        client.get_jobs("1", limit=10, state="failed")
+        _, kwargs = mock_get.call_args
+        self.assertEqual(kwargs["params"], {"limit": 10, "state": "failed"})
+
+    @mock.patch("netbox_shoal.client.requests.get")
+    def test_get_jobs_returns_data_on_success(self, mock_get):
+        mock_get.return_value = FakeResponse(
+            {"device_id": "1", "jobs": [{"id": "j1", "state": "provisioning"}]}
+        )
+        data, err = client.get_jobs("1")
+        self.assertIsNone(err)
+        self.assertEqual(data["jobs"][0]["id"], "j1")
+
+
+class GetSensorsTests(unittest.TestCase):
+    def setUp(self):
+        settings.PLUGINS_CONFIG = {
+            "netbox_shoal": {
+                "SHOAL_BASE_URL": "http://shoal.example:8088",
+                "SHOAL_API_TOKEN": "",
+                "SHOAL_REQUEST_TIMEOUT": 10,
+            }
+        }
+
+    @mock.patch("netbox_shoal.client.requests.get")
+    def test_get_sensors_url_and_default_limit(self, mock_get):
+        mock_get.return_value = FakeResponse({"device_id": "1", "readings": []})
+        client.get_sensors("1")
+        args, kwargs = mock_get.call_args
+        self.assertEqual(args[0], "http://shoal.example:8088/v1/devices/1/sensors")
+        self.assertEqual(kwargs["params"], {"limit": 50})
+
+    @mock.patch("netbox_shoal.client.requests.get")
+    def test_get_sensors_passes_limit(self, mock_get):
+        mock_get.return_value = FakeResponse({"device_id": "1", "readings": []})
+        client.get_sensors("1", limit=5)
+        _, kwargs = mock_get.call_args
+        self.assertEqual(kwargs["params"], {"limit": 5})
+
+    @mock.patch("netbox_shoal.client.requests.get")
+    def test_get_sensors_returns_data_on_success(self, mock_get):
+        mock_get.return_value = FakeResponse(
+            {"device_id": "1", "readings": [{"sensor": "Inlet Temp", "value": 24.5, "unit": "Cel"}]}
+        )
+        data, err = client.get_sensors("1")
+        self.assertIsNone(err)
+        self.assertEqual(data["readings"][0]["sensor"], "Inlet Temp")
+
+
 if __name__ == "__main__":
     unittest.main()
