@@ -7,9 +7,50 @@
 > your own validation. Expect breaking changes, incomplete features, and lab-only paths.
 > Use at your own risk.
 
-This repository contains the Shoal Go application and **lab automation** for a
-**VM-hosted lab mode** (nested virtualization). The lab is driven entirely by
-**Ansible** — there is no Makefile.
+## What is Shoal
+
+Shoal is a BMC-centric bare-metal lifecycle tool, one Go binary with three
+phases: **Discover** normalizes asset data from Redfish/CSV/photos,
+**Observe** tracks device health and job progress via Redfish polling and
+serial (SOL) markers, and **Deploy** drives provisioning over Redfish
+Virtual Media + SOL. NetBox stays the identity/lifecycle-of-record; Shoal
+owns time-series telemetry (events, sensors, job logs) in Postgres and
+exposes it over a small `net/http` API (`:8088`) and a `flag`-based CLI —
+see [`AGENTS.md`](./AGENTS.md) §3.2–3.3 for the command/env reference.
+
+Architecture, data models, and the phased implementation plan are the
+[`AGENTS.md`](./AGENTS.md) working conventions and
+[`SHOAL_COMPREHENSIVE_DESIGN_AND_IMPLEMENTATION_PLAN.md`](./SHOAL_COMPREHENSIVE_DESIGN_AND_IMPLEMENTATION_PLAN.md)
+design doc — read those before making architectural changes; this README
+covers running the app and the lab.
+
+### Running the app
+```bash
+go run ./cmd/shoal serve -addr "${SHOAL_HTTP_ADDR:-:8088}"
+```
+CLI subcommands: `deploy` (run/status/cancel/iso), `discover`
+(ingest/confirm), `observe` (status/poll/ocr), `profile`
+(generate/save/show/list/approve). Quality gate before any change is
+considered done:
+```bash
+gofmt -w . && go vet ./... && staticcheck ./... && go test ./...
+```
+
+### NetBox plugin
+[`extras/netbox-plugin-shoal/`](extras/netbox-plugin-shoal/README.md) is a
+NetBox plugin (Python/Django — the one place in this repo Go isn't used;
+see the "Stack" note in `AGENTS.md`) that adds **Shoal Status** and **Shoal
+Events** tabs to the NetBox device page, reading the API above server-side.
+It's baked into the lab's NetBox image by default
+(`shoal_netbox_plugin: true`); see
+[`docs/netbox-telemetry-ui-design.md`](docs/netbox-telemetry-ui-design.md)
+for the design and its own README for plugin development.
+
+---
+
+This repository also contains the **lab automation** used to develop and
+exercise Shoal, for a **VM-hosted lab mode** (nested virtualization). The
+lab is driven entirely by **Ansible** — there is no Makefile.
 
 The lab topology is:
 
@@ -22,6 +63,8 @@ Linux lab — see [docs/operator-macos.md](docs/operator-macos.md). Multi-platfo
 release builds: `./scripts/build-release.sh` (see Phase 6c).
 
 ## What's in this repo
+- `cmd/shoal`, `internal/` - the Shoal Go application (composition root, HTTP API, CLI, Discover/Observe/Deploy, Core AI, common libs) — see `AGENTS.md` §2 for the full layout
+- `extras/netbox-plugin-shoal/` - NetBox plugin (Python/Django) adding Shoal device tabs to NetBox; see its own README
 - `ansible.cfg` - project-local Ansible config
 - `infra/ansible/requirements.yml` - required Ansible collections
 - `infra/ansible/inventory/` - file inventories (`lab-vm.yml`, `lab.yml`) and `group_vars/` (YAML config + vault secrets)
@@ -36,6 +79,8 @@ release builds: `./scripts/build-release.sh` (see Phase 6c).
 - [Phase 6c plan (packaging + L0 hosts)](docs/phase-6c-plan.md)
 - [Phase 6d plan (Compose app + auth + metrics)](docs/phase-6d-plan.md)
 - [Phase 7 plan (full OS autoinstall)](docs/phase-7-plan.md)
+- [NetBox telemetry UI design (backend API + plugin)](docs/netbox-telemetry-ui-design.md)
+- [Real-hardware SOL runbook](docs/real-hardware-sol-runbook.md)
 
 ## Prerequisites (L0 host)
 Install and verify:
@@ -128,7 +173,8 @@ ssh -i ~/.ssh/shoal_lab_vm lab@192.168.122.100
 
 ## Service endpoints (default values)
 VM-hosted mode (lab VM IP, default `192.168.122.100`):
-- NetBox: `http://192.168.122.100:8000`
+- Shoal app: `http://192.168.122.100:8088` (`/healthz`, `/v1/*`; open by default in the lab — see `SHOAL_API_TOKEN` in `AGENTS.md` §3.3)
+- NetBox: `http://192.168.122.100:8000` (open a `shoal-node-*` device page for the Shoal Status/Events tabs, once `extras/netbox-plugin-shoal` is enabled)
 - Ollama: `http://192.168.122.100:11434`
 - ISO HTTP server: `http://192.168.122.100:8080`
 - sushy-tools Redfish root: `http://192.168.122.100:8001/redfish/v1`
@@ -137,6 +183,7 @@ VM-hosted mode (lab VM IP, default `192.168.122.100`):
 From a virtual BMC node (lab network `192.168.124.0/24`), the same services are reachable via the lab gateway `192.168.124.1` (e.g. ISO at `http://192.168.124.1:8080`).
 
 Direct-host mode:
+- Shoal app: `http://127.0.0.1:8088`
 - NetBox: `http://127.0.0.1:8000`
 - Ollama: `http://127.0.0.1:11434`
 - ISO HTTP server: `http://127.0.0.1:8080`
