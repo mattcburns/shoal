@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -21,8 +22,8 @@ import (
 
 // labE2EEnv holds credentials/endpoints for live lab tests.
 type labE2EEnv struct {
-	base, user, pass, iso, dsn string
-	sshHost, sshUser, sshKey   string
+	base, user, pass, iso, seedISO, dsn string
+	sshHost, sshUser, sshKey            string
 }
 
 func loadLabE2E(t *testing.T) labE2EEnv {
@@ -32,6 +33,7 @@ func loadLabE2E(t *testing.T) labE2EEnv {
 		user:    os.Getenv("SHOAL_BMC_USERNAME"),
 		pass:    os.Getenv("SHOAL_BMC_PASSWORD"),
 		iso:     envOr("SHOAL_ISO_URL", "http://192.168.124.1:8080/shoal-marker.iso"),
+		seedISO: envOr("SHOAL_SEED_ISO_URL", "http://192.168.124.1:8080/shoal-cidata.iso"),
 		dsn:     os.Getenv("SHOAL_TELEMETRY_DATABASE_URL"),
 		sshHost: os.Getenv("SHOAL_SERIAL_SSH_HOST"),
 		sshUser: envOr("SHOAL_SERIAL_SSH_USER", "lab"),
@@ -121,6 +123,91 @@ func mediaInserted(t *testing.T, e labE2EEnv, systemID string) bool {
 		}
 	}
 	return false
+}
+
+// insertedMediaByURI returns URI -> Image for every currently-inserted
+// virtual media slot on systemID (real Redfish query, not a fake).
+func insertedMediaByURI(t *testing.T, e labE2EEnv, systemID string) map[string]string {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	bmc, err := redfish.NewBMC(redfish.Config{BaseURL: e.base, Username: e.user, Password: e.pass, AuthMode: "basic", TLSMode: "off"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bmc.Open(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = bmc.Close(context.Background()) }()
+	vms, err := bmc.ListVirtualMedia(ctx, systemID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := make(map[string]string)
+	for _, vm := range vms {
+		if vm.Inserted {
+			out[vm.URI] = vm.Image
+		}
+	}
+	return out
+}
+
+// TestLabSecondMediaRejectedBySushyTools proves Shoal safely refuses
+// seed_delivery=second_media against the real lab rather than silently
+// misbehaving. sushy-tools' libvirt driver cannot expose two independent,
+// insertable CD-typed Virtual Media slots: its InsertMedia libvirt-attach
+// step (sushy_tools/emulator/resources/systems/libvirtdriver.py,
+// BOOT_DEVICE_MAP) is a hardcoded Python class attribute covering exactly
+// {Cd, Floppy, Hdd, Pxe}, with no config override — verified against
+// upstream source, not a lab-config gap. A custom "Cd2" device (tried in an
+// earlier version of this lab config via SUSHY_EMULATOR_VMEDIA_DEVICES) is
+// accepted by the generic vmedia resource layer but rejected by the libvirt
+// attach step with "Unknown device Cd2". second_media therefore needs real
+// multi-CD-slot BMC hardware to prove end-to-end; see
+// docs/lab-runbook.md. This test is the regression guard that Shoal's
+// CD-counting/resolution logic (stages.go resolveSeedDelivery) correctly
+// reads real sushy-tools Redfish JSON (1 CD-capable slot: "Cd"; "Floppy" is
+// not CD-capable) and refuses to proceed, rather than partially attaching
+// media and leaving the BMC in a half-configured state.
+func TestLabSecondMediaRejectedBySushyTools(t *testing.T) {
+	e := loadLabE2E(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	store, closer := labStore(t, ctx, e.dsn)
+	defer closer()
+
+	// Injected SOL (pipe stays open so job stays PROVISIONING until cancel) —
+	// same pattern as TestLabDeployCancel; unused here since Start is expected
+	// to fail before any watch is ever registered.
+	pr, pw := io.Pipe()
+	defer pw.Close()
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	watch := sol.NewWatchService(log, nil)
+	watch.NewTransport = func(models.WatchSession) sol.Transport {
+		return sol.NewReaderTransport(pr)
+	}
+	orch := labOrch(t, e, store, watch)
+	defer orch.Stop()
+
+	// node-4: unused by the other lab_e2e tests (node-1/2/3 are claimed).
+	_, err := orch.Start(ctx, models.StartJobRequest{
+		DeviceID: "shoal-node-4", BMCEndpoint: e.base, BMCUsername: e.user, BMCPassword: e.pass,
+		SerialTarget: "pipe", ISOURL: e.iso, SystemID: "shoal-node-4",
+		SeedDelivery: models.SeedDeliverySecondMedia, SeedISOURL: e.seedISO,
+		StallTimeout: 5 * time.Minute,
+	})
+	if err == nil {
+		t.Fatal("expected second_media to be rejected against this lab (sushy-tools cannot expose 2 real CD-typed Virtual Media slots); see docs/lab-runbook.md")
+	}
+	if !strings.Contains(err.Error(), "CD-capable") {
+		t.Fatalf("expected a CD-slot-count rejection error, got: %v", err)
+	}
+	// The rejection happens during stage expansion, before any BMC media
+	// operation — confirm nothing was left attached.
+	if media := insertedMediaByURI(t, e, "shoal-node-4"); len(media) != 0 {
+		t.Fatalf("media inserted despite second_media rejection: %+v", media)
+	}
+	t.Logf("second_media correctly rejected against real lab: %v", err)
 }
 
 // TestLabDeployCancel starts a live job then cancels; expects FAILED + media ejected.

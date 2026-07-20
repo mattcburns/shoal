@@ -44,9 +44,47 @@ Nested BMC guests (`shoal-node-*`) must have an **empty CD-ROM** device in libvi
 sushy-tools **cannot hotplug** a CD; `InsertMedia` fills the tray. Without it, Deploy
 fails with `Target libvirt device Cd does not exist`.
 
-- Template: `infra/ansible/roles/libvirt_lab/templates/vm-node.xml.j2` (empty `sda` CD).
-- Optional dual CD for `second_media` smoke: set `shoal_lab_node_dual_cd: true` and re-run
-  lab node define (domains **restart** once when the template changes).
+- Template: `infra/ansible/roles/libvirt_lab/templates/vm-node.xml.j2` (empty `sda` CD,
+  plus a second empty `sdb` CD when `shoal_lab_node_dual_cd` is true — see below for
+  why the second tray alone doesn't get you `second_media`).
+- **Ejecting media removes the libvirt disk device, it doesn't just clear it.**
+  sushy-tools' libvirt driver (`_remove_boot_images` /
+  `sushy_tools/emulator/resources/systems/libvirtdriver.py`) deletes the matching
+  `<disk>` element from the domain's XML on eject, and `_add_boot_image` adds a
+  fresh one on the next insert. So a node's live CD-tray count drifts from
+  whatever `vm-node.xml.j2` defined at domain-create time as soon as any job
+  attaches and cleans up media — this is normal, expected sushy-tools behavior,
+  **not** lab misconfiguration. `create_node.yml`'s idempotency check compares the
+  *rendered template* to what it last wrote, not the *live* domain, so it will
+  **not** notice or repair this drift by itself; re-running `up.yml --tags nodes`
+  is a no-op if the template hasn't changed. If `smoke.yml`'s CD-tray count
+  assertion (below) fails after running jobs against a node, repair it directly:
+  ```bash
+  # Per affected node (destroy first — no CD hotplug):
+  virsh attach-device <node> <(cat <<'XML'
+  <disk type="file" device="cdrom"><driver name="qemu" type="raw"/><target dev="sda" bus="sata"/><readonly/></disk>
+  XML
+  ) --config
+  virsh destroy <node> && virsh start <node>
+  ```
+  (add a second `attach-device` for `sdb` too when `shoal_lab_node_dual_cd` is true).
+- **A second libvirt CD-ROM device alone does not enable `second_media`.**
+  sushy-tools' Redfish virtual-media insert/eject (`sushy_tools/emulator/resources/vmedia.py`
+  `StaticDriver`) exposes device names from a config-level map, decoupled from
+  actual libvirt disk count — so a `SUSHY_EMULATOR_VMEDIA_DEVICES` entry naming a
+  second CD-typed slot (e.g. `Cd2`) **is** accepted by that layer and even looks
+  insertable over Redfish. But the libvirt driver's own attach step
+  (`_add_boot_image`) uses a **separate, hardcoded** `BOOT_DEVICE_MAP` Python class
+  attribute covering only `{Cd, Floppy, Hdd, Pxe}`, with **no config override** —
+  so `InsertMedia` on any custom device name beyond that fixed set fails with
+  `Unknown device <name>` (confirmed against upstream
+  `sushy_tools/emulator/resources/systems/libvirtdriver.py` source). This was
+  tried and reverted (`git log infra/ansible/roles/sushy_tools/templates/sushy-conf.py.j2`) —
+  **`second_media` cannot be proven against sushy-tools; it needs real BMC
+  hardware with genuinely independent CD Virtual Media slots.**
+  `internal/deploy/job/lab_e2e_test.go:TestLabSecondMediaRejectedBySushyTools`
+  is the regression guard that Shoal correctly refuses `second_media` here
+  (1 real CD-capable slot found) instead of silently misbehaving.
 - sushy compose mounts libvirt socket + `/var/lib/libvirt/images` for media files.
 - App-side: multi-node media is scoped per system (do not merge all managers’ Cd slots).
 
@@ -485,10 +523,19 @@ SHOAL_SEED_HOSTNAME=lab-node-1 \
 #   http://192.168.124.1:8080/shoal-cidata.iso
 ```
 
-**Deploy with dual media** (requires dual-CD BMC or `redfish.NewFakeDualCD` in unit tests).
-Nested sushy-tools typically has **one** CD — second_media will fail with an actionable
-error; for image_write offline seed, bake cloud-init into the payload with
-`prepare-ubuntu-cloud-payload.sh` instead (`seed_delivery=none`).
+**Deploy with dual media** (requires a real BMC with ≥2 independent, insertable
+CD-typed Virtual Media slots). **This lab cannot prove it** — sushy-tools' libvirt
+driver structurally supports only one CD-typed slot for actual insert operations
+(see "Nested Virtual Media" above for the verified root cause); node-4 has two
+libvirt CD-ROM trays but sushy-tools still reports and enforces just one
+CD-capable Redfish slot. `internal/deploy/job/lab_e2e_test.go:TestLabSecondMediaRejectedBySushyTools`
+is the regression guard proving Shoal safely refuses to proceed in that case,
+which is the most this lab can validate; `redfish.NewFakeDualCD`-based unit
+tests still cover the resolution/attach logic itself (Go-side correctness) — the
+real dual-insert success path needs real BMC hardware. If a BMC genuinely has
+only one CD slot, use config_drive instead (below), or for image_write bake
+cloud-init into the payload with `prepare-ubuntu-cloud-payload.sh`
+(`seed_delivery=none`).
 
 ```bash
 go run ./cmd/shoal deploy run \
@@ -614,10 +661,13 @@ go run ./cmd/shoal deploy run \
   -wait
 ```
 
-Progress is **coarse** (deadline → `provisioned`, not guest verification). Nested sushy
-with a single CD cannot prove second_media; unit tests use `NewFakeDualCD`. Stock Flatcar
-ISO may require operator media that is configured to consume offline Ignition from the
-seed device — Shoal does not remaster the installer in M4.
+Progress is **coarse** (deadline → `provisioned`, not guest verification). This uses
+the same `second_media` dual-CD attach path that sushy-tools cannot prove end-to-end
+(see the Nested Virtual Media section above) — real BMC hardware with genuinely
+independent CD slots is required to validate the attach itself, and guest-side
+consumption of Ignition from the seed device is a further, separate gap. Stock
+Flatcar ISO may require operator media configured to consume it, and Shoal does
+not remaster the installer in M4.
 
 Ubuntu `scripted_iso` + NoCloud seed uses the same attach path (`build-nocloud-seed-iso.sh`).
 

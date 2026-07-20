@@ -22,6 +22,7 @@
     src: sushy-conf.py.j2
     dest: "{{ shoal_sushy_dir }}/conf.py"
     mode: '0644'
+  register: sushy_conf_file
   tags: [config]
 
 - name: Copy sushy-tools Docker Compose file
@@ -36,16 +37,16 @@
   shell: |
     cd {{ shoal_sushy_dir }}
     docker compose -f docker-compose.sushy.yml up -d --force-recreate
-  when: sushy_compose_file.changed
+  when: sushy_compose_file.changed or sushy_conf_file.changed
   register: sushy_recreate
   changed_when: true
-  tags: [start, compose]
+  tags: [start, compose, config]
 
 - name: Start sushy-tools container
   shell: |
     cd {{ shoal_sushy_dir }}
     docker compose -f docker-compose.sushy.yml up -d
-  when: not sushy_compose_file.changed
+  when: not (sushy_compose_file.changed or sushy_conf_file.changed)
   register: sushy_start
   changed_when: >
     'Creating' in ((sushy_start.stdout | default('')) ~ (sushy_start.stderr | default('')))
