@@ -149,6 +149,36 @@ func (m *Memory) ListSensors(_ context.Context, deviceID string, since time.Time
 	return out, nil
 }
 
+// ListJobLog returns job_log lines for jobID at or after since, oldest first,
+// capped at limit.
+func (m *Memory) ListJobLog(_ context.Context, jobID string, since time.Time, limit int) ([]JobLogLine, error) {
+	if jobID == "" {
+		return nil, fmt.Errorf("telemetry: job_id required")
+	}
+	if limit <= 0 {
+		limit = 100
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var out []JobLogLine
+	for _, l := range m.jobLogs {
+		if l.JobID != jobID {
+			continue
+		}
+		if !since.IsZero() && l.TS.Before(since) {
+			continue
+		}
+		out = append(out, JobLogLine(l))
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].TS.Before(out[j].TS)
+	})
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
 // JobLogCount returns lines for a job (test helper).
 func (m *Memory) JobLogCount(jobID string) int {
 	m.mu.RLock()

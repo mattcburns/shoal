@@ -15,6 +15,10 @@ import (
 	"github.com/mattcburns/shoal/internal/observe"
 )
 
+// maxListLimit bounds the ?limit= query param on list endpoints (jobs-by-device,
+// sensors, job log) so a caller can't force an unbounded scan/response.
+const maxListLimit = 200
+
 // Server is the HTTP API surface (health + jobs + discover + observe).
 type Server struct {
 	cfg config.Config
@@ -55,11 +59,14 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /metrics", s.handleMetrics)
 	s.mux.HandleFunc("POST /v1/jobs", s.handleStartJob)
 	s.mux.HandleFunc("GET /v1/jobs/{id}", s.handleGetJob)
+	s.mux.HandleFunc("GET /v1/jobs/{id}/log", s.handleJobLog)
 	s.mux.HandleFunc("POST /v1/jobs/{id}/cancel", s.handleCancelJob)
 	s.mux.HandleFunc("POST /v1/discover/ingest", s.handleDiscoverIngest)
 	s.mux.HandleFunc("POST /v1/discover/confirm", s.handleDiscoverConfirm)
 	s.mux.HandleFunc("GET /v1/devices/{id}/status", s.handleDeviceStatus)
 	s.mux.HandleFunc("GET /v1/devices/{id}/events", s.handleDeviceEvents)
+	s.mux.HandleFunc("GET /v1/devices/{id}/jobs", s.handleDeviceJobs)
+	s.mux.HandleFunc("GET /v1/devices/{id}/sensors", s.handleDeviceSensors)
 }
 
 func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {

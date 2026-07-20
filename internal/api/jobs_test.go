@@ -12,7 +12,9 @@ import (
 	"github.com/mattcburns/shoal/internal/api"
 	"github.com/mattcburns/shoal/internal/common/config"
 	"github.com/mattcburns/shoal/internal/common/models"
+	"github.com/mattcburns/shoal/internal/common/telemetry"
 	"github.com/mattcburns/shoal/internal/deploy/jobstore"
+	"github.com/mattcburns/shoal/internal/observe"
 )
 
 func TestGetJob(t *testing.T) {
@@ -56,6 +58,55 @@ func TestGetJobNotFound(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/v1/jobs/missing", nil)
 	s.Handler().ServeHTTP(rr, req)
 	if rr.Code != http.StatusNotFound {
+		t.Fatalf("status %d", rr.Code)
+	}
+}
+
+func TestJobLog(t *testing.T) {
+	store := telemetry.NewMemory()
+	ctx := context.Background()
+	base := time.Date(2026, 7, 13, 12, 0, 0, 0, time.UTC)
+	_ = store.WriteJobLog(ctx, "job-1", base, "first")
+	_ = store.WriteJobLog(ctx, "job-1", base.Add(time.Minute), "second")
+	obs := observe.New(nil, jobstore.NewMemory(), store, nil)
+	s := api.New(config.Config{}, nil).WithObserve(obs)
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/jobs/job-1/log", nil)
+	s.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status %d body=%s", rr.Code, rr.Body.String())
+	}
+	var body struct {
+		JobID string                 `json:"job_id"`
+		Lines []telemetry.JobLogLine `json:"lines"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Lines) != 2 || body.Lines[0].Line != "first" || body.Lines[1].Line != "second" {
+		t.Fatalf("want oldest-first [first second], got %+v", body.Lines)
+	}
+
+	rr = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/v1/jobs/unknown-job/log", nil)
+	s.Handler().ServeHTTP(rr, req)
+	var empty map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &empty); err != nil {
+		t.Fatal(err)
+	}
+	if empty["lines"] == nil {
+		t.Fatal("lines must be [] not null")
+	}
+}
+
+func TestJobLogWithoutTelemetry(t *testing.T) {
+	obs := observe.New(nil, jobstore.NewMemory(), nil, nil)
+	s := api.New(config.Config{}, nil).WithObserve(obs)
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/jobs/x/log", nil)
+	s.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status %d", rr.Code)
 	}
 }

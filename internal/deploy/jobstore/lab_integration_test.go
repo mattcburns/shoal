@@ -66,5 +66,29 @@ func TestLabPostgresJobStore(t *testing.T) {
 	if !found {
 		t.Fatal("job not in FAILED list")
 	}
+
+	byDevice, err := s.ListByDevice(ctx, "lab-node-1", "", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found = false
+	for _, j := range byDevice {
+		if j.ID == id {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("job not in ListByDevice result")
+	}
+	byDeviceState, err := s.ListByDevice(ctx, "lab-node-1", models.StateFailed, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, j := range byDeviceState {
+		if j.ID == id && j.State != models.StateFailed {
+			t.Fatalf("state filter leaked non-matching job: %+v", j)
+		}
+	}
+
 	t.Logf("postgres jobstore OK for %s", id)
 }

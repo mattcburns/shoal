@@ -3,6 +3,7 @@ package jobstore
 import (
 	"context"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
@@ -58,6 +59,40 @@ func (m *Memory) ListByState(_ context.Context, state models.LifecycleState) ([]
 		if j.State == state {
 			out = append(out, cloneJob(j))
 		}
+	}
+	return out, nil
+}
+
+// ListByDevice returns jobs for deviceID, newest-updated first, optionally
+// filtered by state, capped at limit.
+func (m *Memory) ListByDevice(_ context.Context, deviceID string, state models.LifecycleState, limit int) ([]models.ProvisioningJob, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var out []models.ProvisioningJob
+	for _, j := range m.jobs {
+		if j.DeviceID != deviceID {
+			continue
+		}
+		if state != "" && j.State != state {
+			continue
+		}
+		out = append(out, cloneJob(j))
+	}
+	sort.Slice(out, func(i, k int) bool {
+		ti, tk := time.Time{}, time.Time{}
+		if out[i].UpdatedAt != nil {
+			ti = *out[i].UpdatedAt
+		}
+		if out[k].UpdatedAt != nil {
+			tk = *out[k].UpdatedAt
+		}
+		return ti.After(tk)
+	})
+	if len(out) > limit {
+		out = out[:limit]
 	}
 	return out, nil
 }

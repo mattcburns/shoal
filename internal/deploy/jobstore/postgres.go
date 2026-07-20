@@ -92,6 +92,41 @@ FROM jobs WHERE state = $1`, string(state))
 	return out, rows.Err()
 }
 
+// ListByDevice returns jobs for deviceID, newest-updated first, optionally
+// filtered by state, capped at limit.
+func (p *Postgres) ListByDevice(ctx context.Context, deviceID string, state models.LifecycleState, limit int) ([]models.ProvisioningJob, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	query := `
+SELECT id, device_id, profile_ref, state, attempt, phase, percent, last_marker_seq,
+       started_at, updated_at, error, sol_session_id, iso_url, bmc_endpoint,
+       system_id, credential_ref, current_stage, install_strategy, stages_json
+FROM jobs WHERE device_id = $1`
+	args := []any{deviceID}
+	if state != "" {
+		query += fmt.Sprintf(" AND state = $%d", len(args)+1)
+		args = append(args, string(state))
+	}
+	query += fmt.Sprintf(" ORDER BY updated_at DESC NULLS LAST LIMIT $%d", len(args)+1)
+	args = append(args, limit)
+
+	rows, err := p.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("jobstore: list by device: %w", err)
+	}
+	defer rows.Close()
+	var out []models.ProvisioningJob
+	for rows.Next() {
+		j, err := scanJob(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, j)
+	}
+	return out, rows.Err()
+}
+
 // UpdateProgress updates progress fields only.
 func (p *Postgres) UpdateProgress(ctx context.Context, jobID string, phase string, percent *int, seq int, errSoft string) error {
 	now := time.Now().UTC()

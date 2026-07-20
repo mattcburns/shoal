@@ -94,3 +94,52 @@ func TestMemorySensorsAndJobLog(t *testing.T) {
 		t.Fatal("job log")
 	}
 }
+
+func TestMemoryListJobLog(t *testing.T) {
+	st := telemetry.NewMemory()
+	ctx := context.Background()
+	base := time.Date(2026, 7, 13, 12, 0, 0, 0, time.UTC)
+	if err := st.WriteJobLog(ctx, "job-1", base, "first"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.WriteJobLog(ctx, "job-1", base.Add(time.Minute), "second"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.WriteJobLog(ctx, "other-job", base, "skip"); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := st.ListJobLog(ctx, "job-1", time.Time{}, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("len=%d", len(got))
+	}
+	if got[0].Line != "first" || got[1].Line != "second" {
+		t.Fatalf("want oldest-first [first second], got %+v", got)
+	}
+
+	since, err := st.ListJobLog(ctx, "job-1", base.Add(30*time.Second), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(since) != 1 || since[0].Line != "second" {
+		t.Fatalf("since filter: %+v", since)
+	}
+
+	capped, err := st.ListJobLog(ctx, "job-1", time.Time{}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(capped) != 1 || capped[0].Line != "first" {
+		t.Fatalf("limit: %+v", capped)
+	}
+}
+
+func TestMemoryListJobLogRequiresJobID(t *testing.T) {
+	st := telemetry.NewMemory()
+	if _, err := st.ListJobLog(context.Background(), "", time.Time{}, 10); err == nil {
+		t.Fatal("expected error for empty job_id")
+	}
+}
