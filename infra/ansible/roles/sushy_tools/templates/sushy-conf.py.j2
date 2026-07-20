@@ -21,3 +21,14 @@ SUSHY_EMULATOR_FEATURE_SET = "full"
 
 # Storage pool for virtual media attachments
 SUSHY_EMULATOR_STORAGE_POOL = "default"
+
+# NOTE: a second CD-typed (MediaTypes CD/DVD) virtual media slot was tried
+# here (SUSHY_EMULATOR_VMEDIA_DEVICES with a "Cd2" entry) to prove
+# seed_delivery=second_media end-to-end against the lab, but reverted:
+# sushy-tools' libvirt driver InsertMedia handler
+# (sushy_tools/emulator/resources/systems/libvirtdriver.py, BOOT_DEVICE_MAP)
+# is hardcoded to exactly {Cd, Floppy, Hdd, Pxe} with no config override, so
+# a custom "Cd2" device is accepted by the generic vmedia resource layer but
+# rejected ("Unknown device Cd2") when the libvirt driver tries to actually
+# attach it. second_media genuinely cannot be proven against sushy-tools;
+# needs real multi-CD-slot BMC hardware. See docs/lab-runbook.md.

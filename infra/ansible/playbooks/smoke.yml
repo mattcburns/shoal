@@ -160,11 +160,15 @@
         label: "{{ res.node.name }}"
 
     # Nested domains need an empty CD tray for sushy Virtual Media (no CD hotplug).
-    - name: Check nested node empty CD tray for Virtual Media
+    # shoal_lab_node_dual_cd adds a second tray so seed_delivery=second_media can
+    # be proven against the real lab (not just redfish.NewFakeDualCD() in unit
+    # tests) — count the trays, not just presence, so a dropped second tray
+    # (e.g. a stale un-restarted domain) is actually caught.
+    - name: Check nested node CD tray count for Virtual Media
       ansible.builtin.shell: |
         set -e
         xml="$(virsh dumpxml {{ node.name }})"
-        echo "$xml" | grep -q "device='cdrom'"
+        echo "$xml" | grep -c "device='cdrom'" || true
       args:
         executable: /bin/bash
       loop: "{{ shoal_bmc_nodes }}"
@@ -179,14 +183,16 @@
       changed_when: false
       failed_when: false
 
-    - name: Assert every nested node has a CD-ROM device
+    - name: Assert every nested node has the expected CD-ROM tray count
       ansible.builtin.assert:
         that:
-          - res.rc == 0
+          - res.stdout | default('0') | trim | int == (2 if (shoal_lab_node_dual_cd | default(false) | bool) else 1)
         fail_msg: >-
-          No empty CD tray on {{ res.node.name }}. Re-run lab_up / libvirt_lab so
-          vm-node.xml.j2 includes device=cdrom (required for sushy InsertMedia).
-        success_msg: "CD tray present for Virtual Media on {{ res.node.name }}"
+          Expected {{ 2 if (shoal_lab_node_dual_cd | default(false) | bool) else 1 }}
+          CD tray(s) on {{ res.node.name }}, found {{ res.stdout | default('0') | trim }}.
+          Re-run lab_up / libvirt_lab so vm-node.xml.j2's rendered domain matches
+          shoal_lab_node_dual_cd (required for sushy InsertMedia / second_media).
+        success_msg: "{{ res.stdout | trim }} CD tray(s) present for Virtual Media on {{ res.node.name }}"
       loop: "{{ smoke_cdrom.results }}"
       loop_control:
         loop_var: res

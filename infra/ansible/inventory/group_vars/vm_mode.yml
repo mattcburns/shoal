@@ -9,3 +9,9 @@ shoal_serial_delegate: shoal-lab-vm
 shoal_netbox_url: "http://{{ shoal_lab_vm_host }}:{{ shoal_netbox_port }}"
 shoal_ollama_url: "http://{{ shoal_lab_vm_host }}:{{ shoal_ollama_port }}"
 shoal_telemetry_db_url: "postgresql://{{ shoal_telemetry_db_user }}:{{ shoal_telemetry_db_password }}@{{ shoal_lab_vm_host }}:{{ shoal_telemetry_db_port }}/{{ shoal_telemetry_db_name }}"
+
+# Standing lab default: every nested node gets a second empty CD-ROM tray so
+# seed_delivery=second_media (installer ISO + offline NoCloud/Ignition seed on
+# independent Virtual Media slots) can be proven end-to-end, not just against
+# redfish.NewFakeDualCD() in unit tests. See docs/lab-runbook.md.
+shoal_lab_node_dual_cd: true
