@@ -1,0 +1,16 @@
+# Rendered by Ansible (compose_stack role) and mounted at
+# /etc/netbox/config/plugins.py, alongside secret_key.py -- netbox-docker
+# execs every /etc/netbox/config/*.py file into configuration.py's namespace,
+# so this is additive and needs no upstream image changes.
+#
+# See extras/netbox-plugin-shoal/README.md for the plugin itself.
+
+PLUGINS = ["netbox_shoal"]
+
+PLUGINS_CONFIG = {
+    "netbox_shoal": {
+        "SHOAL_BASE_URL": "{{ shoal_netbox_plugin_base_url }}",
+        "SHOAL_API_TOKEN": "{{ shoal_api_token | default('') }}",
+        "SHOAL_REQUEST_TIMEOUT": 10,
+    }
+}

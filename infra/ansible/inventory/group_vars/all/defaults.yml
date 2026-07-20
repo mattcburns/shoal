@@ -50,6 +50,17 @@ shoal_compose_app: true
 # Optional Bearer token for /v1/* (empty = open lab API). Prefer vault.
 shoal_api_token: ""
 
+# Build the netbox_shoal plugin into the lab's NetBox image (adds Shoal
+# Status/Events tabs to the device page). See extras/netbox-plugin-shoal.
+shoal_netbox_plugin: true
+# The Shoal app runs network_mode: host, so it's not reachable from
+# bridge-networked containers (like netbox) via 127.0.0.1 -- that resolves to
+# the container itself, not the host. host.docker.internal (wired via
+# extra_hosts: host-gateway in the netbox service) works the same way in both
+# VM-hosted and direct-host lab modes, so this one value covers both instead
+# of needing a per-mode override.
+shoal_netbox_plugin_base_url: "http://host.docker.internal:{{ shoal_app_http_port }}"
+
 # --- AI provider (see design doc §6 / v2.0.4 dual-model contract) ---
 # Provider is "ollama" (local, served by the shoal-ollama container) or "cloud".
 # The Ollama base URL is mode-specific (see vm_mode.yml / direct_mode.yml).

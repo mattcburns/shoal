@@ -13,7 +13,12 @@ them in the same change — they must stay consistent.
 **Stack:** the application is **Go only** (module
 `github.com/mattcburns/shoal`). There is no dual-stack app. Lab automation
 remains Ansible (and whatever Python the lab tools require). Do **not** add
-application Python packages.
+application Python packages. `extras/netbox-plugin-shoal/` is the one
+exercised instance of that lab-tooling carve-out: a NetBox plugin (Python/
+Django, NetBox plugin SDK) that runs inside the lab's NetBox container and is
+never linked into the Shoal binary — see
+[`docs/netbox-telemetry-ui-design.md`](./docs/netbox-telemetry-ui-design.md).
+Do not treat its presence as license to add Python elsewhere in the app.
 
 ---
 
@@ -116,6 +121,7 @@ shoal/                                    # module: github.com/mattcburns/shoal
     golden/                               # prompt regression fixtures
     redfish/                              # record/replay corpus
   infra/ansible/                          # lab automation (language-agnostic)
+  extras/netbox-plugin-shoal/             # NetBox plugin (Python/Django) -- lab-only, never linked into Go binary
   scripts/
     build-release.sh                      # multi-platform CGO-free release binaries
   .github/workflows/                      # ci.yml + release.yml (v* tags)
