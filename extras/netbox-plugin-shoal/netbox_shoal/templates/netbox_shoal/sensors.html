@@ -1,0 +1,44 @@
+{% extends 'generic/object.html' %}
+
+{% block content %}
+  <div class="row">
+    <div class="col col-md-12">
+      <div class="card">
+        <h5 class="card-header">Shoal Sensors</h5>
+        <div class="card-body">
+          {% if shoal_error %}
+            <div class="alert alert-warning" role="alert">
+              Shoal unavailable: {{ shoal_error }}
+            </div>
+          {% elif not shoal_sensors %}
+            <div class="alert alert-info" role="alert">
+              No sensor readings yet — has Observe poll run? See the lab
+              runbook for how to enable SEL/sensor polling.
+            </div>
+          {% else %}
+            <table class="table table-hover">
+              <thead>
+                <tr>
+                  <th scope="col">Sensor</th>
+                  <th scope="col">Value</th>
+                  <th scope="col">Unit</th>
+                  <th scope="col">Time</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for reading in shoal_sensors %}
+                  <tr>
+                    <td>{{ reading.sensor|default:"—" }}</td>
+                    <td>{{ reading.value|default:"—" }}</td>
+                    <td>{{ reading.unit|default:"—" }}</td>
+                    <td>{{ reading.ts|default:"—" }}</td>
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+  </div>
+{% endblock %}
