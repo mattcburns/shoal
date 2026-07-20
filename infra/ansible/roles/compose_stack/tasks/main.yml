@@ -59,6 +59,15 @@
   when: shoal_compose_app | default(true) | bool
   tags: [config, shoal]
 
+- name: Stage netbox_shoal plugin build context on lab host
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../../../extras/netbox-plugin-shoal/"
+    dest: "{{ shoal_compose_dir }}/netbox-shoal-build/"
+    mode: '0644'
+    directory_mode: '0755'
+  when: shoal_netbox_plugin | default(true) | bool
+  tags: [config, shoal]
+
 - name: Copy Docker Compose file
   template:
     src: docker-compose.lab.yml.j2
@@ -141,6 +150,14 @@
   when: generated_secret.stdout | default('') | length > 0
   no_log: true
   tags: [config]
+
+- name: Write NetBox plugins.py (netbox_shoal)
+  template:
+    src: netbox-plugins.py.j2
+    dest: "{{ shoal_compose_dir }}/netbox-config/plugins.py"
+    mode: '0644'
+  when: shoal_netbox_plugin | default(true) | bool
+  tags: [config, shoal]
 
 - name: Generate NetBox API token pepper if missing
   shell:

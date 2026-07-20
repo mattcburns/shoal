@@ -1,0 +1,32 @@
+{% extends 'generic/object.html' %}
+
+{% block content %}
+  <div class="row">
+    <div class="col col-md-12">
+      <div class="card">
+        <h5 class="card-header">Shoal Status</h5>
+        <div class="card-body">
+          {% if shoal_error %}
+            <div class="alert alert-warning" role="alert">
+              Shoal unavailable: {{ shoal_error }}
+            </div>
+          {% elif not shoal_status %}
+            <div class="alert alert-info" role="alert">
+              No Shoal status for this device yet.
+            </div>
+          {% else %}
+            <table class="table table-hover attr-table">
+              <tr><th scope="row">Lifecycle state</th><td>{{ shoal_status.lifecycle_state|default:"—" }}</td></tr>
+              <tr><th scope="row">Power state</th><td>{{ shoal_status.power_state|default:"—" }}</td></tr>
+              <tr><th scope="row">Active job</th><td>{{ shoal_status.active_job_id|default:"—" }}</td></tr>
+              <tr><th scope="row">Phase</th><td>{{ shoal_status.phase|default:"—" }}</td></tr>
+              <tr><th scope="row">Percent</th><td>{{ shoal_status.percent|default:"—" }}</td></tr>
+              <tr><th scope="row">Last event</th><td>{{ shoal_status.last_event|default:"—" }}</td></tr>
+              <tr><th scope="row">Updated</th><td>{{ shoal_status.updated_at|default:"—" }}</td></tr>
+            </table>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+  </div>
+{% endblock %}

@@ -784,6 +784,31 @@ ansible-playbook -i infra/ansible/inventory/lab-vm.yml infra/ansible/playbooks/s
 ansible-playbook -i infra/ansible/inventory/lab-vm.yml infra/ansible/playbooks/bootstrap_netbox.yml
 ```
 
+### Rebuild the NetBox Shoal plugin only
+The lab's NetBox image is built from `extras/netbox-plugin-shoal` (see that
+package's README) rather than pulled directly, so it always includes the
+`netbox_shoal` plugin (Shoal Status/Events tabs on the device page).
+`shoal_netbox_plugin: true` in `all/defaults.yml` controls this; set it to
+`false` to fall back to the plain upstream image.
+
+```bash
+# Re-stage the plugin source + rebuild/recreate the netbox container
+ansible-playbook -i infra/ansible/inventory/lab-vm.yml infra/ansible/playbooks/up.yml --tags shoal,compose
+
+# Verify: no plugin load errors in the NetBox log
+ssh -i ~/.ssh/shoal_lab_vm lab@192.168.122.100 "docker logs shoal-netbox --tail 200" | grep -i shoal
+
+# Verify in the browser: log into http://192.168.122.100:8000 (admin/admin),
+# open any shoal-node-* device, look for "Shoal Status" and "Shoal Events"
+# tabs. Empty/error states render a plain message (never a stack trace) when
+# Shoal is unreachable or a device has no data yet.
+```
+If tabs don't appear: check `PLUGINS_CONFIG` landed correctly
+(`docker exec shoal-netbox cat /etc/netbox/config/plugins.py`), and that
+`SHOAL_BASE_URL` (`http://host.docker.internal:8088` by default — see
+`shoal_netbox_plugin_base_url`) is actually reachable from inside the
+container (`docker exec shoal-netbox curl -sf http://host.docker.internal:8088/healthz`).
+
 ## 4) Direct host mode
 Run the lab stack directly on the L0 host (no nested VM):
 ```bash

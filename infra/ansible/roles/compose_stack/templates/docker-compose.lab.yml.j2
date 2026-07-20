@@ -4,8 +4,20 @@ services:
     # API tokens that require API_TOKEN_PEPPERS and a key+token pair, breaking
     # the bootstrap playbook's fixed-key token creation. Verify the tag before
     # upgrading.
+{% if shoal_netbox_plugin | default(true) | bool %}
+    # Built from extras/netbox-plugin-shoal (bakes in the netbox_shoal
+    # plugin) instead of pulling the upstream image directly.
+    build:
+      context: {{ shoal_compose_dir }}/netbox-shoal-build
+    image: netbox-shoal:lab
+{% else %}
     image: docker.io/netboxcommunity/netbox:v4.5.10-4.0.2
+{% endif %}
     container_name: shoal-netbox
+    extra_hosts:
+      # Lets this bridge-networked container reach the host-networked shoal
+      # service (see shoal_netbox_plugin_base_url in all/defaults.yml).
+      - "host.docker.internal:host-gateway"
     environment:
       - SUPERUSER_NAME=admin
       - SUPERUSER_EMAIL=admin@example.com
@@ -41,6 +53,9 @@ services:
       - netbox-scripts:/opt/netbox/netbox/scripts
       - {{ shoal_compose_dir }}/netbox-config/secret_key.py:/etc/netbox/config/secret_key.py:ro
       - {{ shoal_compose_dir }}/netbox-config/api_token_pepper_1:/run/secrets/api_token_pepper_1:ro
+{% if shoal_netbox_plugin | default(true) | bool %}
+      - {{ shoal_compose_dir }}/netbox-config/plugins.py:/etc/netbox/config/plugins.py:ro
+{% endif %}
     restart: unless-stopped
     networks:
       - shoal-lab

@@ -1,6 +1,7 @@
 # NetBox integration: visual telemetry, events, and job context
 
-**Status:** Backend API slice (N1-N3) implemented; NetBox plugin (N4+) not started  
+**Status:** Backend API slice (N1-N3) and plugin MVP (N4-N5: Status + Events tabs)
+implemented; Jobs/Sensors tabs (N6) and beyond not started  
 **Date:** July 2026  
 **Audience:** Human architect + coding agents  
 **Related:** Design SoT `SHOAL_COMPREHENSIVE_DESIGN_AND_IMPLEMENTATION_PLAN.md` (v2.0.9+);
@@ -117,26 +118,32 @@ Therefore:
 
 ### 4.2 Identity mapping
 
-| Concept | Source |
-|---------|--------|
-| NetBox device primary key / URL slug | NetBox |
-| `device_id` on jobs/events | Shoal — **must match** the id Discover writes / operators use |
-| BMC endpoint / credential_ref | NetBox custom fields / secrets pattern (existing design) |
+**Resolved (N4/N5, confirmed against `internal/common/netbox/client.go`):** Shoal's
+`device_id` **is the NetBox device's numeric primary key** (string form).
+`Client.UpsertDevice` looks up/creates devices by `serial`, but the NetBox device ID
+returned from that create/lookup is what Shoal writes onto every job/event/telemetry
+row from then on (`internal/discover/service.go`'s `finalize()`). **No dedicated
+`shoal_device_id` custom field is needed or created** — the plugin's views read
+`device.pk` directly off the `Device` object NetBox already resolved for the tab. This
+replaces the speculative "name or `shoal_device_id` CF" MVP rule below, which is kept
+struck through for history.
 
-**MVP rule:** Plugin uses NetBox device **name or a dedicated custom field**
-`shoal_device_id` if present; otherwise NetBox numeric id string only if that is already
-how the lab keys devices. Implementation PR must pin one canonical mapping and document
-lab bootstrap (Discover upsert should set a stable key both sides understand).
+~~**MVP rule:** Plugin uses NetBox device name or a dedicated custom field
+`shoal_device_id` if present; otherwise NetBox numeric id string only if that is
+already how the lab keys devices.~~
 
-Recommended custom fields (identity/pointers only, not history):
+**Custom fields actually bootstrapped** (`infra/ansible/roles/netbox_bootstrap`, all
+`dcim.device`-scoped, plain names — **not** `shoal_`-prefixed as an earlier draft of
+this table assumed):
 
 | Field | Purpose |
 |-------|---------|
-| `shoal_lifecycle_state` | Existing |
-| `shoal_credential_ref` | Existing pattern |
-| `shoal_device_id` | Explicit Shoal key when ≠ NetBox name/id |
-| `shoal_last_job_id` | Optional pointer (updated by Orchestrator on start/terminal) |
-| `shoal_ui_base` | Optional override of global plugin Shoal URL |
+| `lifecycle_state` | Current Shoal lifecycle state |
+| `credential_ref` | Secrets-backend key for BMC credentials (never a password) |
+| `bmc_ip` | Management BMC address |
+
+No `shoal_last_job_id` or `shoal_ui_base` fields exist; both remain optional future
+work (N8 and a per-device Shoal-URL override, respectively), not needed for N4/N5.
 
 ### 4.3 Components
 
@@ -260,23 +267,32 @@ Plugin shows a button: “Open sensor dashboard” with `device_id` variable.
 
 ### 6.1 Device tabs (MVP)
 
-| Tab | Content | Data |
-|-----|---------|------|
-| **Shoal status** | Lifecycle (from status API + NetBox CF), power, active job, phase bar | `GET …/status` |
-| **Events** | Table: ts, severity, type, component, message | `GET …/events` |
-| **Jobs** | Table of recent jobs; link to expand phase/error | `GET …/jobs` |
-| **Sensors** | Latest readings table; optional sparkline later | `GET …/sensors` |
+| Tab | Content | Data | Status |
+|-----|---------|------|--------|
+| **Shoal Status** | Lifecycle, power, active job, phase | `GET …/status` | ✅ N5 |
+| **Shoal Events** | Table: ts, severity, type, component, message | `GET …/events` | ✅ N5 |
+| **Jobs** | Table of recent jobs; link to expand phase/error | `GET …/jobs` | N6, not started |
+| **Sensors** | Latest readings table; optional sparkline later | `GET …/sensors` | N6, not started |
 
 Empty states: “No events yet — has Observe poll run?” with lab runbook link.
 
 ### 6.2 Global plugin configuration
 
-```text
-SHOAL_BASE_URL=http://192.168.122.100:8088   # or internal Docker DNS
-SHOAL_API_TOKEN=…                            # Bearer
-SHOAL_REQUEST_TIMEOUT=10s
-SHOAL_DEVICE_ID_FIELD=shoal_device_id        # or name / id strategy
+Implemented in `extras/netbox-plugin-shoal` (`netbox_shoal.PluginConfig.default_settings`),
+rendered into the lab's `plugins.py` by Ansible (`infra/ansible/roles/compose_stack`):
+
+```python
+PLUGINS_CONFIG = {
+    "netbox_shoal": {
+        "SHOAL_BASE_URL": "http://host.docker.internal:8088",  # empty = "not configured" in the UI
+        "SHOAL_API_TOKEN": "",                                  # optional Bearer; empty = no header sent
+        "SHOAL_REQUEST_TIMEOUT": 10,
+    }
+}
 ```
+
+`SHOAL_DEVICE_ID_FIELD` from the earlier speculative version of this block is dropped —
+see §4.2, no device-id field lookup is needed.
 
 ### 6.3 Optional v2 plugin features
 
@@ -344,8 +360,8 @@ NetBox plugin ──GET jobs by device──► Shoal
 | **N1** | ✅ Shoal API: `GET /v1/devices/{id}/jobs` (+ tests) | Done — `jobstore.Store.ListByDevice`, unit + lab-integration tests |
 | **N2** | ✅ Shoal API: sensors latest (and/or since) | Done — `GET /v1/devices/{id}/sensors`, unit + lab-integration tests |
 | **N3** | ✅ Shoal API: `GET /v1/jobs/{id}/log` | Done — honest empty state confirmed: `job_log` has no production writer yet (`WriteJobLog` is only called from tests), so this endpoint correctly returns `{"lines":[]}` until a writer lands; that writer work is a separate, not-yet-scoped slice |
-| **N4** | NetBox custom fields + config context for Shoal base URL / device id | Lab bootstrap — not started |
-| **N5** | NetBox plugin MVP: Status + Events tabs | Lab demo from device page |
+| **N4** | ✅ Config context for Shoal base URL (no new custom fields needed — see §4.2) | Done — `extras/netbox-plugin-shoal`, Ansible `plugins.py` wiring |
+| **N5** | ✅ NetBox plugin MVP: Status + Events tabs | Done — `extras/netbox-plugin-shoal/netbox_shoal/views.py`; verified live in the lab (both tabs render real job/event data and the designed empty states) |
 | **N6** | Plugin Jobs + Sensors tabs | Lab demo |
 | **N7** | Optional Grafana dashboard + plugin link | Lab compose |
 | **N8** | Optional Orchestrator write of `shoal_last_job_id` pointer | NetBox shows last job link |
@@ -368,12 +384,17 @@ Do **not** block N5 on Grafana or job start-from-NetBox.
 
 ## 12. Open questions
 
-1. **Canonical `device_id`:** NetBox name vs numeric id vs dedicated `shoal_device_id` CF —
-   pin in N4/N5 with Discover alignment.  
-2. **Plugin repo location:** monorepo `extras/netbox-plugin-shoal/` vs separate repo?  
-3. **Read-only API token** vs single token for MVP?  
-4. **job_log population:** which components write today; is N3 blocked until writers land?  
-5. **Historical sensor retention** and Grafana retention policy?  
+1. ✅ **Canonical `device_id`:** resolved — NetBox numeric device ID (`device.pk`), matching
+   `internal/common/netbox/client.go`'s existing `UpsertDevice` convention. No new custom
+   field. See §4.2.
+2. ✅ **Plugin repo location:** resolved — monorepo `extras/netbox-plugin-shoal/`.
+3. **Read-only API token** vs single token for MVP: still open, but moot for N4/N5 — the
+   plugin only calls `GET` routes (never starts/cancels jobs), so the existing single
+   `SHOAL_API_TOKEN` is sufficient until a write-capable feature is built.
+4. ✅ **job_log population:** resolved (see N3, PR #32) — no production writer exists yet;
+   `GET /v1/jobs/{id}/log` honestly returns `{"lines":[]}` until one lands. Not relevant to
+   N4/N5 (Status/Events tabs don't call this endpoint).
+5. **Historical sensor retention** and Grafana retention policy: still open, relevant to N6/N7.
 
 ---
 
