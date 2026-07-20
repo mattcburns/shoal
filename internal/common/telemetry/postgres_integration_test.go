@@ -72,5 +72,13 @@ func TestLabPostgresStoreWriteList(t *testing.T) {
 	if len(sens) == 0 || sens[0].Value != 21.5 {
 		t.Fatalf("sensors: %+v", sens)
 	}
-	t.Logf("ok device=%s event_id=%s sensors=%d", device, evs[0].ID, len(sens))
+
+	lines, err := st.ListJobLog(ctx, "job-p4a-probe", time.Time{}, 10)
+	if err != nil {
+		t.Fatalf("list job log: %v", err)
+	}
+	if len(lines) == 0 || lines[0].Line != "phase4a probe line" {
+		t.Fatalf("job log: %+v", lines)
+	}
+	t.Logf("ok device=%s event_id=%s sensors=%d job_log=%d", device, evs[0].ID, len(sens), len(lines))
 }

@@ -108,6 +108,28 @@ func (s *Service) ListEvents(ctx context.Context, deviceID string, since time.Ti
 	return s.Telemetry.ListEvents(ctx, deviceID, since, limit)
 }
 
+// ListSensors returns recent sensor readings for a device.
+func (s *Service) ListSensors(ctx context.Context, deviceID string, since time.Time, limit int) ([]telemetry.SensorReading, error) {
+	if s.Telemetry == nil {
+		return nil, fmt.Errorf("observe: telemetry store not configured (set SHOAL_TELEMETRY_DATABASE_URL)")
+	}
+	if deviceID == "" {
+		return nil, fmt.Errorf("observe: device_id required")
+	}
+	return s.Telemetry.ListSensors(ctx, deviceID, since, limit)
+}
+
+// ListJobLog returns durable job_log lines for a job.
+func (s *Service) ListJobLog(ctx context.Context, jobID string, since time.Time, limit int) ([]telemetry.JobLogLine, error) {
+	if s.Telemetry == nil {
+		return nil, fmt.Errorf("observe: telemetry store not configured (set SHOAL_TELEMETRY_DATABASE_URL)")
+	}
+	if jobID == "" {
+		return nil, fmt.Errorf("observe: job_id required")
+	}
+	return s.Telemetry.ListJobLog(ctx, jobID, since, limit)
+}
+
 // Watching reports whether a SOL watch is active (for operators; not embedded in Phase).
 func (s *Service) Watching(deviceID string) bool {
 	return s.Watches != nil && s.Watches.HasWatch(deviceID)

@@ -5,9 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/mattcburns/shoal/internal/common/models"
+	"github.com/mattcburns/shoal/internal/common/telemetry"
 	"github.com/mattcburns/shoal/internal/deploy/jobstore"
 )
 
@@ -106,6 +109,47 @@ func (s *Server) handleGetJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, j)
+}
+
+func (s *Server) handleJobLog(w http.ResponseWriter, r *http.Request) {
+	if s.observe == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+			"error": "observe not configured",
+		})
+		return
+	}
+	id := r.PathValue("id")
+	if id == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "missing job id"})
+		return
+	}
+	limit := 50
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	if limit > maxListLimit {
+		limit = maxListLimit
+	}
+	var since time.Time
+	if v := r.URL.Query().Get("since"); v != "" {
+		if t, err := time.Parse(time.RFC3339, v); err == nil {
+			since = t
+		}
+	}
+	lines, err := s.observe.ListJobLog(r.Context(), id, since, limit)
+	if err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": err.Error()})
+		return
+	}
+	if lines == nil {
+		lines = []telemetry.JobLogLine{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"job_id": id,
+		"lines":  lines,
+	})
 }
 
 func (s *Server) handleCancelJob(w http.ResponseWriter, r *http.Request) {

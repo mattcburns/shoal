@@ -1,6 +1,6 @@
 # NetBox integration: visual telemetry, events, and job context
 
-**Status:** Design draft (implementation not started)  
+**Status:** Backend API slice (N1-N3) implemented; NetBox plugin (N4+) not started  
 **Date:** July 2026  
 **Audience:** Human architect + coding agents  
 **Related:** Design SoT `SHOAL_COMPREHENSIVE_DESIGN_AND_IMPLEMENTATION_PLAN.md` (v2.0.9+);
@@ -189,12 +189,13 @@ MVP may use the existing single token with plugin only calling GET routes.
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| `GET` | `/v1/devices/{id}/jobs?limit=&state=` | Recent jobs for device |
-| `GET` | `/v1/devices/{id}/sensors?since=&limit=` or latest-per-sensor | Sensors tab |
-| `GET` | `/v1/jobs/{id}/log?since=&limit=` | Job log lines from `job_log` (if populated) |
-| `GET` | `/v1/devices/{id}/summary` (optional) | Single round-trip: status + last N events + active job |
+| `GET` | ✅ `/v1/devices/{id}/jobs?limit=&state=` | Recent jobs for device |
+| `GET` | ✅ `/v1/devices/{id}/sensors?since=&limit=` | Sensors tab (flat since/limit list, newest-first; no "latest-per-sensor" query yet — dedupe client-side if needed) |
+| `GET` | ✅ `/v1/jobs/{id}/log?since=&limit=` | Job log lines from `job_log`, oldest-first (empty until a writer exists — see N3) |
+| `GET` | `/v1/devices/{id}/summary` (optional) | Not implemented. Single round-trip: status + last N events + active job |
 
-**Query conventions:** RFC3339 `since`, bounded `limit` (cap e.g. 200–500), stable JSON
+**Query conventions:** RFC3339 `since`, bounded `limit` (cap 200, enforced on the three
+new endpoints above — existing `status`/`events` endpoints are unchanged), stable JSON
 shapes, empty lists not 404.
 
 **Auth:** Same Bearer gate as other `/v1/*` when token configured.
@@ -340,10 +341,10 @@ NetBox plugin ──GET jobs by device──► Shoal
 | Slice | Deliverable | AC |
 |-------|-------------|-----|
 | **N0** | This design merged | Docs only |
-| **N1** | Shoal API: `GET /v1/devices/{id}/jobs` (+ tests) | Unit + optional lab |
-| **N2** | Shoal API: sensors latest (and/or since) | Unit; poll writes visible |
-| **N3** | Shoal API: `GET /v1/jobs/{id}/log` if `job_log` writers exist; else stub/doc | Honest empty state |
-| **N4** | NetBox custom fields + config context for Shoal base URL / device id | Lab bootstrap |
+| **N1** | ✅ Shoal API: `GET /v1/devices/{id}/jobs` (+ tests) | Done — `jobstore.Store.ListByDevice`, unit + lab-integration tests |
+| **N2** | ✅ Shoal API: sensors latest (and/or since) | Done — `GET /v1/devices/{id}/sensors`, unit + lab-integration tests |
+| **N3** | ✅ Shoal API: `GET /v1/jobs/{id}/log` | Done — honest empty state confirmed: `job_log` has no production writer yet (`WriteJobLog` is only called from tests), so this endpoint correctly returns `{"lines":[]}` until a writer lands; that writer work is a separate, not-yet-scoped slice |
+| **N4** | NetBox custom fields + config context for Shoal base URL / device id | Lab bootstrap — not started |
 | **N5** | NetBox plugin MVP: Status + Events tabs | Lab demo from device page |
 | **N6** | Plugin Jobs + Sensors tabs | Lab demo |
 | **N7** | Optional Grafana dashboard + plugin link | Lab compose |

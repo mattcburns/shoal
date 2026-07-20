@@ -56,6 +56,34 @@ func TestAPIAuthProtectsV1(t *testing.T) {
 	_ = json.Unmarshal(rr.Body.Bytes(), &body)
 }
 
+// TestAPIAuthProtectsNewTelemetryRoutes covers the N1-N3 routes explicitly —
+// the auth gate is a blanket /v1/ prefix match (TestAPIAuthProtectsV1 already
+// proves the mechanism), but each new route is checked individually so a
+// future refactor that accidentally registers one outside /v1/ is caught.
+func TestAPIAuthProtectsNewTelemetryRoutes(t *testing.T) {
+	s := api.New(config.Config{APIToken: "secret-token"}, nil)
+	for _, path := range []string{
+		"/v1/devices/x/jobs",
+		"/v1/devices/x/sensors",
+		"/v1/jobs/x/log",
+	} {
+		rr := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		s.Handler().ServeHTTP(rr, req)
+		if rr.Code != http.StatusUnauthorized {
+			t.Fatalf("%s: want 401 without bearer, got %d", path, rr.Code)
+		}
+
+		rr = httptest.NewRecorder()
+		req = httptest.NewRequest(http.MethodGet, path, nil)
+		req.Header.Set("Authorization", "Bearer secret-token")
+		s.Handler().ServeHTTP(rr, req)
+		if rr.Code == http.StatusUnauthorized {
+			t.Fatalf("%s: valid bearer still unauthorized", path)
+		}
+	}
+}
+
 func TestAPIAuthRejectsWrongToken(t *testing.T) {
 	s := api.New(config.Config{APIToken: "secret-token"}, nil)
 	rr := httptest.NewRecorder()

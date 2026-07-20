@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/mattcburns/shoal/internal/common/models"
+	"github.com/mattcburns/shoal/internal/common/telemetry"
 	"github.com/mattcburns/shoal/internal/observe"
 )
 
@@ -71,5 +72,86 @@ func (s *Server) handleDeviceEvents(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"device_id": id,
 		"events":    evs,
+	})
+}
+
+func (s *Server) handleDeviceJobs(w http.ResponseWriter, r *http.Request) {
+	if s.jobs == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+			"error": "job store not configured",
+		})
+		return
+	}
+	id := r.PathValue("id")
+	if id == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "missing device id"})
+		return
+	}
+	limit := 50
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	if limit > maxListLimit {
+		limit = maxListLimit
+	}
+	// state is not validated against the LifecycleState enum: an unrecognized
+	// value simply matches no rows, mirroring how an unparseable `since`
+	// elsewhere falls back to "no filter" rather than 400.
+	state := models.LifecycleState(r.URL.Query().Get("state"))
+	jobs, err := s.jobs.ListByDevice(r.Context(), id, state, limit)
+	if err != nil {
+		s.log.Error("list device jobs", "err", err.Error())
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "internal error"})
+		return
+	}
+	if jobs == nil {
+		jobs = []models.ProvisioningJob{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"device_id": id,
+		"jobs":      jobs,
+	})
+}
+
+func (s *Server) handleDeviceSensors(w http.ResponseWriter, r *http.Request) {
+	if s.observe == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+			"error": "observe not configured",
+		})
+		return
+	}
+	id := r.PathValue("id")
+	if id == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "missing device id"})
+		return
+	}
+	limit := 50
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	if limit > maxListLimit {
+		limit = maxListLimit
+	}
+	var since time.Time
+	if v := r.URL.Query().Get("since"); v != "" {
+		if t, err := time.Parse(time.RFC3339, v); err == nil {
+			since = t
+		}
+	}
+	readings, err := s.observe.ListSensors(r.Context(), id, since, limit)
+	if err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": err.Error()})
+		return
+	}
+	if readings == nil {
+		readings = []telemetry.SensorReading{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"device_id": id,
+		"readings":  readings,
 	})
 }

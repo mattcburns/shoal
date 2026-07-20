@@ -55,5 +55,6 @@ CREATE TABLE IF NOT EXISTS job_log (
 );
 
 CREATE INDEX IF NOT EXISTS jobs_state_idx ON jobs (state);
+CREATE INDEX IF NOT EXISTS jobs_device_idx ON jobs (device_id);
 CREATE INDEX IF NOT EXISTS events_device_ts_idx ON events (device_id, ts);
 CREATE INDEX IF NOT EXISTS job_log_job_ts_idx ON job_log (job_id, ts);

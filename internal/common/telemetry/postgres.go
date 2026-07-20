@@ -183,6 +183,45 @@ ORDER BY ts DESC LIMIT $3`, deviceID, since.UTC(), limit)
 	return out, rows.Err()
 }
 
+// ListJobLog returns oldest-first job_log lines for a job since the given time.
+func (p *Postgres) ListJobLog(ctx context.Context, jobID string, since time.Time, limit int) ([]JobLogLine, error) {
+	if jobID == "" {
+		return nil, fmt.Errorf("telemetry: job_id required")
+	}
+	if limit <= 0 {
+		limit = 100
+	}
+	var (
+		rows *sql.Rows
+		err  error
+	)
+	if since.IsZero() {
+		rows, err = p.db.QueryContext(ctx, `
+SELECT job_id, ts, line
+FROM job_log WHERE job_id = $1
+ORDER BY ts ASC LIMIT $2`, jobID, limit)
+	} else {
+		rows, err = p.db.QueryContext(ctx, `
+SELECT job_id, ts, line
+FROM job_log WHERE job_id = $1 AND ts >= $2
+ORDER BY ts ASC LIMIT $3`, jobID, since.UTC(), limit)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("telemetry: list job log: %w", err)
+	}
+	defer rows.Close()
+
+	var out []JobLogLine
+	for rows.Next() {
+		var l JobLogLine
+		if err := rows.Scan(&l.JobID, &l.TS, &l.Line); err != nil {
+			return nil, fmt.Errorf("telemetry: scan job log: %w", err)
+		}
+		out = append(out, l)
+	}
+	return out, rows.Err()
+}
+
 func nullStr(s string) any {
 	if s == "" {
 		return nil

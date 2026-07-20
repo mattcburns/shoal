@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/mattcburns/shoal/internal/common/models"
 	"github.com/mattcburns/shoal/internal/deploy/jobstore"
@@ -45,6 +46,55 @@ func TestMemoryStoreLifecycle(t *testing.T) {
 	_, err = s.Get(ctx, "missing")
 	if !errors.Is(err, jobstore.ErrNotFound) {
 		t.Fatalf("want not found: %v", err)
+	}
+}
+
+func TestMemoryListByDevice(t *testing.T) {
+	ctx := context.Background()
+	s := jobstore.NewMemory()
+	older := time.Now().UTC().Add(-time.Hour)
+	newer := time.Now().UTC()
+	seed := []models.ProvisioningJob{
+		{ID: "d4-old", DeviceID: "d4", State: models.StateProvisioned, UpdatedAt: &older},
+		{ID: "d4-new", DeviceID: "d4", State: models.StateFailed, UpdatedAt: &newer},
+		{ID: "other", DeviceID: "d5", State: models.StateProvisioned, UpdatedAt: &newer},
+	}
+	for _, j := range seed {
+		if err := s.Insert(ctx, j); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	list, err := s.ListByDevice(ctx, "d4", "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 2 || list[0].ID != "d4-new" || list[1].ID != "d4-old" {
+		t.Fatalf("want [d4-new d4-old] newest-first, got %+v", list)
+	}
+
+	filtered, err := s.ListByDevice(ctx, "d4", models.StateFailed, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(filtered) != 1 || filtered[0].ID != "d4-new" {
+		t.Fatalf("state filter: %+v", filtered)
+	}
+
+	capped, err := s.ListByDevice(ctx, "d4", "", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(capped) != 1 {
+		t.Fatalf("limit: got %d", len(capped))
+	}
+
+	none, err := s.ListByDevice(ctx, "unknown-device", "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(none) != 0 {
+		t.Fatalf("unknown device: %+v", none)
 	}
 }
 
