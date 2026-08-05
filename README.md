@@ -39,9 +39,9 @@ gofmt -w . && go vet ./... && staticcheck ./... && go test ./...
 ### NetBox plugin
 [`extras/netbox-plugin-shoal/`](extras/netbox-plugin-shoal/README.md) is a
 NetBox plugin (Python/Django — the one place in this repo Go isn't used;
-see the "Stack" note in `AGENTS.md`) that adds **Shoal Status** and **Shoal
-Events** tabs to the NetBox device page, reading the API above server-side.
-It's baked into the lab's NetBox image by default
+see the "Stack" note in `AGENTS.md`) that adds read-only **Shoal Status**,
+**Events**, **Jobs**, and **Sensors** tabs to the NetBox device page, reading
+the API above server-side. It's baked into the lab's NetBox image by default
 (`shoal_netbox_plugin: true`); see
 [`docs/netbox-telemetry-ui-design.md`](docs/netbox-telemetry-ui-design.md)
 for the design and its own README for plugin development.
@@ -75,11 +75,13 @@ release builds: `./scripts/build-release.sh` (see Phase 6c).
 ## Lab docs
 - [Lab Runbook (Quick Ops)](docs/lab-runbook.md)
 - [Lab Setup Checklist (First-Time)](docs/lab-setup-checklist.md)
+- [Lab on Debian (VM-hosted L0)](docs/lab-setup-debian.md)
 - [Operator host: macOS](docs/operator-macos.md)
 - [Phase 6c plan (packaging + L0 hosts)](docs/phase-6c-plan.md)
 - [Phase 6d plan (Compose app + auth + metrics)](docs/phase-6d-plan.md)
 - [Phase 7 plan (full OS autoinstall)](docs/phase-7-plan.md)
-- [NetBox telemetry UI design (backend API + plugin)](docs/netbox-telemetry-ui-design.md)
+- [Multi-stage provisioning design (M1–M6 implemented)](docs/multi-stage-provisioning-design.md)
+- [NetBox telemetry UI design (backend API + plugin N1–N6)](docs/netbox-telemetry-ui-design.md)
 - [Real-hardware SOL runbook](docs/real-hardware-sol-runbook.md)
 
 ## Prerequisites (L0 host)
@@ -174,7 +176,7 @@ ssh -i ~/.ssh/shoal_lab_vm lab@192.168.122.100
 ## Service endpoints (default values)
 VM-hosted mode (lab VM IP, default `192.168.122.100`):
 - Shoal app: `http://192.168.122.100:8088` (`/healthz`, `/v1/*`; open by default in the lab — see `SHOAL_API_TOKEN` in `AGENTS.md` §3.3)
-- NetBox: `http://192.168.122.100:8000` (open a `shoal-node-*` device page for the Shoal Status/Events tabs, once `extras/netbox-plugin-shoal` is enabled)
+- NetBox: `http://192.168.122.100:8000` (open a `shoal-node-*` device page for the Shoal Status / Events / Jobs / Sensors tabs; enabled by default via `shoal_netbox_plugin`)
 - Ollama: `http://192.168.122.100:11434`
 - ISO HTTP server: `http://192.168.122.100:8080`
 - sushy-tools Redfish root: `http://192.168.122.100:8001/redfish/v1`

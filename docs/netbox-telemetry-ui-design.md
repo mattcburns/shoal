@@ -1,8 +1,9 @@
 # NetBox integration: visual telemetry, events, and job context
 
-**Status:** Backend API slice (N1-N3) and plugin MVP (N4-N5: Status + Events tabs)
-and plugin Jobs/Sensors tabs (N6) implemented; N7+ not started  
-**Date:** July 2026  
+**Status:** Read-only MVP complete — backend APIs **N1–N3** and plugin tabs
+**N4–N6** (Status, Events, Jobs, Sensors) implemented and lab-verified; **N7+**
+(Grafana link, last-job pointer, write actions) not started.  
+**Date:** July 2026 (status updated August 2026)  
 **Audience:** Human architect + coding agents  
 **Related:** Design SoT `SHOAL_COMPREHENSIVE_DESIGN_AND_IMPLEMENTATION_PLAN.md` (v2.0.9+);
 [`docs/multi-stage-provisioning-design.md`](./multi-stage-provisioning-design.md) §16.1 (NetBox remains device identity SoT).

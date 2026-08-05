@@ -1,6 +1,9 @@
 # Shoal Lab Setup Checklist (First-Time)
 First-time setup of the Shoal lab. All steps use Ansible directly; there is no Makefile.
 
+**Debian laptop/desktop as L0:** step-by-step guide in
+[lab-setup-debian.md](./lab-setup-debian.md) (packages, nested KVM, vault, `up.yml`).
+
 ## 1) Host prerequisites (L0)
 
 L0 is the **Linux hypervisor** that runs the lab VM. **macOS is not a valid L0**
@@ -12,6 +15,12 @@ L0 is the **Linux hypervisor** that runs the lab VM. **macOS is not a valid L0**
 - [ ] `qemu-img` installed; QEMU/KVM stack present
 - [ ] Seed ISO tool: `genisoimage` **or** `mkisofs` **or** `xorriso`
 - [ ] `ansible-playbook` installed (on L0 or a controller that SSHs to L0)
+- [ ] Python deps for `community.libvirt` on the controller/L0: `python3-lxml`
+      and `python3-libvirt` (Debian/Ubuntu: `apt install python3-lxml python3-libvirt`)
+- [ ] **Go 1.22+** on the controller (`go version`): `compose_stack` builds the
+      Shoal binary with `go build` on localhost when `shoal_compose_app` is true
+      (default). Debian/Ubuntu: `apt install golang-go` if ≥ 1.22, else install
+      from [go.dev/dl](https://go.dev/dl/)
 - [ ] `ssh` / `scp` installed
 - [ ] `/dev/kvm` exists on host
 - [ ] CPU virtualization flags present (`vmx` or `svm`)

@@ -51,7 +51,7 @@ shoal_compose_app: true
 shoal_api_token: ""
 
 # Build the netbox_shoal plugin into the lab's NetBox image (adds Shoal
-# Status/Events tabs to the device page). See extras/netbox-plugin-shoal.
+# Status/Events/Jobs/Sensors tabs to the device page). See extras/netbox-plugin-shoal.
 shoal_netbox_plugin: true
 # The Shoal app runs network_mode: host, so it's not reachable from
 # bridge-networked containers (like netbox) via 127.0.0.1 -- that resolves to

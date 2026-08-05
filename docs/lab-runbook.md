@@ -787,9 +787,9 @@ ansible-playbook -i infra/ansible/inventory/lab-vm.yml infra/ansible/playbooks/b
 ### Rebuild the NetBox Shoal plugin only
 The lab's NetBox image is built from `extras/netbox-plugin-shoal` (see that
 package's README) rather than pulled directly, so it always includes the
-`netbox_shoal` plugin (Shoal Status/Events tabs on the device page).
-`shoal_netbox_plugin: true` in `all/defaults.yml` controls this; set it to
-`false` to fall back to the plain upstream image.
+`netbox_shoal` plugin (Status, Events, Jobs, and Sensors tabs on the device
+page). `shoal_netbox_plugin: true` in `all/defaults.yml` controls this; set it
+to `false` to fall back to the plain upstream image.
 
 ```bash
 # Re-stage the plugin source + rebuild/recreate the netbox container
@@ -799,9 +799,10 @@ ansible-playbook -i infra/ansible/inventory/lab-vm.yml infra/ansible/playbooks/u
 ssh -i ~/.ssh/shoal_lab_vm lab@192.168.122.100 "docker logs shoal-netbox --tail 200" | grep -i shoal
 
 # Verify in the browser: log into http://192.168.122.100:8000 (admin/admin),
-# open any shoal-node-* device, look for "Shoal Status" and "Shoal Events"
-# tabs. Empty/error states render a plain message (never a stack trace) when
-# Shoal is unreachable or a device has no data yet.
+# open any shoal-node-* device, look for "Shoal Status", "Shoal Events",
+# "Shoal Jobs", and "Shoal Sensors" tabs. Empty/error states render a plain
+# message (never a stack trace) when Shoal is unreachable or a device has no
+# data yet.
 ```
 If tabs don't appear: check `PLUGINS_CONFIG` landed correctly
 (`docker exec shoal-netbox cat /etc/netbox/config/plugins.py`), and that
