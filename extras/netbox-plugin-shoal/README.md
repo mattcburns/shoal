@@ -1,12 +1,13 @@
 # netbox-shoal
 
-A NetBox plugin that adds **Shoal Status** and **Shoal Events** tabs to the
-device detail page, reading [Shoal](https://github.com/mattcburns/shoal)'s
-HTTP API server-side. See
+A NetBox plugin that adds **Shoal Status**, **Shoal Events**, **Shoal Jobs**,
+and **Shoal Sensors** tabs to the device detail page, reading
+[Shoal](https://github.com/mattcburns/shoal)'s HTTP API server-side. See
 [`docs/netbox-telemetry-ui-design.md`](../../docs/netbox-telemetry-ui-design.md)
-in the main repo for the full design; this package covers slices N4+N5
-(plugin skeleton + Status/Events tabs). Jobs/Sensors tabs (N6) are a
-follow-up.
+in the main repo for the full design. This package covers slices **N4–N6**
+(plugin skeleton + all four read-only device tabs). Optional follow-ons
+(Grafana link, job-log viewer, start/cancel from NetBox) are **N7+** and not
+in this package yet.
 
 This is the first Python code in the Shoal repo. It runs entirely inside the
 lab's NetBox container — it is never linked into the Shoal Go binary and

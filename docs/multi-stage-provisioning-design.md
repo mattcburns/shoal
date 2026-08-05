@@ -1,7 +1,9 @@
 # Multi-stage provisioning orchestrator & OS support matrix
 
-**Status:** Design draft (implementation not started)  
-**Date:** July 2026  
+**Status:** v1 slices **M1–M6 implemented** (stage runner, prep wipe, offline seed,
+Flatcar Ignition, operator_iso, profile defaults). Later items (verify stage, ESXi/
+Windows ISO compose, richer coarse progress) remain open — see §11.  
+**Date:** July 2026 (status updated August 2026)  
 **Audience:** Human architect + coding agents  
 **Related:** Design SoT `SHOAL_COMPREHENSIVE_DESIGN_AND_IMPLEMENTATION_PLAN.md` (v2.0.9+);
 Phase **7a complete** (Ubuntu nested-lab cloud image-write). This document **supersedes**
