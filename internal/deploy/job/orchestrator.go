@@ -19,6 +19,7 @@ import (
 	"github.com/mattcburns/shoal/internal/common/netbox"
 	"github.com/mattcburns/shoal/internal/common/redfish"
 	"github.com/mattcburns/shoal/internal/common/secrets"
+	"github.com/mattcburns/shoal/internal/common/telemetry"
 	"github.com/mattcburns/shoal/internal/common/validate"
 	"github.com/mattcburns/shoal/internal/common/watchport"
 	"github.com/mattcburns/shoal/internal/core/profile"
@@ -58,6 +59,8 @@ type Orchestrator struct {
 	newBMC                 redfish.Factory
 	watches                watchport.WatchRegistrar
 	netbox                 netbox.LifecycleWriter // optional; identity lifecycle only
+	resolver               netbox.DeviceResolver  // optional; remap name/serial → NetBox pk
+	telemetry              telemetry.Store        // optional; durable job_log from SOL markers
 	profiles               profile.Store          // optional; Phase 5b approval gate
 	isoBaseURL             string                 // Phase 5c: resolve profile iso_base → URL
 	isoBuilder             iso.Builder            // optional Phase 6a dynamic build
@@ -68,6 +71,10 @@ type Orchestrator struct {
 	caFile                 string
 	failOrphan             bool
 	defaultSerialTransport string
+	// defaultBMCUser/Pass fill Start when the request omits credentials (lab +
+	// NetBox plugin start without shipping passwords through the UI).
+	defaultBMCUser string
+	defaultBMCPass string
 
 	mu       sync.Mutex
 	running  map[string]*runState // jobID -> state
@@ -116,17 +123,23 @@ type terminalEvent struct {
 
 // Options configures the Orchestrator.
 type Options struct {
-	Log                 *slog.Logger
-	Store               jobstore.Store
-	Secrets             secrets.Backend
-	NewBMC              redfish.Factory
-	Watches             watchport.WatchRegistrar
-	NetBox              netbox.LifecycleWriter // optional Phase 5 lifecycle sync
-	Profiles            profile.Store          // optional Phase 5b profile load/approval
-	ISOBaseURL          string                 // optional Phase 5c profile → ISO URL resolve
-	ISOBuilder          iso.Builder            // optional Phase 6a dynamic build
-	ISOPublishDir       string                 // publish dir for dynamic build
-	ISODynamic          bool                   // build when ISOURL empty (needs builder+publish+base)
+	Log     *slog.Logger
+	Store   jobstore.Store
+	Secrets secrets.Backend
+	NewBMC  redfish.Factory
+	Watches watchport.WatchRegistrar
+	NetBox  netbox.LifecycleWriter // optional Phase 5 lifecycle sync
+	// DeviceResolver remaps device_id (name/serial → NetBox pk) at Start.
+	// When nil and NetBox implements DeviceResolver, NetBox is used.
+	DeviceResolver netbox.DeviceResolver
+	// Telemetry is optional; when set, SOL markers are appended to job_log
+	// for GET /v1/jobs/{id}/log and the NetBox Jobs tab.
+	Telemetry           telemetry.Store
+	Profiles            profile.Store // optional Phase 5b profile load/approval
+	ISOBaseURL          string        // optional Phase 5c profile → ISO URL resolve
+	ISOBuilder          iso.Builder   // optional Phase 6a dynamic build
+	ISOPublishDir       string        // publish dir for dynamic build
+	ISODynamic          bool          // build when ISOURL empty (needs builder+publish+base)
 	AuthMode            string
 	TLSMode             string
 	CAFile              string
@@ -135,6 +148,10 @@ type Options struct {
 	// ("libvirt" | "redfish_sol") used when StartJobRequest.SerialTransport is
 	// empty. Empty here means "libvirt" (unchanged behavior).
 	DefaultSerialTransport string
+	// DefaultBMCUsername/Password fill empty Start credentials from env
+	// (SHOAL_BMC_*), so NetBox start-job need not post passwords.
+	DefaultBMCUsername string
+	DefaultBMCPassword string
 }
 
 // NewOrchestrator constructs an Orchestrator and starts the terminal worker.
@@ -154,6 +171,12 @@ func NewOrchestrator(opts Options) *Orchestrator {
 	if tlsMode == "" {
 		tlsMode = "off"
 	}
+	resolver := opts.DeviceResolver
+	if resolver == nil {
+		if r, ok := opts.NetBox.(netbox.DeviceResolver); ok {
+			resolver = r
+		}
+	}
 	o := &Orchestrator{
 		log:                    log,
 		store:                  opts.Store,
@@ -161,6 +184,8 @@ func NewOrchestrator(opts Options) *Orchestrator {
 		newBMC:                 opts.NewBMC,
 		watches:                opts.Watches,
 		netbox:                 opts.NetBox,
+		resolver:               resolver,
+		telemetry:              opts.Telemetry,
 		profiles:               opts.Profiles,
 		isoBaseURL:             opts.ISOBaseURL,
 		isoBuilder:             opts.ISOBuilder,
@@ -171,6 +196,8 @@ func NewOrchestrator(opts Options) *Orchestrator {
 		caFile:                 opts.CAFile,
 		failOrphan:             opts.ReconcileFailOrphan, // composition root passes config default true
 		defaultSerialTransport: opts.DefaultSerialTransport,
+		defaultBMCUser:         opts.DefaultBMCUsername,
+		defaultBMCPass:         opts.DefaultBMCPassword,
 		running:                make(map[string]*runState),
 		terminal:               make(chan terminalEvent, 64),
 		stopCh:                 make(chan struct{}),
@@ -197,11 +224,24 @@ func (o *Orchestrator) terminalLoop() {
 		case <-o.stopCh:
 			return
 		case ev := <-o.terminal:
-			ctx, cancel := context.WithTimeout(context.Background(), TerminalWorkerTimeout)
-			if err := o.HandleTerminal(ctx, ev.jobID, ev.reason); err != nil {
-				o.log.Error("HandleTerminal failed", "job_id", ev.jobID, "reason", string(ev.reason), "err", err.Error())
-			}
-			cancel()
+			// A panic in terminal handling must not kill the whole process
+			// (Compose would restart and orphan-fail an otherwise-successful job).
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						o.log.Error("HandleTerminal panic recovered",
+							"job_id", ev.jobID,
+							"reason", string(ev.reason),
+							"recover", fmt.Sprint(r),
+						)
+					}
+				}()
+				ctx, cancel := context.WithTimeout(context.Background(), TerminalWorkerTimeout)
+				defer cancel()
+				if err := o.HandleTerminal(ctx, ev.jobID, ev.reason); err != nil {
+					o.log.Error("HandleTerminal failed", "job_id", ev.jobID, "reason", string(ev.reason), "err", err.Error())
+				}
+			}()
 		}
 	}
 }
@@ -228,6 +268,8 @@ func (o *Orchestrator) Get(ctx context.Context, jobID string) (models.Provisioni
 // M6: non-spike profiles fill empty strategy/prep/seed/family/media fields before validate.
 // When ISOURL is empty, media_url / iso_base resolve via SHOAL_ISO_BASE_URL (Phase 5c).
 // Optional BuildISO / SHOAL_ISO_DYNAMIC builds and publishes a live image first (Phase 6a).
+// When a DeviceResolver is available (NetBox), device_id is remapped from name/serial
+// to the NetBox numeric primary key so plugin tabs and telemetry share one key.
 func (o *Orchestrator) Start(ctx context.Context, req models.StartJobRequest) (models.ProvisioningJob, error) {
 	if o.watches == nil {
 		return models.ProvisioningJob{}, fmt.Errorf("job: watch registrar not configured")
@@ -238,6 +280,11 @@ func (o *Orchestrator) Start(ctx context.Context, req models.StartJobRequest) (m
 		profileRef = "spike"
 	}
 	req.ProfileRef = profileRef
+
+	if err := o.resolveDeviceID(ctx, &req); err != nil {
+		return models.ProvisioningJob{}, err
+	}
+	o.applyDefaultCredentials(&req)
 
 	// M6: apply profile defaults before validation so profile-only starts work.
 	var prof models.ProvisioningProfile
@@ -426,13 +473,19 @@ func (o *Orchestrator) startStage(ctx context.Context, job models.ProvisioningJo
 	}
 	defer func() { _ = bmc.Close(context.Background()) }()
 
+	// Prefer explicit SystemID, then serial target / name (lab multi-system sushy),
+	// then device_id. After NetBox resolve, device_id is a numeric pk and is a
+	// poor Redfish system key — serial_target (shoal-node-1) still matches Name.
 	lookup := req.SystemID
+	if lookup == "" {
+		lookup = req.SerialTarget
+	}
 	if lookup == "" {
 		lookup = req.DeviceID
 	}
 	sys, err := bmc.GetSystem(ctx, lookup)
 	if err != nil {
-		if req.SystemID == "" && req.DeviceID != "" {
+		if req.SystemID == "" {
 			sys, err = bmc.GetSystem(ctx, "")
 		}
 		if err != nil {
@@ -976,18 +1029,23 @@ func (o *Orchestrator) handleTerminalOnce(ctx context.Context, jobID string, rea
 	var errMsg string
 	switch reason {
 	case ReasonDoneOK:
+		// SOL DONE means the install path succeeded. Cleanup remains mandatory
+		// best-effort, but must not reverse success: process crash, sushy tray
+		// removal, or post-restart secret loss must not mark a finished install failed.
 		to = models.StateProvisioned
 		errMsg = ""
-		// Phase 5: DONE post-check — cleanup must have left media/boot clear.
 		if cleanupErr != nil {
-			to = models.StateFailed
-			errMsg = "post-check: bmc cleanup incomplete: " + cleanupErr.Error()
-			o.log.Warn("DONE post-check failed", "job_id", jobID, "err", cleanupErr.Error())
-		} else if bmcURL != "" {
+			if cleanupAlreadyClean(cleanupErr) {
+				o.log.Info("DONE cleanup treated as already clean", "job_id", jobID, "err", cleanupErr.Error())
+			} else {
+				o.log.Error("DONE cleanup incomplete (job still provisioned)",
+					"job_id", jobID, "err", cleanupErr.Error())
+			}
+		}
+		if bmcURL != "" {
 			if err := o.postCheckClean(context.Background(), bmcURL, credRef, systemID); err != nil {
-				to = models.StateFailed
-				errMsg = "post-check: " + err.Error()
-				o.log.Warn("DONE post-check failed", "job_id", jobID, "err", err.Error())
+				o.log.Warn("DONE post-check warning (job still provisioned)",
+					"job_id", jobID, "err", err.Error())
 			}
 		}
 	case ReasonCancel:
@@ -1048,6 +1106,18 @@ func (o *Orchestrator) handleTerminalOnce(ctx context.Context, jobID string, rea
 	return nil
 }
 
+// cleanupAlreadyClean reports cleanup errors that mean "nothing left to eject"
+// (common on sushy after eject removes the CD device).
+func cleanupAlreadyClean(err error) bool {
+	if err == nil {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "no virtual media") ||
+		strings.Contains(msg, "no cd") ||
+		(strings.Contains(msg, "not found") && strings.Contains(msg, "media"))
+}
+
 // postCheckClean verifies media ejected and boot override cleared after cleanup.
 func (o *Orchestrator) postCheckClean(ctx context.Context, bmcURL, credRef, systemID string) error {
 	user, pass := "", ""
@@ -1069,8 +1139,13 @@ func (o *Orchestrator) postCheckClean(ctx context.Context, bmcURL, credRef, syst
 	defer func() { _ = bmc.Close(context.Background()) }()
 	vms, err := bmc.ListVirtualMedia(ctx, systemID)
 	if err != nil {
+		// Empty/missing media inventory after sushy eject is already-clean.
+		if cleanupAlreadyClean(err) {
+			return nil
+		}
 		return fmt.Errorf("list media post-check: %w", err)
 	}
+	// No slots left ⇒ nothing inserted (lab fidelity after eject).
 	for _, vm := range vms {
 		if vm.Inserted {
 			return fmt.Errorf("virtual media still inserted (%s)", vm.URI)
@@ -1153,6 +1228,9 @@ func (o *Orchestrator) probeCDCount(ctx context.Context, req models.StartJobRequ
 	}
 	defer func() { _ = bmc.Close(context.Background()) }()
 	lookup := req.SystemID
+	if lookup == "" {
+		lookup = req.SerialTarget
+	}
 	if lookup == "" {
 		lookup = req.DeviceID
 	}
@@ -1357,9 +1435,11 @@ func (o *Orchestrator) cleanupBMC(ctx context.Context, bmcURL, credRef, systemID
 	}
 }
 
-// ReconcileOrphans fails in-flight PROVISIONING jobs left from a previous process.
-// Default policy (failOrphan=true): cleanup + FAILED for each.
-// Re-attach SOL is deferred (MVP: fail orphans is the safe default).
+// ReconcileOrphans finishes in-flight PROVISIONING jobs left from a previous process.
+// Default policy (failOrphan=true): cleanup + terminal state for each.
+// Jobs that already recorded a successful DONE marker (phase DONE / 100%) are
+// completed as done_ok so a crash mid-cleanup does not erase a successful install.
+// Other orphans fail (re-attach SOL is deferred; fail is the safe default).
 func (o *Orchestrator) ReconcileOrphans(ctx context.Context) error {
 	jobs, err := o.store.ListByState(ctx, models.StateProvisioning)
 	if err != nil {
@@ -1373,9 +1453,19 @@ func (o *Orchestrator) ReconcileOrphans(ctx context.Context) error {
 			)
 			continue
 		}
+		reason := ReasonBMC
+		decision := "fail_orphan"
+		why := "unrecoverable_after_restart"
+		if orphanLooksSuccessfullyComplete(j) {
+			// Process died after SOL DONE but before lifecycle commit — honor success.
+			reason = ReasonDoneOK
+			decision = "complete_orphan_done"
+			why = "phase_done_after_restart"
+		}
 		o.log.Warn("reconciling orphan job",
 			"job_id", j.ID, "device_id", j.DeviceID,
-			"decision", "fail_orphan", "reason", "unrecoverable_after_restart",
+			"decision", decision, "reason", why,
+			"phase", j.Phase, "percent", percentLog(j.Percent),
 		)
 		// Seed runState from durable job fields for cleanup coordinates.
 		o.mu.Lock()
@@ -1388,11 +1478,36 @@ func (o *Orchestrator) ReconcileOrphans(ctx context.Context) error {
 			}
 		}
 		o.mu.Unlock()
-		if err := o.HandleTerminal(ctx, j.ID, ReasonBMC); err != nil {
+		if err := o.HandleTerminal(ctx, j.ID, reason); err != nil {
 			o.log.Error("orphan reconcile failed", "job_id", j.ID, "err", err.Error())
 		}
 	}
 	return nil
+}
+
+// orphanLooksSuccessfullyComplete reports whether a still-PROVISIONING job row
+// already reflects a successful install (DONE marker applied) so restart should
+// not fail the job.
+func orphanLooksSuccessfullyComplete(j models.ProvisioningJob) bool {
+	if strings.EqualFold(strings.TrimSpace(j.Phase), "DONE") {
+		return true
+	}
+	if j.Percent != nil && *j.Percent >= 100 && j.LastMarkerSeq > 0 {
+		// Percent 100 alone can appear mid-stage; require a marker seq and
+		// a success-shaped phase when not exactly DONE.
+		switch strings.ToUpper(strings.TrimSpace(j.Phase)) {
+		case "DONE", "VERIFY", "COMPLETE", "FINISHED":
+			return true
+		}
+	}
+	return false
+}
+
+func percentLog(p *int) any {
+	if p == nil {
+		return nil
+	}
+	return *p
 }
 
 func (o *Orchestrator) enqueueTerminal(jobID string, reason TerminalReason) {
@@ -1446,6 +1561,7 @@ func (p *progressAdapter) ApplyMarker(ctx context.Context, jobID string, m model
 	if err := p.orch.store.UpdateProgress(ctx, jobID, phase, m.Percent, m.Seq, soft); err != nil {
 		return err
 	}
+	p.orch.appendJobLog(ctx, jobID, m)
 	// Best-effort stage phase mirror.
 	if j, err := p.orch.store.Get(ctx, jobID); err == nil && j.CurrentStage != "" && len(j.Stages) > 0 {
 		stages := setStageState(j.Stages, j.CurrentStage, models.JobStageStateRunning, phase, soft)
@@ -1484,6 +1600,13 @@ func (p *progressAdapter) ReportStall(ctx context.Context, jobID string, reason 
 		return nil
 	}
 	_ = p.orch.store.UpdateProgress(ctx, jobID, "STALL", nil, 0, reason)
+	p.orch.appendJobLog(ctx, jobID, models.SOLMarker{
+		SchemaVer: sol.SchemaVersion,
+		Timestamp: time.Now().UTC(),
+		Phase:     "STALL",
+		State:     "ERROR",
+		Detail:    reason,
+	})
 	p.orch.enqueueTerminal(jobID, ReasonStall)
 	return nil
 }
@@ -1520,6 +1643,13 @@ func (p *progressAdapter) ReportTransportError(ctx context.Context, jobID string
 		msg = err.Error()
 	}
 	_ = p.orch.store.UpdateProgress(ctx, jobID, "TRANSPORT", nil, 0, msg)
+	p.orch.appendJobLog(ctx, jobID, models.SOLMarker{
+		SchemaVer: sol.SchemaVersion,
+		Timestamp: time.Now().UTC(),
+		Phase:     "TRANSPORT",
+		State:     "ERROR",
+		Detail:    msg,
+	})
 	p.orch.enqueueTerminal(jobID, ReasonTransport)
 	return nil
 }
@@ -1530,6 +1660,61 @@ func (p *progressAdapter) stillProvisioning(ctx context.Context, jobID string) b
 		return true // fail open so real errors still surface
 	}
 	return j.State == models.StateProvisioning
+}
+
+// applyDefaultCredentials fills empty username/password from orchestrator defaults
+// (composition root wires SHOAL_BMC_*). Does not override credential_ref-only starts.
+func (o *Orchestrator) applyDefaultCredentials(req *models.StartJobRequest) {
+	if strings.TrimSpace(req.CredentialRef) != "" {
+		return
+	}
+	if strings.TrimSpace(req.BMCUsername) == "" && o.defaultBMCUser != "" {
+		req.BMCUsername = o.defaultBMCUser
+	}
+	if strings.TrimSpace(req.BMCPassword) == "" && o.defaultBMCPass != "" {
+		req.BMCPassword = o.defaultBMCPass
+	}
+}
+
+// resolveDeviceID remaps req.DeviceID via NetBox when a resolver is configured.
+// Failures are logged and non-fatal so spike jobs without NetBox rows still start.
+func (o *Orchestrator) resolveDeviceID(ctx context.Context, req *models.StartJobRequest) error {
+	if o.resolver == nil {
+		return nil
+	}
+	key := strings.TrimSpace(req.DeviceID)
+	if key == "" {
+		return nil
+	}
+	resolved, err := o.resolver.ResolveDeviceID(ctx, key)
+	if err != nil {
+		o.log.Warn("netbox device resolve failed; using device_id as-is",
+			"device_id", key, "err", err.Error())
+		return nil
+	}
+	resolved = strings.TrimSpace(resolved)
+	if resolved == "" || resolved == key {
+		return nil
+	}
+	o.log.Info("resolved device_id via NetBox",
+		"from", key, "to", resolved)
+	req.DeviceID = resolved
+	return nil
+}
+
+// appendJobLog best-effort writes a SHOAL| line to telemetry job_log.
+func (o *Orchestrator) appendJobLog(ctx context.Context, jobID string, m models.SOLMarker) {
+	if o.telemetry == nil {
+		return
+	}
+	line := sol.FormatMarkerLine(m)
+	ts := m.Timestamp
+	if ts.IsZero() {
+		ts = time.Now().UTC()
+	}
+	if err := o.telemetry.WriteJobLog(ctx, jobID, ts, line); err != nil {
+		o.log.Warn("job_log write failed", "job_id", jobID, "err", err.Error())
+	}
 }
 
 var _ jobport.JobProgress = (*progressAdapter)(nil)

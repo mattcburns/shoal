@@ -1,10 +1,17 @@
 {% extends 'generic/object.html' %}
 
+{% block title %}{{ object }} — Shoal Events{% endblock %}
+
 {% block content %}
+  <div class="row mb-3">
+    <div class="col col-md-12 d-flex justify-content-end">
+      <a class="btn btn-sm btn-outline-primary" href="{{ request.path }}">Refresh</a>
+    </div>
+  </div>
   <div class="row">
     <div class="col col-md-12">
       <div class="card">
-        <h5 class="card-header">Shoal Events</h5>
+        <h5 class="card-header">Shoal Events (SEL / normalized)</h5>
         <div class="card-body">
           {% if shoal_error %}
             <div class="alert alert-warning" role="alert">
@@ -12,32 +19,49 @@
             </div>
           {% elif not shoal_events %}
             <div class="alert alert-info" role="alert">
-              No events yet — has Observe poll run? See the lab runbook for
-              how to enable SEL/sensor polling.
+              No events yet — has Observe poll run with this device’s NetBox id?
+              On nested sushy, empty SEL is normal (fidelity gap); rich events need
+              a real BMC or seeded telemetry. See the lab runbook NetBox demo section.
             </div>
           {% else %}
-            <table class="table table-hover">
-              <thead>
-                <tr>
-                  <th scope="col">Time</th>
-                  <th scope="col">Severity</th>
-                  <th scope="col">Type</th>
-                  <th scope="col">Component</th>
-                  <th scope="col">Message</th>
-                </tr>
-              </thead>
-              <tbody>
-                {% for event in shoal_events %}
+            <div class="table-responsive">
+              <table class="table table-hover">
+                <thead>
                   <tr>
-                    <td>{{ event.timestamp|default:"—" }}</td>
-                    <td>{{ event.severity|default:"—" }}</td>
-                    <td>{{ event.event_type|default:"—" }}</td>
-                    <td>{{ event.component|default:"—" }}</td>
-                    <td>{{ event.message|default:"—" }}</td>
+                    <th scope="col">Time</th>
+                    <th scope="col">Severity</th>
+                    <th scope="col">Type</th>
+                    <th scope="col">Component</th>
+                    <th scope="col">Message</th>
                   </tr>
-                {% endfor %}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {% for event in shoal_events %}
+                    <tr>
+                      <td>{{ event.timestamp|default:"—" }}</td>
+                      <td>
+                        {% with sev=event.severity|default:""|lower %}
+                          {% if sev == "critical" or sev == "error" %}
+                            <span class="badge bg-danger">{{ event.severity }}</span>
+                          {% elif sev == "warning" or sev == "warn" %}
+                            <span class="badge bg-warning text-dark">{{ event.severity }}</span>
+                          {% elif sev == "ok" or sev == "info" or sev == "normal" %}
+                            <span class="badge bg-success">{{ event.severity }}</span>
+                          {% elif event.severity %}
+                            <span class="badge bg-secondary">{{ event.severity }}</span>
+                          {% else %}
+                            —
+                          {% endif %}
+                        {% endwith %}
+                      </td>
+                      <td>{{ event.event_type|default:"—" }}</td>
+                      <td>{{ event.component|default:"—" }}</td>
+                      <td>{{ event.message|default:"—" }}</td>
+                    </tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            </div>
           {% endif %}
         </div>
       </div>

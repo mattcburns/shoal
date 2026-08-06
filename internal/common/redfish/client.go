@@ -357,9 +357,9 @@ func (c *client) ListVirtualMedia(_ context.Context, systemID string) ([]Virtual
 		}
 	}
 
-	if len(out) == 0 {
-		return nil, fmt.Errorf("redfish: no virtual media found")
-	}
+	// Empty is valid: sushy-tools eject removes the libvirt CD device entirely,
+	// so a successful cleanup leaves zero slots until the next InsertMedia path
+	// recreates them. Callers that need a tray for insert must check len==0.
 	return out, nil
 }
 

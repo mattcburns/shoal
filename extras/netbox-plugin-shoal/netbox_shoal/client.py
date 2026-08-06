@@ -20,22 +20,63 @@ def _cfg():
     return settings.PLUGINS_CONFIG.get(PLUGIN_NAME, {})
 
 
+def _headers():
+    headers = {"Content-Type": "application/json", "Accept": "application/json"}
+    token = _cfg().get("SHOAL_API_TOKEN")
+    if token:
+        headers["Authorization"] = "Bearer " + token
+    return headers
+
+
+def _base():
+    return (_cfg().get("SHOAL_BASE_URL") or "").rstrip("/")
+
+
+def _timeout():
+    return _cfg().get("SHOAL_REQUEST_TIMEOUT", 10)
+
+
 def _get(path, params=None):
-    cfg = _cfg()
-    base = (cfg.get("SHOAL_BASE_URL") or "").rstrip("/")
+    base = _base()
     if not base:
         return None, "Shoal base URL not configured (SHOAL_BASE_URL)"
 
-    headers = {}
-    token = cfg.get("SHOAL_API_TOKEN")
-    if token:
-        headers["Authorization"] = "Bearer " + token
+    try:
+        resp = requests.get(
+            base + path, headers=_headers(), params=params, timeout=_timeout()
+        )
+        resp.raise_for_status()
+        return resp.json(), None
+    except requests.RequestException as exc:
+        return None, str(exc)
 
-    timeout = cfg.get("SHOAL_REQUEST_TIMEOUT", 10)
+
+def _post(path, body=None):
+    base = _base()
+    if not base:
+        return None, "Shoal base URL not configured (SHOAL_BASE_URL)"
 
     try:
-        resp = requests.get(base + path, headers=headers, params=params, timeout=timeout)
-        resp.raise_for_status()
+        resp = requests.post(
+            base + path,
+            headers=_headers(),
+            json=body or {},
+            timeout=_timeout(),
+        )
+        # Start may return 409 with a partial job body on late BMC/SOL failure.
+        if resp.status_code >= 400:
+            try:
+                data = resp.json()
+            except ValueError:
+                data = None
+            msg = None
+            if isinstance(data, dict):
+                msg = data.get("error") or data.get("detail")
+            if not msg:
+                msg = "HTTP %s: %s" % (resp.status_code, (resp.text or "")[:200])
+            return data, msg
+        if resp.status_code == 204 or not resp.content:
+            return {}, None
         return resp.json(), None
     except requests.RequestException as exc:
         return None, str(exc)
@@ -62,3 +103,18 @@ def get_jobs(device_id, limit=50, state=None):
 def get_sensors(device_id, limit=50):
     """GET /v1/devices/{id}/sensors?limit= -> ({"device_id","readings":[...]}, error)."""
     return _get("/v1/devices/%s/sensors" % device_id, params={"limit": limit})
+
+
+def get_job_log(job_id, limit=100):
+    """GET /v1/jobs/{id}/log?limit= -> ({"job_id","lines":[...]}, error)."""
+    return _get("/v1/jobs/%s/log" % job_id, params={"limit": limit})
+
+
+def start_job(body):
+    """POST /v1/jobs with a StartJobRequest body -> (job dict or error body, error)."""
+    return _post("/v1/jobs", body=body)
+
+
+def cancel_job(job_id):
+    """POST /v1/jobs/{id}/cancel -> (body, error)."""
+    return _post("/v1/jobs/%s/cancel" % job_id, body={})

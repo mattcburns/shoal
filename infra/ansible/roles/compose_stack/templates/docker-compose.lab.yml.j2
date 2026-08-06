@@ -144,6 +144,9 @@ services:
     image: shoal:lab
     container_name: shoal-app
     network_mode: host
+    # Lab nested SOL: virsh + host PTYs for jobs started via NetBox/API.
+    # Privileged is lab-only (BMC secrets already on this host).
+    privileged: true
     environment:
       - SHOAL_HTTP_ADDR=:{{ shoal_app_http_port }}
       - SHOAL_LOG_LEVEL={{ shoal_log_level | default('info') }}
@@ -163,6 +166,8 @@ services:
       - SHOAL_ISO_PUBLISH_DIR=/srv/iso
       - SHOAL_ISO_BASE_URL=http://{{ shoal_lab_network_gateway }}:{{ shoal_iso_server_port }}
       - SHOAL_API_TOKEN={{ shoal_api_token | default('') }}
+      # Durable BMC job credentials so orphan cleanup after restart can auth.
+      - SHOAL_SECRETS_DIR=/var/lib/shoal/secrets
 {% if (shoal_fewshot_dir | default('') | length) > 0 %}
       - SHOAL_FEWSHOT_DIR=/var/lib/shoal/fewshot
 {% endif %}
@@ -171,6 +176,9 @@ services:
 {% endif %}
     volumes:
       - {{ shoal_iso_server_dir }}:/srv/iso
+      - /var/run/libvirt:/var/run/libvirt
+      - /dev:/dev
+      - {{ shoal_secrets_dir | default('/var/lib/shoal/secrets') }}:/var/lib/shoal/secrets
 {% if (shoal_fewshot_dir | default('') | length) > 0 %}
       - {{ shoal_fewshot_dir }}:/var/lib/shoal/fewshot
 {% endif %}

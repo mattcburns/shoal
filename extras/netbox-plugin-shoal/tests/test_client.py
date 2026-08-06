@@ -211,5 +211,67 @@ class GetSensorsTests(unittest.TestCase):
         self.assertEqual(data["readings"][0]["sensor"], "Inlet Temp")
 
 
+class GetJobLogTests(unittest.TestCase):
+    def setUp(self):
+        settings.PLUGINS_CONFIG = {
+            "netbox_shoal": {
+                "SHOAL_BASE_URL": "http://shoal.example:8088",
+                "SHOAL_API_TOKEN": "",
+                "SHOAL_REQUEST_TIMEOUT": 10,
+            }
+        }
+
+    @mock.patch("netbox_shoal.client.requests.get")
+    def test_get_job_log_url_and_limit(self, mock_get):
+        mock_get.return_value = FakeResponse({"job_id": "abc", "lines": []})
+        data, err = client.get_job_log("abc", limit=40)
+        self.assertIsNone(err)
+        self.assertEqual(data["job_id"], "abc")
+        args, kwargs = mock_get.call_args
+        self.assertEqual(args[0], "http://shoal.example:8088/v1/jobs/abc/log")
+        self.assertEqual(kwargs["params"], {"limit": 40})
+
+
+class WriteJobTests(unittest.TestCase):
+    def setUp(self):
+        settings.PLUGINS_CONFIG = {
+            "netbox_shoal": {
+                "SHOAL_BASE_URL": "http://shoal.example:8088",
+                "SHOAL_API_TOKEN": "tok",
+                "SHOAL_REQUEST_TIMEOUT": 10,
+            }
+        }
+
+    @mock.patch("netbox_shoal.client.requests.post")
+    def test_start_job_posts_json(self, mock_post):
+        mock_post.return_value = FakeResponse({"id": "j1", "state": "provisioning"}, status_code=201)
+        body = {"device_id": "1", "bmc_endpoint": "http://bmc", "iso_url": "http://iso/x.iso", "serial_target": "n1"}
+        data, err = client.start_job(body)
+        self.assertIsNone(err)
+        self.assertEqual(data["id"], "j1")
+        args, kwargs = mock_post.call_args
+        self.assertEqual(args[0], "http://shoal.example:8088/v1/jobs")
+        self.assertEqual(kwargs["json"], body)
+        self.assertEqual(kwargs["headers"]["Authorization"], "Bearer tok")
+
+    @mock.patch("netbox_shoal.client.requests.post")
+    def test_start_job_conflict_returns_error_and_body(self, mock_post):
+        mock_post.return_value = FakeResponse(
+            {"error": "register watch failed", "job": {"id": "j2"}}, status_code=409
+        )
+        data, err = client.start_job({"device_id": "1"})
+        self.assertIsNotNone(err)
+        self.assertIn("register watch", err)
+        self.assertEqual(data["job"]["id"], "j2")
+
+    @mock.patch("netbox_shoal.client.requests.post")
+    def test_cancel_job(self, mock_post):
+        mock_post.return_value = FakeResponse({"ok": True}, status_code=200)
+        data, err = client.cancel_job("abc")
+        self.assertIsNone(err)
+        args, _ = mock_post.call_args
+        self.assertEqual(args[0], "http://shoal.example:8088/v1/jobs/abc/cancel")
+
+
 if __name__ == "__main__":
     unittest.main()

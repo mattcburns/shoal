@@ -46,6 +46,57 @@ func TestMemorySetLifecycle(t *testing.T) {
 	}
 }
 
+func TestMemoryResolveDeviceID(t *testing.T) {
+	m := netbox.NewMemory()
+	id, err := m.UpsertDevice(context.Background(), models.DeviceIdentity{
+		Name: "shoal-node-1", Serial: "shoal-node-1", LifecycleState: models.StateDiscovered,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := m.ResolveDeviceID(context.Background(), "shoal-node-1")
+	if err != nil || got != id {
+		t.Fatalf("serial resolve: %v %q want %q", err, got, id)
+	}
+	got, err = m.ResolveDeviceID(context.Background(), id)
+	if err != nil || got != id {
+		t.Fatalf("id passthrough: %v %q", err, got)
+	}
+	got, err = m.ResolveDeviceID(context.Background(), "unknown-lab-key")
+	if err != nil || got != "unknown-lab-key" {
+		t.Fatalf("unknown keep: %v %q", err, got)
+	}
+}
+
+func TestClientResolveDeviceID(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/dcim/devices/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		q := r.URL.Query()
+		if q.Get("serial") == "shoal-node-1" || q.Get("name") == "shoal-node-1" {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"results": []any{map[string]any{"id": 3}},
+			})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"results": []any{}})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	c := netbox.New(srv.URL, "tok")
+	got, err := c.ResolveDeviceID(context.Background(), "shoal-node-1")
+	if err != nil || got != "3" {
+		t.Fatalf("got %q err %v", got, err)
+	}
+	got, err = c.ResolveDeviceID(context.Background(), "no-such")
+	if err != nil || got != "no-such" {
+		t.Fatalf("passthrough %q %v", got, err)
+	}
+}
+
 func TestClientSetLifecycle(t *testing.T) {
 	var patched bool
 	mux := http.NewServeMux()

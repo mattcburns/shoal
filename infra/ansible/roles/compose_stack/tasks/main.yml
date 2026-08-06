@@ -94,6 +94,7 @@
       (
         ([shoal_fewshot_dir | dirname] if (shoal_fewshot_dir | default('') | length) > 0 else [])
         + ([shoal_profile_dir | dirname] if (shoal_profile_dir | default('') | length) > 0 else [])
+        + ([shoal_secrets_dir | dirname] if (shoal_secrets_dir | default('') | length) > 0 else [])
       ) | unique | list
     }}
   tags: [config]
@@ -116,6 +117,16 @@
     owner: "{{ ansible_user | default(shoal_lab_vm_user) }}"
     group: "{{ ansible_user | default(shoal_lab_vm_user) }}"
   when: (shoal_profile_dir | default('') | length) > 0
+  tags: [config]
+
+- name: Ensure durable secrets directory exists
+  file:
+    path: "{{ shoal_secrets_dir }}"
+    state: directory
+    mode: '0700'
+    owner: "{{ ansible_user | default(shoal_lab_vm_user) }}"
+    group: "{{ ansible_user | default(shoal_lab_vm_user) }}"
+  when: (shoal_secrets_dir | default('') | length) > 0
   tags: [config]
 
 - name: Ensure NetBox configuration directory exists

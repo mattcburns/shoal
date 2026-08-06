@@ -2,6 +2,7 @@
 package sol
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -112,4 +113,23 @@ func TerminalReasonFromMarker(m models.SOLMarker) string {
 		return "done_ok"
 	}
 	return "marker_error"
+}
+
+// FormatMarkerLine renders m as a SHOAL|… protocol line for durable job_log rows.
+// Empty timestamps use UTC now; nil percent is written as "-".
+func FormatMarkerLine(m models.SOLMarker) string {
+	ts := m.Timestamp.UTC()
+	if ts.IsZero() {
+		ts = time.Now().UTC()
+	}
+	pct := "-"
+	if m.Percent != nil {
+		pct = strconv.Itoa(*m.Percent)
+	}
+	ver := m.SchemaVer
+	if ver == 0 {
+		ver = SchemaVersion
+	}
+	return fmt.Sprintf("SHOAL|%d|%d|%s|%s|%s|%s|%s",
+		ver, m.Seq, ts.Format(time.RFC3339), m.Phase, pct, m.State, m.Detail)
 }

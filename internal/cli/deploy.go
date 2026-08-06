@@ -187,6 +187,16 @@ func cmdDeployRun(args []string) int {
 	if cfg.ISOPublishDir != "" && cfg.ISOBaseURL != "" {
 		isoBuilder = iso.NewScriptBuilder(cfg.ISOBuildScript, log)
 	}
+	// Optional job_log writer for NetBox Jobs tab (same DSN as JobStore).
+	var telemStore telemetry.Store
+	if cfg.TelemetryDatabaseURL != "" {
+		if db, err := telemetry.OpenAndMigrate(context.Background(), cfg.TelemetryDatabaseURL); err != nil {
+			log.Warn("telemetry for job_log unavailable", "err", err.Error())
+		} else {
+			defer db.Close()
+			telemStore = telemetry.NewPostgres(db)
+		}
+	}
 	orch := job.NewOrchestrator(job.Options{
 		Log:                    log,
 		Store:                  store,
@@ -194,6 +204,7 @@ func cmdDeployRun(args []string) int {
 		NewBMC:                 redfish.NewBMC,
 		Watches:                watchSvc,
 		NetBox:                 nb,
+		Telemetry:              telemStore,
 		Profiles:               profStore,
 		ISOBaseURL:             cfg.ISOBaseURL,
 		ISOBuilder:             isoBuilder,

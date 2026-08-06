@@ -216,6 +216,20 @@ func cmdServe(args []string) int {
 				log.Info("profile store enabled", "dir", cfg.ProfileDir)
 			}
 		}
+		// Phase 4: Telemetry is Postgres-only — no silent memory fallback.
+		// Open before Orchestrator so SOL markers can append job_log for the NetBox UI.
+		var telemStore telemetry.Store
+		if cfg.TelemetryDatabaseURL != "" {
+			db, err := telemetry.OpenAndMigrate(ctx, cfg.TelemetryDatabaseURL)
+			if err != nil {
+				log.Error("telemetry store open failed; observe events/poll and job_log disabled", "err", err.Error())
+			} else {
+				defer db.Close()
+				telemStore = telemetry.NewPostgres(db)
+			}
+		} else {
+			log.Warn("SHOAL_TELEMETRY_DATABASE_URL unset; observe events/poll and job_log disabled")
+		}
 		orchOpts := job.Options{
 			Log:                    log,
 			Store:                  store,
@@ -223,6 +237,7 @@ func cmdServe(args []string) int {
 			NewBMC:                 redfish.NewBMC,
 			Watches:                watchSvc,
 			NetBox:                 nb,
+			Telemetry:              telemStore,
 			Profiles:               profStore,
 			ISOBaseURL:             cfg.ISOBaseURL,
 			ISOPublishDir:          cfg.ISOPublishDir,
@@ -232,6 +247,8 @@ func cmdServe(args []string) int {
 			CAFile:                 cfg.RedfishCAFile,
 			ReconcileFailOrphan:    cfg.ReconcileFailOrphans,
 			DefaultSerialTransport: cfg.SerialTransport,
+			DefaultBMCUsername:     cfg.BMCUsername,
+			DefaultBMCPassword:     cfg.BMCPassword,
 		}
 		if cfg.ISOPublishDir != "" && cfg.ISOBaseURL != "" {
 			orchOpts.ISOBuilder = iso.NewScriptBuilder(cfg.ISOBuildScript, log)
@@ -245,19 +262,6 @@ func cmdServe(args []string) int {
 			log.Warn("orphan reconcile", "err", err.Error())
 		}
 
-		// Phase 4: Observe status. Telemetry is Postgres-only — no silent memory fallback.
-		var telemStore telemetry.Store
-		if cfg.TelemetryDatabaseURL != "" {
-			db, err := telemetry.OpenAndMigrate(ctx, cfg.TelemetryDatabaseURL)
-			if err != nil {
-				log.Error("telemetry store open failed; observe events/poll disabled", "err", err.Error())
-			} else {
-				defer db.Close()
-				telemStore = telemetry.NewPostgres(db)
-			}
-		} else {
-			log.Warn("SHOAL_TELEMETRY_DATABASE_URL unset; observe events/poll disabled")
-		}
 		obsSvc := observe.New(log, store, telemStore, watchSvc)
 		srvAPI.WithObserve(obsSvc)
 		log.Info("observe device status API enabled", "telemetry", telemStore != nil)

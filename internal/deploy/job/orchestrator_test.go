@@ -12,6 +12,7 @@ import (
 	"github.com/mattcburns/shoal/internal/common/netbox"
 	"github.com/mattcburns/shoal/internal/common/redfish"
 	"github.com/mattcburns/shoal/internal/common/secrets"
+	"github.com/mattcburns/shoal/internal/common/telemetry"
 	"github.com/mattcburns/shoal/internal/deploy/job"
 	"github.com/mattcburns/shoal/internal/deploy/jobstore"
 	"github.com/mattcburns/shoal/internal/observe/sol"
@@ -110,6 +111,135 @@ func TestOrchestratorHappyPathDone(t *testing.T) {
 	// password must not appear on job JSON-ish fields
 	if final.BMCEndpoint == "" {
 		t.Fatal("bmc endpoint should persist")
+	}
+	// With NetBox Memory, serial lab-node-1 remaps to numeric pk for plugin tabs.
+	if j.DeviceID != "1" {
+		t.Fatalf("want device_id remapped to NetBox pk, got %q", j.DeviceID)
+	}
+}
+
+func TestStartFillsDefaultBMCCredentials(t *testing.T) {
+	ctx := context.Background()
+	store := jobstore.NewMemory()
+	sec := secrets.NewMemory()
+	fakeBMC := redfish.NewFake()
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	pr, pw := io.Pipe()
+	watch := sol.NewWatchService(log, nil)
+	watch.NewTransport = func(session models.WatchSession) sol.Transport {
+		return sol.NewReaderTransport(pr)
+	}
+	orch := job.NewOrchestrator(job.Options{
+		Log:     log,
+		Store:   store,
+		Secrets: sec,
+		NewBMC: func(cfg redfish.Config) (redfish.BMC, error) {
+			return fakeBMC, nil
+		},
+		Watches:             watch,
+		DefaultBMCUsername:  "env-admin",
+		DefaultBMCPassword:  "env-secret",
+		AuthMode:            "basic",
+		TLSMode:             "off",
+		ReconcileFailOrphan: true,
+	})
+	defer orch.Stop()
+	watch.SetProgress(orch.ProgressPort())
+
+	// No bmc_username/password in request — env defaults must apply.
+	j, err := orch.Start(ctx, models.StartJobRequest{
+		DeviceID:     "lab-1",
+		BMCEndpoint:  "http://bmc.test",
+		SerialTarget: "lab-1",
+		ISOURL:       "http://iso/shoal-marker.iso",
+	})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	// Credential should be stored under job ref with default user.
+	cred, err := sec.Get(ctx, j.CredentialRef)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cred.Username != "env-admin" || cred.Password != "env-secret" {
+		t.Fatalf("cred=%+v", cred)
+	}
+	_ = pw.Close()
+	_ = orch.Cancel(ctx, j.ID)
+}
+
+func TestStartResolvesDeviceIDAndWritesJobLog(t *testing.T) {
+	ctx := context.Background()
+	store := jobstore.NewMemory()
+	sec := secrets.NewMemory()
+	fakeBMC := redfish.NewFake()
+	nb := netbox.NewMemory()
+	netboxID, err := nb.UpsertDevice(ctx, models.DeviceIdentity{
+		Name: "shoal-node-1", Serial: "shoal-node-1", LifecycleState: models.StateDiscovered,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	telem := telemetry.NewMemory()
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	pr, pw := io.Pipe()
+	watch := sol.NewWatchService(log, nil)
+	watch.NewTransport = func(session models.WatchSession) sol.Transport {
+		return sol.NewReaderTransport(pr)
+	}
+	orch := job.NewOrchestrator(job.Options{
+		Log:     log,
+		Store:   store,
+		Secrets: sec,
+		NewBMC: func(cfg redfish.Config) (redfish.BMC, error) {
+			return fakeBMC, nil
+		},
+		Watches:             watch,
+		NetBox:              nb,
+		Telemetry:           telem,
+		AuthMode:            "basic",
+		TLSMode:             "off",
+		ReconcileFailOrphan: true,
+	})
+	defer orch.Stop()
+	watch.SetProgress(orch.ProgressPort())
+
+	j, err := orch.Start(ctx, models.StartJobRequest{
+		DeviceID:     "shoal-node-1", // lab hostname → NetBox pk
+		BMCEndpoint:  "http://bmc.test",
+		BMCUsername:  "admin",
+		BMCPassword:  "secret",
+		SerialTarget: "shoal-node-1",
+		ISOURL:       "http://iso/shoal-marker.iso",
+	})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if j.DeviceID != netboxID {
+		t.Fatalf("device_id=%q want NetBox pk %q", j.DeviceID, netboxID)
+	}
+
+	writeMarker(t, pw, "SHOAL|1|1|2026-06-19T04:10:00Z|BOOT|5|OK|booting")
+	writeMarker(t, pw, "SHOAL|1|2|2026-06-19T04:10:10Z|DONE|100|OK|done")
+	_ = pw.Close()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		final, _ := store.Get(ctx, j.ID)
+		if final.State == models.StateProvisioned {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	lines, err := telem.ListJobLog(ctx, j.ID, time.Time{}, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(lines) < 2 {
+		t.Fatalf("want job_log lines from markers, got %d", len(lines))
+	}
+	if !strings.Contains(lines[0].Line, "SHOAL|") || !strings.Contains(lines[0].Line, "BOOT") {
+		t.Fatalf("first line %q", lines[0].Line)
 	}
 }
 
@@ -346,11 +476,12 @@ func TestOrchestratorDoneDespiteStuckSOLClose(t *testing.T) {
 func TestOrchestratorOrphanReconcile(t *testing.T) {
 	ctx := context.Background()
 	store := jobstore.NewMemory()
-	// Pre-seed orphan PROVISIONING job as if process restarted.
+	// Pre-seed orphan PROVISIONING job as if process restarted mid-install.
 	now := time.Now().UTC()
 	_ = store.Insert(ctx, models.ProvisioningJob{
 		ID: "orphan-1", DeviceID: "d", State: models.StateProvisioning,
-		BMCEndpoint: "http://bmc", StartedAt: &now, UpdatedAt: &now,
+		Phase: "WAITING_SOL", BMCEndpoint: "http://bmc",
+		StartedAt: &now, UpdatedAt: &now,
 	})
 	fakeBMC := redfish.NewFake()
 	// simulate leftover media from crashed job
@@ -376,6 +507,41 @@ func TestOrchestratorOrphanReconcile(t *testing.T) {
 	}
 	if got.State != models.StateFailed {
 		t.Fatalf("orphan state %s", got.State)
+	}
+}
+
+func TestOrchestratorOrphanReconcileDoneOK(t *testing.T) {
+	// Crash after SOL DONE marker was applied but before lifecycle commit.
+	ctx := context.Background()
+	store := jobstore.NewMemory()
+	now := time.Now().UTC()
+	pct := 100
+	_ = store.Insert(ctx, models.ProvisioningJob{
+		ID: "orphan-done", DeviceID: "d", State: models.StateProvisioning,
+		Phase: "DONE", Percent: &pct, LastMarkerSeq: 7,
+		BMCEndpoint: "http://bmc", SystemID: "1",
+		StartedAt: &now, UpdatedAt: &now,
+	})
+	fakeBMC := redfish.NewFake()
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	watch := sol.NewWatchService(log, nil)
+	orch := job.NewOrchestrator(job.Options{
+		Log: log, Store: store, Secrets: secrets.NewMemory(),
+		NewBMC:  func(cfg redfish.Config) (redfish.BMC, error) { return fakeBMC, nil },
+		Watches: watch, ReconcileFailOrphan: true,
+	})
+	defer orch.Stop()
+	watch.SetProgress(orch.ProgressPort())
+
+	if err := orch.ReconcileOrphans(ctx); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.Get(ctx, "orphan-done")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != models.StateProvisioned {
+		t.Fatalf("want provisioned for DONE orphan, got %s err=%s", got.State, got.Error)
 	}
 }
 

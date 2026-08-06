@@ -12,7 +12,7 @@ class ShoalConfig(PluginConfig):
     name = "netbox_shoal"
     verbose_name = "Shoal Telemetry"
     description = "Shoal device status/events tabs on the NetBox device page"
-    version = "0.1.0"
+    version = "0.3.0"
     author = "Shoal contributors"
     base_url = "shoal"
 
@@ -21,10 +21,16 @@ class ShoalConfig(PluginConfig):
     # message rather than erroring. SHOAL_API_TOKEN empty means no
     # Authorization header is sent, matching Shoal's own auth gate (which is
     # a no-op when SHOAL_API_TOKEN is unset -- the lab default).
+    # Lab demo write path: SHOAL_DEFAULT_* prefill Start form; BMC passwords
+    # stay on Shoal (SHOAL_BMC_*) unless the operator types them into the form.
     default_settings = {
         "SHOAL_BASE_URL": "",
         "SHOAL_API_TOKEN": "",
-        "SHOAL_REQUEST_TIMEOUT": 10,
+        "SHOAL_REQUEST_TIMEOUT": 30,  # Start can take longer (media + SOL register)
+        "SHOAL_ENABLE_ACTIONS": True,
+        "SHOAL_DEFAULT_BMC_ENDPOINT": "",
+        "SHOAL_DEFAULT_ISO_URL": "",
+        "SHOAL_DEFAULT_PROFILE_REF": "spike",
     }
 
 

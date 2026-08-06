@@ -169,6 +169,17 @@ func (w *WatchService) Unregister(_ context.Context, sessionID string) error {
 
 func (w *WatchService) run(ctx context.Context, aw *activeWatch, lines <-chan string, progress jobport.JobProgress) {
 	defer close(aw.done)
+	// Never let a watch-loop panic take down the whole process (Compose restart
+	// would orphan-reconcile and race HandleTerminal).
+	defer func() {
+		if r := recover(); r != nil {
+			w.log.Error("sol watch panic recovered",
+				"job_id", aw.session.JobID,
+				"session_id", aw.session.ID,
+				"recover", fmt.Sprint(r),
+			)
+		}
+	}()
 	stallDisabled := aw.session.StallDisabled
 	stall := aw.session.StallTimeout
 	var timer *time.Timer

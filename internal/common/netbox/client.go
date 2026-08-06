@@ -51,6 +51,14 @@ type LifecycleWriter interface {
 	SetLifecycle(ctx context.Context, deviceKey string, state models.LifecycleState) error
 }
 
+// DeviceResolver maps operator-facing device keys (name, serial, or NetBox
+// numeric id) to the NetBox primary key string Shoal uses as device_id.
+// Optional on Deploy; when present, Start remaps hostname-style lab keys
+// (e.g. shoal-node-1) so NetBox plugin tabs (keyed by device.pk) see jobs.
+type DeviceResolver interface {
+	ResolveDeviceID(ctx context.Context, key string) (string, error)
+}
+
 // UpsertDevice finds a device by serial or creates one; sets lifecycle custom field when possible.
 func (c *Client) UpsertDevice(ctx context.Context, id models.DeviceIdentity) (string, error) {
 	if c.BaseURL == "" || c.Token == "" {
@@ -86,6 +94,46 @@ func (c *Client) findBySerial(ctx context.Context, serial string) (string, error
 		return "", nil
 	}
 	return fmt.Sprintf("%d", out.Results[0].ID), nil
+}
+
+func (c *Client) findByName(ctx context.Context, name string) (string, error) {
+	q := url.Values{"name": {name}}
+	var out struct {
+		Results []struct {
+			ID int `json:"id"`
+		} `json:"results"`
+	}
+	if err := c.doJSON(ctx, http.MethodGet, "/api/dcim/devices/?"+q.Encode(), nil, &out); err != nil {
+		return "", err
+	}
+	if len(out.Results) == 0 {
+		return "", nil
+	}
+	return fmt.Sprintf("%d", out.Results[0].ID), nil
+}
+
+// ResolveDeviceID implements DeviceResolver.
+// Order: serial match, name match, then return key unchanged (numeric id or
+// free-form lab key when NetBox has no row yet).
+func (c *Client) ResolveDeviceID(ctx context.Context, key string) (string, error) {
+	if c.BaseURL == "" || c.Token == "" {
+		return "", fmt.Errorf("netbox: missing url or token")
+	}
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return "", fmt.Errorf("netbox: device key required")
+	}
+	if id, err := c.findBySerial(ctx, key); err != nil {
+		return "", err
+	} else if id != "" {
+		return id, nil
+	}
+	if id, err := c.findByName(ctx, key); err != nil {
+		return "", err
+	} else if id != "" {
+		return id, nil
+	}
+	return key, nil
 }
 
 func (c *Client) createDevice(ctx context.Context, id models.DeviceIdentity) (string, error) {
@@ -379,7 +427,34 @@ func (m *Memory) SetLifecycle(_ context.Context, deviceKey string, state models.
 	return fmt.Errorf("netbox/memory: device %q not found", deviceKey)
 }
 
+// ResolveDeviceID implements DeviceResolver for tests/lab fakes.
+func (m *Memory) ResolveDeviceID(_ context.Context, key string) (string, error) {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return "", fmt.Errorf("netbox/memory: device key required")
+	}
+	if id, ok := m.BySerial[key]; ok && id.ID != "" {
+		return id.ID, nil
+	}
+	// Name match: Memory stores Name on DeviceIdentity when set.
+	for _, id := range m.ByID {
+		if id.Name == key && id.ID != "" {
+			return id.ID, nil
+		}
+		// Common lab case: name == serial.
+		if id.Serial == key && id.ID != "" {
+			return id.ID, nil
+		}
+	}
+	if id, ok := m.ByID[key]; ok && id.ID != "" {
+		return id.ID, nil
+	}
+	return key, nil
+}
+
 var _ API = (*Client)(nil)
 var _ API = (*Memory)(nil)
 var _ LifecycleWriter = (*Client)(nil)
 var _ LifecycleWriter = (*Memory)(nil)
+var _ DeviceResolver = (*Client)(nil)
+var _ DeviceResolver = (*Memory)(nil)
