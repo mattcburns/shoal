@@ -174,3 +174,79 @@ func TestClientFindCreate(t *testing.T) {
 		t.Fatalf("id %q", id)
 	}
 }
+
+func TestClientCreatePhysicalUsesServerRole(t *testing.T) {
+	var deviceBody map[string]any
+	var typeBody map[string]any
+	var mfgBody map[string]any
+	var roleBody map[string]any
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/dcim/devices/", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			_ = json.NewEncoder(w).Encode(map[string]any{"results": []any{}})
+		case http.MethodPost:
+			_ = json.NewDecoder(r.Body).Decode(&deviceBody)
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 9})
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+	})
+	mux.HandleFunc("/api/dcim/sites/", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"results": []any{map[string]any{"id": 1}}})
+	})
+	mux.HandleFunc("/api/dcim/device-roles/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			_ = json.NewEncoder(w).Encode(map[string]any{"results": []any{}})
+			return
+		}
+		_ = json.NewDecoder(r.Body).Decode(&roleBody)
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": 11})
+	})
+	mux.HandleFunc("/api/dcim/manufacturers/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			_ = json.NewEncoder(w).Encode(map[string]any{"results": []any{}})
+			return
+		}
+		_ = json.NewDecoder(r.Body).Decode(&mfgBody)
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": 12})
+	})
+	mux.HandleFunc("/api/dcim/device-types/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			_ = json.NewEncoder(w).Encode(map[string]any{"results": []any{}})
+			return
+		}
+		_ = json.NewDecoder(r.Body).Decode(&typeBody)
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": 13})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c := netbox.New(srv.URL, "token")
+	id, err := c.UpsertDevice(context.Background(), models.DeviceIdentity{
+		Serial: "C784MH3", Vendor: "Dell Inc.", Model: "PowerEdge R750",
+		BMCIP: "172.16.21.202", LifecycleState: models.StateDiscovered,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id != "9" {
+		t.Fatalf("id %q", id)
+	}
+	if roleBody["slug"] != "server" || roleBody["name"] != "Server" {
+		t.Fatalf("role %+v", roleBody)
+	}
+	if mfgBody["name"] != "Dell Inc." || mfgBody["slug"] != "dell-inc" {
+		t.Fatalf("mfg %+v", mfgBody)
+	}
+	if typeBody["model"] != "PowerEdge R750" || typeBody["slug"] != "poweredge-r750" {
+		t.Fatalf("type %+v", typeBody)
+	}
+	if deviceBody["role"] != float64(11) || deviceBody["device_type"] != float64(13) {
+		t.Fatalf("device %+v", deviceBody)
+	}
+}

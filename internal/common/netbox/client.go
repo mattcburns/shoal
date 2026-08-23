@@ -141,15 +141,7 @@ func (c *Client) createDevice(ctx context.Context, id models.DeviceIdentity) (st
 	if err != nil {
 		return "", fmt.Errorf("netbox: site: %w", err)
 	}
-	roleID, err := c.lookupID(ctx, "/api/dcim/device-roles/", "slug", c.DeviceRoleSlug)
-	if err != nil {
-		return "", fmt.Errorf("netbox: role: %w", err)
-	}
-	mfgID, err := c.ensureManufacturer(ctx)
-	if err != nil {
-		return "", err
-	}
-	typeID, err := c.ensureDeviceType(ctx, mfgID, id)
+	roleID, _, typeID, err := c.ensureClassification(ctx, id)
 	if err != nil {
 		return "", err
 	}
@@ -200,6 +192,10 @@ func (c *Client) patchDevice(ctx context.Context, netboxID string, id models.Dev
 	}
 	if id.Name != "" {
 		body["name"] = id.Name
+	}
+	if roleID, _, typeID, err := c.ensureClassification(ctx, id); err == nil {
+		body["role"] = roleID
+		body["device_type"] = typeID
 	}
 	err := c.doJSON(ctx, http.MethodPatch, "/api/dcim/devices/"+netboxID+"/", body, nil)
 	if err != nil {
@@ -264,25 +260,25 @@ func (c *Client) lookupID(ctx context.Context, path, filterKey, filterVal string
 	return out.Results[0].ID, nil
 }
 
-func (c *Client) ensureManufacturer(ctx context.Context) (int, error) {
-	id, err := c.lookupID(ctx, "/api/dcim/manufacturers/", "name", c.ManufacturerName)
-	if err == nil {
-		return id, nil
+const physicalServerRoleSlug = "server"
+
+func labVirtualIdentity(id models.DeviceIdentity) bool {
+	v := strings.TrimSpace(id.Vendor)
+	m := strings.TrimSpace(id.Model)
+	if v == "" && m == "" {
+		return true
 	}
-	var created struct {
-		ID int `json:"id"`
+	if strings.EqualFold(v, "Shoal Virtual") {
+		return true
 	}
-	slug := strings.ToLower(strings.ReplaceAll(c.ManufacturerName, " ", "-"))
-	body := map[string]any{"name": c.ManufacturerName, "slug": slug}
-	if err := c.doJSON(ctx, http.MethodPost, "/api/dcim/manufacturers/", body, &created); err != nil {
-		// race: re-get
-		return c.lookupID(ctx, "/api/dcim/manufacturers/", "name", c.ManufacturerName)
-	}
-	return created.ID, nil
+	ml := strings.ToLower(m)
+	return strings.Contains(ml, "sushy") || strings.HasPrefix(ml, "shoal-")
 }
 
-func (c *Client) ensureDeviceType(ctx context.Context, mfgID int, id models.DeviceIdentity) (int, error) {
-	// DeviceIdentity is identity-only; use a stable lab device-type model name.
+func (c *Client) ensureClassification(ctx context.Context, id models.DeviceIdentity) (roleID, mfgID, typeID int, err error) {
+	roleSlug := c.DeviceRoleSlug
+	roleName := "Virtual BMC Node"
+	mfgName := c.ManufacturerName
 	model := "shoal-node"
 	if id.Name != "" {
 		model = "shoal-" + id.Name
@@ -290,7 +286,76 @@ func (c *Client) ensureDeviceType(ctx context.Context, mfgID int, id models.Devi
 			model = model[:40]
 		}
 	}
-	// search by model
+	if !labVirtualIdentity(id) {
+		roleSlug = physicalServerRoleSlug
+		roleName = "Server"
+		if v := strings.TrimSpace(id.Vendor); v != "" {
+			mfgName = v
+		}
+		if m := strings.TrimSpace(id.Model); m != "" {
+			model = m
+			if len(model) > 64 {
+				model = model[:64]
+			}
+		}
+	}
+	roleID, err = c.ensureDeviceRole(ctx, roleSlug, roleName)
+	if err != nil {
+		return 0, 0, 0, fmt.Errorf("netbox: role: %w", err)
+	}
+	mfgID, err = c.ensureManufacturer(ctx, mfgName)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	typeID, err = c.ensureDeviceType(ctx, mfgID, model)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	return roleID, mfgID, typeID, nil
+}
+
+func (c *Client) ensureDeviceRole(ctx context.Context, slug, name string) (int, error) {
+	id, err := c.lookupID(ctx, "/api/dcim/device-roles/", "slug", slug)
+	if err == nil {
+		return id, nil
+	}
+	var created struct {
+		ID int `json:"id"`
+	}
+	body := map[string]any{
+		"name":    name,
+		"slug":    slug,
+		"color":   "2196f3",
+		"vm_role": false,
+	}
+	if err := c.doJSON(ctx, http.MethodPost, "/api/dcim/device-roles/", body, &created); err != nil {
+		return c.lookupID(ctx, "/api/dcim/device-roles/", "slug", slug)
+	}
+	return created.ID, nil
+}
+
+func (c *Client) ensureManufacturer(ctx context.Context, name string) (int, error) {
+	if strings.TrimSpace(name) == "" {
+		name = c.ManufacturerName
+	}
+	id, err := c.lookupID(ctx, "/api/dcim/manufacturers/", "name", name)
+	if err == nil {
+		return id, nil
+	}
+	var created struct {
+		ID int `json:"id"`
+	}
+	body := map[string]any{"name": name, "slug": netboxSlug(name)}
+	if err := c.doJSON(ctx, http.MethodPost, "/api/dcim/manufacturers/", body, &created); err != nil {
+		return c.lookupID(ctx, "/api/dcim/manufacturers/", "name", name)
+	}
+	return created.ID, nil
+}
+
+func (c *Client) ensureDeviceType(ctx context.Context, mfgID int, model string) (int, error) {
+	if strings.TrimSpace(model) == "" {
+		model = "shoal-node"
+	}
 	q := url.Values{"model": {model}}
 	var out struct {
 		Results []struct {
@@ -300,23 +365,47 @@ func (c *Client) ensureDeviceType(ctx context.Context, mfgID int, id models.Devi
 	if err := c.doJSON(ctx, http.MethodGet, "/api/dcim/device-types/?"+q.Encode(), nil, &out); err == nil && len(out.Results) > 0 {
 		return out.Results[0].ID, nil
 	}
-	slug := strings.ToLower(strings.ReplaceAll(model, " ", "-"))
 	body := map[string]any{
 		"manufacturer": mfgID,
 		"model":        model,
-		"slug":         slug,
+		"slug":         netboxSlug(model),
 	}
 	var created struct {
 		ID int `json:"id"`
 	}
 	if err := c.doJSON(ctx, http.MethodPost, "/api/dcim/device-types/", body, &created); err != nil {
-		// try get again
 		if err2 := c.doJSON(ctx, http.MethodGet, "/api/dcim/device-types/?"+q.Encode(), nil, &out); err2 == nil && len(out.Results) > 0 {
 			return out.Results[0].ID, nil
 		}
 		return 0, err
 	}
 	return created.ID, nil
+}
+
+func netboxSlug(s string) string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	var b strings.Builder
+	hyphen := false
+	for _, r := range s {
+		ok := (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')
+		if ok {
+			b.WriteRune(r)
+			hyphen = false
+			continue
+		}
+		if !hyphen {
+			b.WriteByte('-')
+			hyphen = true
+		}
+	}
+	out := strings.Trim(b.String(), "-")
+	if out == "" {
+		return "unknown"
+	}
+	if len(out) > 50 {
+		out = out[:50]
+	}
+	return out
 }
 
 func (c *Client) doJSON(ctx context.Context, method, path string, body any, out any) error {

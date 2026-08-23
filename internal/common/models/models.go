@@ -257,6 +257,8 @@ type DeviceIdentity struct {
 	ID             string         `json:"id,omitempty"`
 	Name           string         `json:"name,omitempty"`
 	Serial         string         `json:"serial"`
+	Vendor         string         `json:"vendor,omitempty"`
+	Model          string         `json:"model,omitempty"`
 	LifecycleState LifecycleState `json:"lifecycle_state"`
 	CredentialRef  string         `json:"credential_ref"`
 	BMCIP          string         `json:"bmc_ip"`

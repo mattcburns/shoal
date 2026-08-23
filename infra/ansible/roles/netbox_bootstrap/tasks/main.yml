@@ -109,6 +109,27 @@
   when: site_info.json.results | length > 0
   tags: [site]
 
+- name: Create Server device role
+  uri:
+    url: "{{ shoal_netbox_url }}/api/dcim/device-roles/"
+    method: POST
+    headers: "{{ netbox_auth_header }}"
+    body_format: json
+    body:
+      name: "Server"
+      slug: "server"
+      color: "2196f3"
+      vm_role: false
+    status_code: [200, 201, 400]
+  register: server_role_create
+  no_log: true
+  failed_when: >
+    server_role_create.status | int not in [200, 201, 400] or
+    (server_role_create.status | int == 400 and
+     'already exists' not in (server_role_create.json | default({}) | to_json | lower) and
+     'unique' not in (server_role_create.json | default({}) | to_json | lower))
+  tags: [role]
+
 - name: Create Virtual BMC Node device role
   uri:
     url: "{{ shoal_netbox_url }}/api/dcim/device-roles/"

@@ -1026,6 +1026,8 @@ type DeviceIdentity struct {
     ID             string         `json:"id,omitempty"`
     Name           string         `json:"name,omitempty"`
     Serial         string         `json:"serial"`
+    Vendor         string         `json:"vendor,omitempty"` // Redfish Manufacturer; empty → lab virtual defaults
+    Model          string         `json:"model,omitempty"`  // Redfish Model → NetBox device type
     LifecycleState LifecycleState `json:"lifecycle_state"`
     CredentialRef  string         `json:"credential_ref"`
     BMCIP          string         `json:"bmc_ip"`
