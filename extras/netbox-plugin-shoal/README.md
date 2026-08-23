@@ -1,13 +1,14 @@
 # netbox-shoal
 
-A NetBox plugin that adds **Shoal Status**, **Shoal Events**, **Shoal Jobs**,
-and **Shoal Sensors** tabs to the device detail page, reading
+A NetBox plugin that adds **Shoal Status**, **Events**, **Jobs**, **Sensors**,
+and **Firmware** tabs to the device detail page, reading
 [Shoal](https://github.com/mattcburns/shoal)'s HTTP API server-side. See
 [`docs/netbox-telemetry-ui-design.md`](../../docs/netbox-telemetry-ui-design.md)
 in the main repo for the full design. This package covers slices **N4–N6**
-plus demo polish: progress bars, stage list, job log panel, auto-refresh while
-provisioning, and a **Start provision / Cancel** control on the Status tab
-(v0.3). Grafana and a full profile wizard remain optional follow-ons.
+plus demo polish (v0.4): progress/stages/job log, auto-refresh while
+provisioning, **Start provision / Cancel**, **host power**, **BMC credentials**
+(password stored in Shoal, never NetBox), and **Poll BMC** (SEL + sensors +
+firmware + power). Grafana and a full profile wizard remain optional follow-ons.
 
 This is the first Python code in the Shoal repo. It runs entirely inside the
 lab's NetBox container — it is never linked into the Shoal Go binary and
@@ -43,15 +44,20 @@ PLUGINS_CONFIG = {
         "SHOAL_API_TOKEN": "",                             # optional Bearer token; empty = no header sent
         "SHOAL_REQUEST_TIMEOUT": 30,                        # seconds (Start can be slow)
         "SHOAL_ENABLE_ACTIONS": True,                       # Status Start/Cancel forms
-        "SHOAL_DEFAULT_BMC_ENDPOINT": "http://127.0.0.1:8001",
+        "SHOAL_DEFAULT_BMC_ENDPOINT": "http://127.0.0.1:8001",  # lab virtual BMC nodes only; real servers use https://<bmc_ip>
         "SHOAL_DEFAULT_ISO_URL": "http://192.168.124.1:8080/shoal-marker.iso",
         "SHOAL_DEFAULT_PROFILE_REF": "spike",
     }
 }
 ```
 
-Start/cancel requires NetBox `dcim.change_device`. BMC passwords are **not**
-stored in NetBox: leave user/pass blank so Shoal uses `SHOAL_BMC_*` env defaults.
+Start/cancel/power/credentials/poll require NetBox `dcim.change_device`. BMC
+passwords are **not** stored in NetBox: the credentials card PUTs to Shoal’s
+secrets backend (`credential_ref` only). Empty user/pass on **power/poll** uses
+stored secrets, then `SHOAL_BMC_*`. **Start provision** still fills empty
+user/pass from `SHOAL_BMC_*` only. Real servers (role ≠ `virtual-bmc-node`)
+prefill `https://<bmc_ip>`; lab virtual BMC nodes keep
+`SHOAL_DEFAULT_BMC_ENDPOINT` (shared sushy).
 
 ## Development
 

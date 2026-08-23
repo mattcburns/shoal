@@ -45,7 +45,7 @@ func TestLabPostgresStoreWriteList(t *testing.T) {
 		DeviceID: device,
 		TS:       ts,
 		Sensor:   "probe-temp",
-		Value:    21.5,
+		Value:    telemetry.SensorValue(21.5),
 		Unit:     "Cel",
 	}); err != nil {
 		t.Fatalf("write sensor: %v", err)
@@ -69,7 +69,7 @@ func TestLabPostgresStoreWriteList(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list sensors: %v", err)
 	}
-	if len(sens) == 0 || sens[0].Value != 21.5 {
+	if len(sens) == 0 || sens[0].Value == nil || *sens[0].Value != 21.5 {
 		t.Fatalf("sensors: %+v", sens)
 	}
 

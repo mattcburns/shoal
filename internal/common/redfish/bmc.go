@@ -23,7 +23,11 @@ type BMC interface {
 	InsertVirtualMedia(ctx context.Context, mediaURI, imageURL string) error
 	EjectVirtualMedia(ctx context.Context, mediaURI string) error
 	// Power resetType: On | ForceOff | ForceRestart | GracefulRestart | ...
+	// Deploy uses this; On when already On is rewritten to ForceRestart so
+	// one-time virtual media is observed.
 	Power(ctx context.Context, systemID, resetType string) error
+	// Reset applies the Redfish reset type as requested, with no On→ForceRestart rewrite.
+	Reset(ctx context.Context, systemID, resetType string) error
 	// CleanupMediaAndBoot ejects all inserted media for the system and clears boot override.
 	CleanupMediaAndBoot(ctx context.Context, systemID string) error
 	// ListSEL returns log entries (SEL/event logs) for the system, managers, and chassis.
@@ -32,6 +36,9 @@ type BMC interface {
 	// ListSensors returns thermal/power sensor samples for chassis related to systemID.
 	// Best-effort: missing Thermal/Power yield empty slice or partial results.
 	ListSensors(ctx context.Context, systemID string) ([]SensorSample, error)
+	// ListFirmware returns UpdateService FirmwareInventory (gather-only; no flash).
+	// Missing UpdateService is an empty slice, not an error (sushy).
+	ListFirmware(ctx context.Context) ([]FirmwareComponent, error)
 	// CaptureScreenshot attempts OEM/documented console frame capture (Dell, Supermicro first).
 	// File/operator capture is preferred in lab; this path is for real BMC hardware.
 	// On failure, returned Screenshot.Debug (and error text) include probe steps without secrets.

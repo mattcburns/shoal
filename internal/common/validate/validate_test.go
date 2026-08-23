@@ -226,3 +226,36 @@ func TestStartJobRequest(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestDeviceCredentials(t *testing.T) {
+	if err := validate.DeviceCredentials("root", "x"); err != nil {
+		t.Fatal(err)
+	}
+	if err := validate.DeviceCredentials("root", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := validate.DeviceCredentials("", "x"); err == nil {
+		t.Fatal("expected username required")
+	}
+}
+
+func TestDevicePoll(t *testing.T) {
+	if err := validate.DevicePoll("https://bmc"); err != nil {
+		t.Fatal(err)
+	}
+	if err := validate.DevicePoll(""); err == nil {
+		t.Fatal("expected missing endpoint")
+	}
+}
+
+func TestDevicePower(t *testing.T) {
+	if err := validate.DevicePower("On", "https://bmc"); err != nil {
+		t.Fatal(err)
+	}
+	if err := validate.DevicePower("Explode", "https://bmc"); err == nil {
+		t.Fatal("expected bad reset_type")
+	}
+	if err := validate.DevicePower("On", ""); err == nil {
+		t.Fatal("expected missing endpoint")
+	}
+}

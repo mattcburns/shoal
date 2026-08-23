@@ -46,6 +46,37 @@ func TestMemorySetLifecycle(t *testing.T) {
 	}
 }
 
+func TestMemoryGetDeviceAndSetCredentialRef(t *testing.T) {
+	m := netbox.NewMemory()
+	id, err := m.UpsertDevice(context.Background(), models.DeviceIdentity{
+		Name: "C784MH3", Serial: "C784MH3", BMCIP: "172.16.21.202",
+		Vendor: "Dell Inc.", Model: "PowerEdge R750",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := m.GetDevice(context.Background(), id)
+	if err != nil || got.Serial != "C784MH3" || got.Vendor != "Dell Inc." {
+		t.Fatalf("%+v %v", got, err)
+	}
+	if err := m.SetCredentialRef(context.Background(), id, "bmc-C784MH3", ""); err != nil {
+		t.Fatal(err)
+	}
+	got, err = m.GetDevice(context.Background(), "C784MH3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.CredentialRef != "bmc-C784MH3" || got.BMCIP != "172.16.21.202" {
+		t.Fatalf("%+v", got)
+	}
+	if got.Vendor != "Dell Inc." || got.Model != "PowerEdge R750" {
+		t.Fatalf("classification wiped: %+v", got)
+	}
+	if err := m.SetCredentialRef(context.Background(), "missing", "bmc-x", ""); err == nil {
+		t.Fatal("expected not found")
+	}
+}
+
 func TestMemoryResolveDeviceID(t *testing.T) {
 	m := netbox.NewMemory()
 	id, err := m.UpsertDevice(context.Background(), models.DeviceIdentity{
@@ -94,6 +125,128 @@ func TestClientResolveDeviceID(t *testing.T) {
 	got, err = c.ResolveDeviceID(context.Background(), "no-such")
 	if err != nil || got != "no-such" {
 		t.Fatalf("passthrough %q %v", got, err)
+	}
+}
+
+func TestClientGetDeviceByNumericIDSkipsList(t *testing.T) {
+	var listed bool
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/dcim/devices/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		if r.URL.RawQuery != "" {
+			listed = true
+			_ = json.NewEncoder(w).Encode(map[string]any{"results": []any{}})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id": 6, "name": "C784MH3", "serial": "C784MH3",
+			"custom_fields": map[string]any{"credential_ref": "bmc-C784MH3", "bmc_ip": "172.16.21.202"},
+		})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	c := netbox.New(srv.URL, "tok")
+	got, err := c.GetDevice(context.Background(), "6")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if listed {
+		t.Fatal("numeric NetBox id must not search by serial/name")
+	}
+	if got.ID != "6" || got.CredentialRef != "bmc-C784MH3" {
+		t.Fatalf("%+v", got)
+	}
+}
+
+func TestClientGetDevice(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/dcim/devices/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		if r.URL.RawQuery != "" {
+			if r.URL.Query().Get("serial") == "C784MH3" {
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"results": []any{map[string]any{"id": 6}},
+				})
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"results": []any{}})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id": 6, "name": "C784MH3", "serial": "C784MH3",
+			"custom_fields": map[string]any{
+				"lifecycle_state": "discovered",
+				"credential_ref":  "bmc-C784MH3",
+				"bmc_ip":          "172.16.21.202",
+			},
+			"device_type": map[string]any{
+				"model":        "PowerEdge R750",
+				"manufacturer": map[string]any{"name": "Dell Inc."},
+			},
+		})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	c := netbox.New(srv.URL, "tok")
+	got, err := c.GetDevice(context.Background(), "C784MH3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ID != "6" || got.Serial != "C784MH3" || got.Vendor != "Dell Inc." || got.Model != "PowerEdge R750" {
+		t.Fatalf("%+v", got)
+	}
+	if got.CredentialRef != "bmc-C784MH3" || got.BMCIP != "172.16.21.202" {
+		t.Fatalf("%+v", got)
+	}
+}
+
+func TestClientSetCredentialRef(t *testing.T) {
+	var patched map[string]any
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/dcim/devices/", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			if r.URL.RawQuery != "" {
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"results": []any{map[string]any{"id": 6}},
+				})
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id": 6, "name": "C784MH3", "serial": "C784MH3",
+				"custom_fields": map[string]any{"bmc_ip": "172.16.21.202"},
+			})
+		case http.MethodPatch:
+			_ = json.NewDecoder(r.Body).Decode(&patched)
+			w.WriteHeader(http.StatusOK)
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	c := netbox.New(srv.URL, "tok")
+	if err := c.SetCredentialRef(context.Background(), "6", "bmc-C784MH3", ""); err != nil {
+		t.Fatal(err)
+	}
+	cf, _ := patched["custom_fields"].(map[string]any)
+	if cf["credential_ref"] != "bmc-C784MH3" {
+		t.Fatalf("patch %+v", patched)
+	}
+	if _, ok := patched["role"]; ok {
+		t.Fatalf("must not patch role: %+v", patched)
+	}
+	if _, ok := patched["device_type"]; ok {
+		t.Fatalf("must not patch device_type: %+v", patched)
+	}
+	if _, ok := cf["bmc_ip"]; ok {
+		t.Fatalf("empty bmc_ip must not overwrite: %+v", patched)
 	}
 }
 

@@ -45,6 +45,7 @@ class FakeResponse:
     def __init__(self, json_data, status_code=200):
         self._json = json_data
         self.status_code = status_code
+        self.content = b"x" if json_data is not None else b""
 
     def raise_for_status(self):
         if self.status_code >= 400:
@@ -192,7 +193,7 @@ class GetSensorsTests(unittest.TestCase):
         client.get_sensors("1")
         args, kwargs = mock_get.call_args
         self.assertEqual(args[0], "http://shoal.example:8088/v1/devices/1/sensors")
-        self.assertEqual(kwargs["params"], {"limit": 50})
+        self.assertEqual(kwargs["params"], {"limit": 200})
 
     @mock.patch("netbox_shoal.client.requests.get")
     def test_get_sensors_passes_limit(self, mock_get):
@@ -271,6 +272,69 @@ class WriteJobTests(unittest.TestCase):
         self.assertIsNone(err)
         args, _ = mock_post.call_args
         self.assertEqual(args[0], "http://shoal.example:8088/v1/jobs/abc/cancel")
+
+    @mock.patch("netbox_shoal.client.requests.post")
+    def test_power_device_posts_json(self, mock_post):
+        mock_post.return_value = FakeResponse(
+            {"device_id": "6", "reset_type": "On", "power_state": "On"}
+        )
+        body = {"reset_type": "On", "bmc_endpoint": "https://bmc"}
+        data, err = client.power_device("6", body)
+        self.assertIsNone(err)
+        self.assertEqual(data["power_state"], "On")
+        args, kwargs = mock_post.call_args
+        self.assertEqual(args[0], "http://shoal.example:8088/v1/devices/6/power")
+        self.assertEqual(kwargs["json"], body)
+
+    @mock.patch("netbox_shoal.client.requests.get")
+    def test_get_credentials(self, mock_get):
+        mock_get.return_value = FakeResponse(
+            {"device_id": "6", "username": "root", "has_password": True, "credential_ref": "bmc-C784MH3"}
+        )
+        data, err = client.get_credentials("6", credential_ref="bmc-C784MH3")
+        self.assertIsNone(err)
+        self.assertEqual(data["username"], "root")
+        self.assertNotIn("password", data)
+        args, kwargs = mock_get.call_args
+        self.assertEqual(args[0], "http://shoal.example:8088/v1/devices/6/credentials")
+        self.assertEqual(kwargs.get("params"), {"credential_ref": "bmc-C784MH3"})
+
+    @mock.patch("netbox_shoal.client.requests.get")
+    def test_get_firmware(self, mock_get):
+        mock_get.return_value = FakeResponse(
+            {"device_id": "6", "components": [{"id": "BIOS", "version": "1.8.0"}]}
+        )
+        data, err = client.get_firmware("6")
+        self.assertIsNone(err)
+        self.assertEqual(data["components"][0]["version"], "1.8.0")
+        args, _ = mock_get.call_args
+        self.assertEqual(args[0], "http://shoal.example:8088/v1/devices/6/firmware")
+
+    @mock.patch("netbox_shoal.client.requests.post")
+    def test_poll_device(self, mock_post):
+        mock_post.return_value = FakeResponse(
+            {"device_id": "6", "sel_new": 0, "sensors_written": 26}
+        )
+        body = {"bmc_endpoint": "https://172.16.21.202"}
+        data, err = client.poll_device("6", body)
+        self.assertIsNone(err)
+        self.assertEqual(data["sensors_written"], 26)
+        args, kwargs = mock_post.call_args
+        self.assertEqual(args[0], "http://shoal.example:8088/v1/devices/6/poll")
+        self.assertEqual(kwargs["json"], body)
+        self.assertGreaterEqual(kwargs["timeout"], 120)
+
+    @mock.patch("netbox_shoal.client.requests.put")
+    def test_put_credentials(self, mock_put):
+        mock_put.return_value = FakeResponse(
+            {"device_id": "6", "username": "root", "has_password": True, "credential_ref": "bmc-C784MH3"}
+        )
+        data, err = client.put_credentials("6", {"username": "root", "password": "x"})
+        self.assertIsNone(err)
+        self.assertTrue(data["has_password"])
+        self.assertNotIn("password", data)
+        args, kwargs = mock_put.call_args
+        self.assertEqual(args[0], "http://shoal.example:8088/v1/devices/6/credentials")
 
 
 if __name__ == "__main__":

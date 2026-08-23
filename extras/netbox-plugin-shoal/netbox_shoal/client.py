@@ -51,17 +51,48 @@ def _get(path, params=None):
         return None, str(exc)
 
 
-def _post(path, body=None):
+def _put(path, body=None):
     base = _base()
     if not base:
         return None, "Shoal base URL not configured (SHOAL_BASE_URL)"
+    try:
+        resp = requests.put(
+            base + path,
+            headers=_headers(),
+            json=body or {},
+            timeout=_timeout(),
+        )
+        if resp.status_code >= 400:
+            try:
+                data = resp.json()
+            except ValueError:
+                data = None
+            msg = None
+            if isinstance(data, dict):
+                msg = data.get("error") or data.get("detail")
+            if not msg:
+                msg = "HTTP %s: %s" % (resp.status_code, (resp.text or "")[:200])
+            return data, msg
+        if resp.status_code == 204 or not resp.content:
+            return {}, None
+        return resp.json(), None
+    except requests.RequestException as exc:
+        return None, str(exc)
+
+
+def _post(path, body=None, timeout=None):
+    base = _base()
+    if not base:
+        return None, "Shoal base URL not configured (SHOAL_BASE_URL)"
+    if timeout is None:
+        timeout = _timeout()
 
     try:
         resp = requests.post(
             base + path,
             headers=_headers(),
             json=body or {},
-            timeout=_timeout(),
+            timeout=timeout,
         )
         # Start may return 409 with a partial job body on late BMC/SOL failure.
         if resp.status_code >= 400:
@@ -100,9 +131,14 @@ def get_jobs(device_id, limit=50, state=None):
     return _get("/v1/devices/%s/jobs" % device_id, params=params)
 
 
-def get_sensors(device_id, limit=50):
+def get_sensors(device_id, limit=200):
     """GET /v1/devices/{id}/sensors?limit= -> ({"device_id","readings":[...]}, error)."""
     return _get("/v1/devices/%s/sensors" % device_id, params={"limit": limit})
+
+
+def get_firmware(device_id, limit=200):
+    """GET /v1/devices/{id}/firmware?limit= -> ({"device_id","components":[...]}, error)."""
+    return _get("/v1/devices/%s/firmware" % device_id, params={"limit": limit})
 
 
 def get_job_log(job_id, limit=100):
@@ -118,3 +154,34 @@ def start_job(body):
 def cancel_job(job_id):
     """POST /v1/jobs/{id}/cancel -> (body, error)."""
     return _post("/v1/jobs/%s/cancel" % job_id, body={})
+
+
+def power_device(device_id, body):
+    """POST /v1/devices/{id}/power -> (result dict, error)."""
+    return _post("/v1/devices/%s/power" % device_id, body=body)
+
+
+def get_credentials(device_id, credential_ref=None):
+    """GET /v1/devices/{id}/credentials -> view without password.
+
+    credential_ref from NetBox CF avoids Shoal calling NetBox back during a
+    device-page render (that nested round-trip can stall the Status tab).
+    """
+    params = None
+    if credential_ref:
+        params = {"credential_ref": credential_ref}
+    return _get("/v1/devices/%s/credentials" % device_id, params=params)
+
+
+def put_credentials(device_id, body):
+    """PUT /v1/devices/{id}/credentials -> view without password."""
+    return _put("/v1/devices/%s/credentials" % device_id, body=body)
+
+
+def poll_device(device_id, body):
+    """POST /v1/devices/{id}/poll -> on-demand SEL + sensor refresh."""
+    # iDRAC ListSEL/ListSensors can exceed the default 30s plugin timeout.
+    timeout = _timeout()
+    if timeout < 120:
+        timeout = 120
+    return _post("/v1/devices/%s/poll" % device_id, body=body, timeout=timeout)

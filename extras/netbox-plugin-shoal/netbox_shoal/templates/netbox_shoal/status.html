@@ -56,7 +56,7 @@
                 <label class="form-label small mb-0" for="id_bmc_endpoint">BMC endpoint</label>
                 <input class="form-control form-control-sm" id="id_bmc_endpoint" name="bmc_endpoint"
                        value="{{ d.bmc_endpoint }}" required
-                       placeholder="http://…:8001">
+                       placeholder="https://bmc-ip or lab sushy URL">
               </div>
               <div class="col-md-4">
                 <label class="form-label small mb-0" for="id_iso_url">ISO URL</label>
@@ -108,7 +108,125 @@
             <p class="text-muted small mt-2 mb-0">
               Starts <code>POST /v1/jobs</code> on Shoal with device id
               <code>{{ d.device_id }}</code>. Passwords are not stored in NetBox;
-              empty user/pass uses Shoal’s <code>SHOAL_BMC_*</code> defaults.
+              empty user/pass uses Shoal <code>SHOAL_BMC_*</code> (not the
+              stored per-device secret). Lab spike needs libvirt SOL; real BMC
+              SOL/ISO reachability is a separate gap.
+            </p>
+            {% endwith %}
+          {% endif %}
+        </div>
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
+  {% if shoal_actions_enabled %}
+  <div class="row mb-3">
+    <div class="col col-md-12">
+      <div class="card">
+        <h5 class="card-header">BMC credentials</h5>
+        <div class="card-body">
+          {% if shoal_credentials_error %}
+            <div class="alert alert-warning" role="alert">
+              Could not load credentials: {{ shoal_credentials_error }}
+            </div>
+          {% endif %}
+          {% if not shoal_can_control %}
+            <p class="mb-0">
+              User <code>{{ shoal_credentials.username|default:"—" }}</code>
+              {% if shoal_credentials.has_password %}
+                <span class="badge bg-success">password set</span>
+              {% else %}
+                <span class="badge bg-secondary">no password</span>
+              {% endif %}
+              <span class="text-muted">ref {{ shoal_credentials.credential_ref|default:"—" }}</span>
+            </p>
+          {% else %}
+            {% with c=shoal_credentials %}
+            <form method="post" class="row g-2 align-items-end">
+              {% csrf_token %}
+              <input type="hidden" name="next" value="{{ request.path }}">
+              <input type="hidden" name="action" value="credentials">
+              <div class="col-md-3">
+                <label class="form-label small mb-0" for="id_cred_username">BMC username</label>
+                <input class="form-control form-control-sm" id="id_cred_username" name="bmc_username"
+                       value="{{ c.username|default:"" }}" required autocomplete="off">
+              </div>
+              <div class="col-md-3">
+                <label class="form-label small mb-0" for="id_cred_password">BMC password</label>
+                <input class="form-control form-control-sm" type="password" id="id_cred_password"
+                       name="bmc_password" autocomplete="new-password"
+                       placeholder="{% if c.has_password %}leave blank to keep{% else %}required{% endif %}">
+              </div>
+              <div class="col-md-2">
+                <button type="submit" class="btn btn-primary btn-sm">Save</button>
+              </div>
+            </form>
+            <p class="text-muted small mt-2 mb-0">
+              Stored in Shoal’s secrets backend
+              (<code>{{ c.credential_ref|default:"bmc-&lt;serial&gt;" }}</code>),
+              never in NetBox.
+              {% if c.has_password %}<span class="badge bg-success">password set</span>{% endif %}
+              Power and provision use these when the forms leave user/pass empty.
+            </p>
+            {% endwith %}
+          {% endif %}
+        </div>
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
+  {% if shoal_actions_enabled %}
+  <div class="row mb-3">
+    <div class="col col-md-12">
+      <div class="card">
+        <h5 class="card-header">Host power</h5>
+        <div class="card-body">
+          {% if not shoal_can_control %}
+            <div class="alert alert-secondary mb-0" role="alert">
+              View-only: <code>dcim.change_device</code> is required to power the host.
+            </div>
+          {% else %}
+            {% with d=shoal_start_defaults %}
+            <form method="post" class="row g-2 align-items-end">
+              {% csrf_token %}
+              <input type="hidden" name="next" value="{{ request.path }}">
+              <input type="hidden" name="action" value="power">
+              <input type="hidden" name="system_id" value="{{ shoal_power_system_id }}">
+              <div class="col-md-4">
+                <label class="form-label small mb-0" for="id_power_bmc_endpoint">BMC endpoint</label>
+                <input class="form-control form-control-sm" id="id_power_bmc_endpoint" name="bmc_endpoint"
+                       value="{{ d.bmc_endpoint }}" required>
+              </div>
+              <div class="col-md-3">
+                <label class="form-label small mb-0" for="id_power_bmc_username">BMC user (optional)</label>
+                <input class="form-control form-control-sm" id="id_power_bmc_username" name="bmc_username"
+                       autocomplete="off" placeholder="stored credentials, then env">
+              </div>
+              <div class="col-md-3">
+                <label class="form-label small mb-0" for="id_power_bmc_password">BMC password (optional)</label>
+                <input class="form-control form-control-sm" type="password" id="id_power_bmc_password"
+                       name="bmc_password" autocomplete="new-password"
+                       placeholder="stored credentials, then env">
+              </div>
+              <div class="col-md-12 d-flex gap-2 mt-2">
+                <button type="submit" name="reset_type" value="On" class="btn btn-success btn-sm">
+                  Power on
+                </button>
+                <button type="submit" name="reset_type" value="ForceOff" class="btn btn-outline-danger btn-sm"
+                        onclick="return confirm('Force power off this host?');">
+                  Force off
+                </button>
+                <button type="submit" name="reset_type" value="ForceRestart" class="btn btn-outline-warning btn-sm"
+                        onclick="return confirm('Force restart this host?');">
+                  Reset
+                </button>
+              </div>
+            </form>
+            <p class="text-muted small mt-2 mb-0">
+              Sends <code>POST /v1/devices/{{ d.device_id }}/power</code> (Redfish reset).
+              Empty user/pass uses stored BMC credentials, then Shoal <code>SHOAL_BMC_*</code>.
             </p>
             {% endwith %}
           {% endif %}

@@ -77,10 +77,25 @@ type SELEntry struct {
 	LogService string // parent log service name or URI fragment
 }
 
+// FirmwareComponent is one Redfish SoftwareInventory / FirmwareInventory item.
+type FirmwareComponent struct {
+	ID           string
+	Name         string
+	Version      string
+	SoftwareID   string
+	Manufacturer string
+	ReleaseDate  string
+	Health       string
+	State        string
+	Updateable   bool
+}
+
 // SensorSample is one thermal/power sensor reading from Redfish.
 type SensorSample struct {
 	Name            string
 	Reading         float64
+	HasReading      bool   // false when Redfish omitted Reading (JSON null)
+	Note            string // why HasReading is false, for operator UI
 	Units           string
 	PhysicalContext string
 	Status          string // Health / State summary when available

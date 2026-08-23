@@ -39,8 +39,8 @@ gofmt -w . && go vet ./... && staticcheck ./... && go test ./...
 ### NetBox plugin
 [`extras/netbox-plugin-shoal/`](extras/netbox-plugin-shoal/README.md) is a
 NetBox plugin (Python/Django — the one place in this repo Go isn't used;
-see the "Stack" note in `AGENTS.md`) that adds read-only **Shoal Status**,
-**Events**, **Jobs**, and **Sensors** tabs to the NetBox device page, reading
+see the "Stack" note in `AGENTS.md`) that adds **Shoal Status**,
+**Events**, **Jobs**, **Sensors**, and **Firmware** tabs to the NetBox device page, reading
 the API above server-side. It's baked into the lab's NetBox image by default
 (`shoal_netbox_plugin: true`); see
 [`docs/netbox-telemetry-ui-design.md`](docs/netbox-telemetry-ui-design.md)

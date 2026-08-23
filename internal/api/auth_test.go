@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/mattcburns/shoal/internal/api"
@@ -81,6 +82,24 @@ func TestAPIAuthProtectsNewTelemetryRoutes(t *testing.T) {
 		if rr.Code == http.StatusUnauthorized {
 			t.Fatalf("%s: valid bearer still unauthorized", path)
 		}
+	}
+}
+
+func TestAPIAuthProtectsDevicePower(t *testing.T) {
+	s := api.New(config.Config{APIToken: "secret-token"}, nil)
+	body := strings.NewReader(`{"reset_type":"On","bmc_endpoint":"https://bmc"}`)
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/devices/6/power", body)
+	s.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("want 401 without bearer, got %d", rr.Code)
+	}
+	rr = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/v1/devices/6/power", strings.NewReader(`{"reset_type":"On","bmc_endpoint":"https://bmc"}`))
+	req.Header.Set("Authorization", "Bearer secret-token")
+	s.Handler().ServeHTTP(rr, req)
+	if rr.Code == http.StatusUnauthorized {
+		t.Fatal("valid bearer still unauthorized")
 	}
 }
 

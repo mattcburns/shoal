@@ -30,28 +30,31 @@ func TestPollOnceWritesSELAndSensors(t *testing.T) {
 	// Deterministic path — no Core / no Fake AI.
 	p := poll.New(nil, store, func(redfish.Config) (redfish.BMC, error) { return fake, nil })
 
-	selN, sensN, err := p.PollOnce(context.Background(), poll.Target{
+	got, err := p.PollOnce(context.Background(), poll.Target{
 		DeviceID: "dev-1",
 		BMC:      redfish.Config{BaseURL: "http://fake"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if selN != 1 {
-		t.Fatalf("sel written=%d want 1 (dedup)", selN)
+	if got.SELNew != 1 {
+		t.Fatalf("sel written=%d want 1 (dedup)", got.SELNew)
 	}
-	if sensN != 1 {
-		t.Fatalf("sensors=%d", sensN)
+	if got.SensorsWritten != 1 {
+		t.Fatalf("sensors=%d", got.SensorsWritten)
 	}
-	selN, _, err = p.PollOnce(context.Background(), poll.Target{
+	if got.PowerState != "Off" {
+		t.Fatalf("power=%q", got.PowerState)
+	}
+	got, err = p.PollOnce(context.Background(), poll.Target{
 		DeviceID: "dev-1",
 		BMC:      redfish.Config{BaseURL: "http://fake"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if selN != 0 {
-		t.Fatalf("second poll sel=%d", selN)
+	if got.SELNew != 0 {
+		t.Fatalf("second poll sel=%d", got.SELNew)
 	}
 	evs, _ := store.ListEvents(context.Background(), "dev-1", time.Time{}, 10)
 	if len(evs) != 1 {
@@ -65,6 +68,34 @@ func TestPollOnceWritesSELAndSensors(t *testing.T) {
 	}
 }
 
+func TestPollOnceWritesFirmwareAndPower(t *testing.T) {
+	store := telemetry.NewMemory()
+	fake := redfish.NewFake()
+	fake.Systems[0].PowerState = "On"
+	fake.Firmware = []redfish.FirmwareComponent{
+		{ID: "Installed-0-BIOS", Name: "BIOS", Version: "1.8.0", Manufacturer: "Dell Inc."},
+		{ID: "Installed-1-iDRAC", Name: "iDRAC", Version: "7.30.10.50"},
+	}
+	p := poll.New(nil, store, func(redfish.Config) (redfish.BMC, error) { return fake, nil })
+	got, err := p.PollOnce(context.Background(), poll.Target{
+		DeviceID: "6", BMC: redfish.Config{BaseURL: "http://fake"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.FirmwareWritten != 2 || got.PowerState != "On" {
+		t.Fatalf("%+v", got)
+	}
+	fw, err := store.ListFirmware(context.Background(), "6", 20)
+	if err != nil || len(fw) != 2 {
+		t.Fatalf("firmware %v %+v", err, fw)
+	}
+	pw, err := store.LatestPower(context.Background(), "6")
+	if err != nil || pw.PowerState != "On" {
+		t.Fatalf("power %v %+v", err, pw)
+	}
+}
+
 func TestPollOnceWritesSELWhenSensorsFail(t *testing.T) {
 	store := telemetry.NewMemory()
 	fake := redfish.NewFake()
@@ -75,7 +106,7 @@ func TestPollOnceWritesSELWhenSensorsFail(t *testing.T) {
 	fake.ListSensorsErr = errors.New("context deadline exceeded")
 	p := poll.New(nil, store, func(redfish.Config) (redfish.BMC, error) { return fake, nil })
 
-	selN, sensN, err := p.PollOnce(context.Background(), poll.Target{
+	got, err := p.PollOnce(context.Background(), poll.Target{
 		DeviceID: "dev-1",
 		BMC:      redfish.Config{BaseURL: "http://fake"},
 	})
@@ -85,11 +116,11 @@ func TestPollOnceWritesSELWhenSensorsFail(t *testing.T) {
 	if !strings.Contains(err.Error(), "list sensors") {
 		t.Fatalf("err=%v", err)
 	}
-	if selN != 1 {
-		t.Fatalf("sel written=%d want 1", selN)
+	if got.SELNew != 1 {
+		t.Fatalf("sel written=%d want 1", got.SELNew)
 	}
-	if sensN != 0 {
-		t.Fatalf("sensors=%d", sensN)
+	if got.SensorsWritten != 0 {
+		t.Fatalf("sensors=%d", got.SensorsWritten)
 	}
 	evs, _ := store.ListEvents(context.Background(), "dev-1", time.Time{}, 10)
 	if len(evs) != 1 {
@@ -100,7 +131,7 @@ func TestPollOnceWritesSELWhenSensorsFail(t *testing.T) {
 func TestPollOnceSurfacesWriteFailures(t *testing.T) {
 	// nil store → hard error
 	p := poll.New(nil, nil, func(redfish.Config) (redfish.BMC, error) { return redfish.NewFake(), nil })
-	_, _, err := p.PollOnce(context.Background(), poll.Target{
+	_, err := p.PollOnce(context.Background(), poll.Target{
 		DeviceID: "d", BMC: redfish.Config{BaseURL: "http://x"},
 	})
 	if err == nil {

@@ -1,12 +1,17 @@
 # NetBox integration: visual telemetry, events, and job context
 
 **Status:** Read-only MVP complete — backend APIs **N1–N3** and plugin tabs
-**N4–N6** (Status, Events, Jobs, Sensors) implemented and lab-verified. Demo
+**N4–N6** (Status, Events, Jobs, Sensors) plus **Firmware** (gather-only). Demo
 polish: job_log production writer (SOL markers), device_id name/serial → NetBox
 pk remap on Start, plugin progress/stages/log + auto-refresh, bootstrap
 serial=name. Demo write path: NetBox Status **Start provision / Cancel** (plugin
-v0.3) → `POST /v1/jobs` / cancel; lab defaults + Shoal `SHOAL_BMC_*` so passwords
-stay off NetBox. **N7** Grafana and richer wizard still open.
+v0.4) → `POST /v1/jobs` / cancel; **Host power**, **BMC credentials** (password
+in Shoal secrets only), **Poll BMC** (SEL + sensors + firmware + power).
+Physical servers prefill `https://<bmc_ip>`; lab virtual BMC nodes keep the
+shared sushy URL. Status credentials GET passes `credential_ref` so Shoal does
+not call NetBox while a device page is rendering. Power/poll resolve stored
+secrets then `SHOAL_BMC_*`; Start provision still uses env defaults when the
+form leaves user/pass blank. **N7** Grafana and richer wizard still open.
 **Date:** July 2026 (status updated August 2026)  
 **Audience:** Human architect + coding agents  
 **Related:** Design SoT `SHOAL_COMPREHENSIVE_DESIGN_AND_IMPLEMENTATION_PLAN.md` (v2.0.9+);
@@ -34,8 +39,8 @@ inventory inside Shoal.
 | Layer | Role today |
 |-------|------------|
 | **NetBox** | Device identity + current `lifecycle_state` (+ credential ref / BMC metadata as designed) |
-| **Shoal telemetry DB** | `jobs`, `events`, `sensor_readings`, `job_log` |
-| **Shoal API** | Device status/events; job start/status/cancel; metrics |
+| **Shoal telemetry DB** | `jobs`, `events`, `sensor_readings`, `job_log`, `device_power`, `firmware_inventory` |
+| **Shoal API** | Device status/events/sensors/firmware; poll; power; credentials; job start/status/cancel; metrics |
 | **Operator UX** | API + CLI only (no first-party browser UI in MVP) |
 
 ### 2.2 What operators want
@@ -44,6 +49,7 @@ From **NetBox** (where they already look at devices):
 
 - See recent **SEL / normalized events**
 - See **sensor** context (latest and/or simple history)
+- See **firmware inventory** (gather-only) and last **power state**
 - See **active / recent provisioning jobs** and phase/progress
 - Optionally tail **job log** lines related to that device
 - Navigate without juggling raw URLs and tokens
@@ -192,7 +198,11 @@ MVP may use the existing single token with plugin only calling GET routes.
 
 | Method | Path | Use in UI |
 |--------|------|-----------|
-| `GET` | `/v1/devices/{id}/status` | Status tab: lifecycle, power, active job, phase/percent |
+| `GET` | `/v1/devices/{id}/status` | Status tab: lifecycle, power (from last poll), active job, phase/percent |
+| `GET` | `/v1/devices/{id}/firmware` | Firmware tab: gather-only Redfish FirmwareInventory snapshot |
+| `POST` | `/v1/devices/{id}/poll` | On-demand Redfish SEL + sensors + firmware + power into telemetry (also registers the device on the background poller: `SHOAL_POLL_IDLE_INTERVAL` / `SHOAL_POLL_WATCH_INTERVAL`) |
+| `POST` | `/v1/devices/{id}/power` | Host power: `{reset_type,bmc_endpoint,…}` — On / ForceOff / ForceRestart (not a provision job). Empty `bmc_endpoint` fills `https://<bmc_ip>` from NetBox. |
+| `GET`/`PUT` | `/v1/devices/{id}/credentials` | BMC username + has_password + credential_ref (password never returned; stored in secrets backend). `GET ?credential_ref=` skips NetBox lookup. |
 | `GET` | `/v1/devices/{id}/events?since=&limit=` | Events/SEL tab |
 | `GET` | `/v1/jobs/{id}` | Job detail panel |
 | `GET` | `/metrics` | Ops only; not NetBox-facing |
@@ -274,10 +284,11 @@ Plugin shows a button: “Open sensor dashboard” with `device_id` variable.
 
 | Tab | Content | Data | Status |
 |-----|---------|------|--------|
-| **Shoal Status** | Lifecycle badge, progress bar, phase, stages panel, job log, 5s auto-refresh while provisioning | `GET …/status` + jobs + log | ✅ N5 + demo polish |
+| **Shoal Status** | Lifecycle badge, last polled power, progress/stages/log, BMC credentials form, host power, Start/Cancel; 5s auto-refresh while provisioning | `GET …/status` + jobs + log + credentials | ✅ N5 + demo polish |
 | **Shoal Events** | Table: ts, severity badge, type, component, message | `GET …/events` | ✅ N5 |
 | **Jobs** | Table with badges/progress/stages + active/latest job log; auto-refresh | `GET …/jobs` + log | ✅ N6 + demo polish |
 | **Sensors** | Flat readings table (sensor, value, unit, ts); no sparkline yet | `GET …/sensors` | ✅ N6 |
+| **Firmware** | Gather-only inventory (name, version, health); Poll BMC | `GET …/firmware` | gather-only |
 
 Empty states: “No events yet — has Observe poll run?” with lab runbook link.
 

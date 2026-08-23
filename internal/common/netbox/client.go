@@ -136,6 +136,67 @@ func (c *Client) ResolveDeviceID(ctx context.Context, key string) (string, error
 	return key, nil
 }
 
+func looksLikeNetBoxID(key string) bool {
+	if key == "" {
+		return false
+	}
+	for i := 0; i < len(key); i++ {
+		if key[i] < '0' || key[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// GetDevice loads identity by serial, name, or NetBox id. Password is never included.
+func (c *Client) GetDevice(ctx context.Context, key string) (models.DeviceIdentity, error) {
+	if c.BaseURL == "" || c.Token == "" {
+		return models.DeviceIdentity{}, fmt.Errorf("netbox: missing url or token")
+	}
+	key = strings.TrimSpace(key)
+	id := key
+	if !looksLikeNetBoxID(key) {
+		resolved, err := c.ResolveDeviceID(ctx, key)
+		if err != nil {
+			return models.DeviceIdentity{}, err
+		}
+		id = resolved
+	}
+	var raw struct {
+		ID     int    `json:"id"`
+		Name   string `json:"name"`
+		Serial string `json:"serial"`
+		CF     struct {
+			LifecycleState string `json:"lifecycle_state"`
+			CredentialRef  string `json:"credential_ref"`
+			BMCIP          string `json:"bmc_ip"`
+		} `json:"custom_fields"`
+		DeviceType struct {
+			Model        string `json:"model"`
+			Manufacturer struct {
+				Name string `json:"name"`
+			} `json:"manufacturer"`
+		} `json:"device_type"`
+	}
+	if err := c.doJSON(ctx, http.MethodGet, "/api/dcim/devices/"+id+"/", nil, &raw); err != nil {
+		return models.DeviceIdentity{}, err
+	}
+	out := models.DeviceIdentity{
+		ID:             fmt.Sprintf("%d", raw.ID),
+		Name:           raw.Name,
+		Serial:         raw.Serial,
+		Vendor:         raw.DeviceType.Manufacturer.Name,
+		Model:          raw.DeviceType.Model,
+		LifecycleState: models.LifecycleState(raw.CF.LifecycleState),
+		CredentialRef:  raw.CF.CredentialRef,
+		BMCIP:          raw.CF.BMCIP,
+	}
+	if out.ID == "0" && id != "" {
+		out.ID = id
+	}
+	return out, nil
+}
+
 func (c *Client) createDevice(ctx context.Context, id models.DeviceIdentity) (string, error) {
 	siteID, err := c.lookupID(ctx, "/api/dcim/sites/", "slug", c.SiteSlug)
 	if err != nil {
@@ -242,6 +303,32 @@ func (c *Client) SetLifecycle(ctx context.Context, deviceKey string, state model
 		return c.doJSON(ctx, http.MethodPatch, "/api/dcim/devices/"+netboxID+"/", fb, nil)
 	}
 	return nil
+}
+
+// SetCredentialRef writes credential_ref (and optional bmc_ip) custom fields only.
+// It never creates a device and never changes role, type, or lifecycle_state.
+func (c *Client) SetCredentialRef(ctx context.Context, deviceKey, ref, bmcIP string) error {
+	if c.BaseURL == "" || c.Token == "" {
+		return fmt.Errorf("netbox: missing url or token")
+	}
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return fmt.Errorf("netbox: credential_ref required")
+	}
+	id, err := c.GetDevice(ctx, deviceKey)
+	if err != nil {
+		return err
+	}
+	netboxID := strings.TrimSpace(id.ID)
+	if netboxID == "" || netboxID == "0" {
+		return fmt.Errorf("netbox: device %q not found", deviceKey)
+	}
+	cf := map[string]any{"credential_ref": ref}
+	if ip := strings.TrimSpace(bmcIP); ip != "" {
+		cf["bmc_ip"] = ip
+	}
+	body := map[string]any{"custom_fields": cf}
+	return c.doJSON(ctx, http.MethodPatch, "/api/dcim/devices/"+netboxID+"/", body, nil)
 }
 
 func (c *Client) lookupID(ctx context.Context, path, filterKey, filterVal string) (int, error) {
@@ -514,6 +601,49 @@ func (m *Memory) SetLifecycle(_ context.Context, deviceKey string, state models.
 		return nil
 	}
 	return fmt.Errorf("netbox/memory: device %q not found", deviceKey)
+}
+
+// GetDevice implements lookup for credentials/power.
+func (m *Memory) GetDevice(_ context.Context, key string) (models.DeviceIdentity, error) {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return models.DeviceIdentity{}, fmt.Errorf("netbox/memory: device key required")
+	}
+	if id, ok := m.ByID[key]; ok {
+		return id, nil
+	}
+	if id, ok := m.BySerial[key]; ok {
+		return id, nil
+	}
+	for _, id := range m.ByID {
+		if id.Name == key {
+			return id, nil
+		}
+	}
+	return models.DeviceIdentity{}, fmt.Errorf("netbox/memory: device %q not found", key)
+}
+
+// SetCredentialRef implements credential_ref (+ optional bmc_ip) update for tests.
+func (m *Memory) SetCredentialRef(ctx context.Context, deviceKey, ref, bmcIP string) error {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return fmt.Errorf("netbox/memory: credential_ref required")
+	}
+	id, err := m.GetDevice(ctx, deviceKey)
+	if err != nil {
+		return err
+	}
+	id.CredentialRef = ref
+	if ip := strings.TrimSpace(bmcIP); ip != "" {
+		id.BMCIP = ip
+	}
+	if id.Serial != "" {
+		m.BySerial[id.Serial] = id
+	}
+	if id.ID != "" {
+		m.ByID[id.ID] = id
+	}
+	return nil
 }
 
 // ResolveDeviceID implements DeviceResolver for tests/lab fakes.

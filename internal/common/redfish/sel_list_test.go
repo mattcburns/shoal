@@ -13,6 +13,39 @@ import (
 	gofishredfish "github.com/stmcginnis/gofish/redfish"
 )
 
+func TestSensorUnavailableNote(t *testing.T) {
+	got := sensorUnavailableNote(nil, true)
+	if got != "No reading while host is off" {
+		t.Fatalf("%q", got)
+	}
+	got = sensorUnavailableNote(nil, false)
+	if got != "BMC did not return a reading" {
+		t.Fatalf("%q", got)
+	}
+}
+
+func TestUniqueSensorName(t *testing.T) {
+	seen := map[string]struct{}{}
+	a := uniqueSensorName(seen, "InputPowerSensor", "PSU.Slot.1_InputPower")
+	if a != "InputPowerSensor" {
+		t.Fatalf("first=%q", a)
+	}
+	seen[strings.ToLower(a)] = struct{}{}
+	b := uniqueSensorName(seen, "InputPowerSensor", "PSU.Slot.2_InputPower")
+	if b != "InputPowerSensor (PSU.Slot.2_InputPower)" {
+		t.Fatalf("second=%q", b)
+	}
+}
+
+func TestDiscretePowerGood(t *testing.T) {
+	if !discretePowerGood("CPU1 VCCIN PG") || !discretePowerGood("System Board Pfault Fail Safe") {
+		t.Fatal("expected discrete PG names")
+	}
+	if discretePowerGood("PS1 Voltage 1") || discretePowerGood("Inlet Temp") {
+		t.Fatal("analog rails should not be treated as PG bits")
+	}
+}
+
 func TestLogServiceRank(t *testing.T) {
 	sel := &gofishredfish.LogService{LogEntryType: gofishredfish.SELLogEntryTypes}
 	sel.Name, sel.ID, sel.ODataID = "SEL Log", "Sel", "/redfish/v1/Managers/1/LogServices/Sel"

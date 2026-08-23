@@ -10,10 +10,11 @@ separate "shoal_device_id" custom field is needed.
 Deploy also remaps lab hostnames (shoal-node-1) to this pk when NetBox is
 configured, so jobs started with -device-id shoal-node-1 still appear here.
 
-Write actions (start / cancel) POST back to this view and call Shoal's
-POST /v1/jobs and /v1/jobs/{id}/cancel. BMC passwords are not collected in
-NetBox when Shoal has SHOAL_BMC_* defaults; lab plugin config only supplies
-non-secret defaults (BMC URL, ISO URL).
+Write actions (start / cancel / power / credentials) POST back to this view
+and call Shoal's /v1/jobs, power, and credentials APIs. BMC passwords are
+never stored in NetBox: the credentials form PUTs to Shoal's secrets backend
+(credential_ref only). Lab plugin config supplies non-secret defaults (BMC
+URL, ISO URL).
 """
 
 from django.conf import settings
@@ -26,6 +27,7 @@ from netbox.views import generic
 from utilities.views import ViewTab, register_model_view
 
 from . import client
+from .defaults import bmc_endpoint as resolve_bmc_endpoint
 
 PLUGIN_NAME = "netbox_shoal"
 
@@ -58,18 +60,37 @@ def _redirect_back(request, fallback_path):
     return redirect(fallback_path)
 
 
+def _device_bmc_ip(instance):
+    cf = getattr(instance, "custom_field_data", None) or {}
+    if not isinstance(cf, dict):
+        cf = {}
+    ip = (cf.get("bmc_ip") or "").strip()
+    if ip:
+        return ip
+    extra = getattr(instance, "cf", None)
+    if extra is None:
+        return ""
+    try:
+        return (extra.get("bmc_ip") or "").strip()
+    except (AttributeError, TypeError):
+        return ""
+
+
+def _role_slug(instance):
+    role = getattr(instance, "role", None)
+    return (getattr(role, "slug", None) or "").strip()
+
+
 def _start_defaults(instance):
     """Build form defaults from plugin config + device identity."""
     cfg = _cfg()
     name = instance.name or ""
-    cf = getattr(instance, "custom_field_data", None) or {}
-    if not isinstance(cf, dict):
-        cf = {}
-    bmc_ip = cf.get("bmc_ip") or ""
-    bmc_endpoint = (cfg.get("SHOAL_DEFAULT_BMC_ENDPOINT") or "").strip()
-    if not bmc_endpoint and bmc_ip:
-        # Real BMC path: https://bmc_ip — lab multi-system sushy usually sets the full URL in config.
-        bmc_endpoint = "https://%s" % bmc_ip
+    bmc_ip = _device_bmc_ip(instance)
+    bmc_endpoint = resolve_bmc_endpoint(
+        bmc_ip=bmc_ip,
+        role_slug=_role_slug(instance),
+        default_endpoint=(cfg.get("SHOAL_DEFAULT_BMC_ENDPOINT") or "").strip(),
+    )
     iso_url = (cfg.get("SHOAL_DEFAULT_ISO_URL") or "").strip()
     return {
         "device_id": str(instance.pk),
@@ -133,6 +154,86 @@ def _handle_control_post(request, instance):
         )
         return True
 
+    if action == "credentials":
+        body = {
+            "username": (request.POST.get("bmc_username") or "").strip(),
+        }
+        password = request.POST.get("bmc_password") or ""
+        if password:
+            body["password"] = password
+        ip = (request.POST.get("bmc_ip") or "").strip()
+        if ip:
+            body["bmc_ip"] = ip
+        data, err = client.put_credentials(str(instance.pk), body)
+        if err:
+            messages.error(request, "Save BMC credentials failed: %s" % err)
+            return True
+        messages.success(
+            request,
+            "BMC credentials saved in Shoal (ref=%s). Password is not stored in NetBox."
+            % ((data or {}).get("credential_ref") or "?"),
+        )
+        return True
+
+    if action == "power":
+        defaults = _start_defaults(instance)
+        reset_type = (request.POST.get("reset_type") or "").strip()
+        body = {
+            "reset_type": reset_type,
+            "bmc_endpoint": (request.POST.get("bmc_endpoint") or defaults["bmc_endpoint"]).strip(),
+            "system_id": (request.POST.get("system_id") or "").strip(),
+        }
+        user = (request.POST.get("bmc_username") or "").strip()
+        password = request.POST.get("bmc_password") or ""
+        if user:
+            body["bmc_username"] = user
+        if password:
+            body["bmc_password"] = password
+        if not body["bmc_endpoint"]:
+            messages.error(request, "BMC endpoint is required for power control.")
+            return True
+        data, err = client.power_device(str(instance.pk), body)
+        if err:
+            messages.error(request, "Power %s failed: %s" % (reset_type or "action", err))
+            return True
+        state = (data or {}).get("power_state") or "?"
+        messages.success(
+            request,
+            "Power %s sent. BMC reports power_state=%s." % (reset_type, state),
+        )
+        return True
+
+    if action == "poll":
+        defaults = _start_defaults(instance)
+        body = {
+            "bmc_endpoint": (request.POST.get("bmc_endpoint") or defaults["bmc_endpoint"]).strip(),
+            "system_id": (request.POST.get("system_id") or "").strip(),
+        }
+        user = (request.POST.get("bmc_username") or "").strip()
+        password = request.POST.get("bmc_password") or ""
+        if user:
+            body["bmc_username"] = user
+        if password:
+            body["bmc_password"] = password
+        if not body["bmc_endpoint"]:
+            messages.error(request, "BMC endpoint is required to poll sensors.")
+            return True
+        data, err = client.poll_device(str(instance.pk), body)
+        if err:
+            messages.error(request, "Poll BMC failed: %s" % err)
+            return True
+        messages.success(
+            request,
+            "Polled BMC: %s sensor(s), %s firmware, power=%s, %s new SEL."
+            % (
+                (data or {}).get("sensors_written", 0),
+                (data or {}).get("firmware_written", 0),
+                (data or {}).get("power_state") or "—",
+                (data or {}).get("sel_new", 0),
+            ),
+        )
+        return True
+
     if action == "cancel":
         job_id = (request.POST.get("job_id") or "").strip()
         if not job_id:
@@ -163,6 +264,23 @@ def _status_context(instance, request=None):
     provisioning = bool(
         data and (data.get("lifecycle_state") == "provisioning" or data.get("active_job_id"))
     ) or any((j or {}).get("state") == "provisioning" for j in jobs)
+    defaults = _start_defaults(instance)
+    power_system_id = ""
+    if str(defaults.get("serial_target") or "").startswith("shoal-node"):
+        power_system_id = defaults.get("system_id") or ""
+    cf = getattr(instance, "custom_field_data", None) or {}
+    if not isinstance(cf, dict):
+        cf = {}
+    creds, creds_err = client.get_credentials(
+        device_id, credential_ref=(cf.get("credential_ref") or "")
+    )
+    if isinstance(creds, dict):
+        if not creds.get("bmc_ip") and cf.get("bmc_ip"):
+            creds = dict(creds)
+            creds["bmc_ip"] = cf.get("bmc_ip")
+        if not creds.get("credential_ref") and cf.get("credential_ref"):
+            creds = dict(creds)
+            creds["credential_ref"] = cf.get("credential_ref")
     return {
         "shoal_status": data,
         "shoal_error": error,
@@ -172,7 +290,10 @@ def _status_context(instance, request=None):
         "shoal_job_log_error": log_error,
         "shoal_auto_refresh": provisioning,
         "shoal_can_control": bool(request and _can_control(request)),
-        "shoal_start_defaults": _start_defaults(instance),
+        "shoal_start_defaults": defaults,
+        "shoal_power_system_id": power_system_id,
+        "shoal_credentials": creds or {},
+        "shoal_credentials_error": creds_err,
         "shoal_actions_enabled": bool(_cfg().get("SHOAL_ENABLE_ACTIONS", True)),
     }
 
@@ -264,8 +385,58 @@ class ShoalSensorsView(generic.ObjectView):
     )
 
     def get_extra_context(self, request, instance):
-        data, error = client.get_sensors(str(instance.pk), limit=50)
+        data, error = client.get_sensors(str(instance.pk), limit=200)
+        defaults = _start_defaults(instance)
+        power_system_id = ""
+        if str(defaults.get("serial_target") or "").startswith("shoal-node"):
+            power_system_id = defaults.get("system_id") or ""
         return {
             "shoal_sensors": (data or {}).get("readings", []),
             "shoal_error": error,
+            "shoal_can_control": bool(request and _can_control(request)),
+            "shoal_actions_enabled": bool(_cfg().get("SHOAL_ENABLE_ACTIONS", True)),
+            "shoal_start_defaults": defaults,
+            "shoal_power_system_id": power_system_id,
         }
+
+    def post(self, request, **kwargs):
+        instance = self.get_object(**kwargs)
+        if _cfg().get("SHOAL_ENABLE_ACTIONS", True):
+            _handle_control_post(request, instance)
+        else:
+            messages.error(request, "Shoal write actions are disabled in plugin config.")
+        return _redirect_back(request, request.path)
+
+
+@register_model_view(Device, name="shoal_firmware")
+class ShoalFirmwareView(generic.ObjectView):
+    queryset = Device.objects.all()
+    template_name = "netbox_shoal/firmware.html"
+    tab = ViewTab(
+        label="Shoal Firmware",
+        permission="dcim.view_device",
+    )
+
+    def get_extra_context(self, request, instance):
+        data, error = client.get_firmware(str(instance.pk), limit=200)
+        defaults = _start_defaults(instance)
+        power_system_id = ""
+        if str(defaults.get("serial_target") or "").startswith("shoal-node"):
+            power_system_id = defaults.get("system_id") or ""
+        return {
+            "shoal_firmware": (data or {}).get("components", []),
+            "shoal_firmware_ts": (data or {}).get("ts"),
+            "shoal_error": error,
+            "shoal_can_control": bool(request and _can_control(request)),
+            "shoal_actions_enabled": bool(_cfg().get("SHOAL_ENABLE_ACTIONS", True)),
+            "shoal_start_defaults": defaults,
+            "shoal_power_system_id": power_system_id,
+        }
+
+    def post(self, request, **kwargs):
+        instance = self.get_object(**kwargs)
+        if _cfg().get("SHOAL_ENABLE_ACTIONS", True):
+            _handle_control_post(request, instance)
+        else:
+            messages.error(request, "Shoal write actions are disabled in plugin config.")
+        return _redirect_back(request, request.path)

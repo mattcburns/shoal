@@ -127,7 +127,7 @@ func (s *Server) handleDeviceSensors(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "missing device id"})
 		return
 	}
-	limit := 50
+	limit := maxListLimit
 	if v := r.URL.Query().Get("limit"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			limit = n
@@ -153,5 +153,45 @@ func (s *Server) handleDeviceSensors(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"device_id": id,
 		"readings":  readings,
+	})
+}
+
+func (s *Server) handleDeviceFirmware(w http.ResponseWriter, r *http.Request) {
+	if s.observe == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+			"error": "observe not configured",
+		})
+		return
+	}
+	id := r.PathValue("id")
+	if id == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "missing device id"})
+		return
+	}
+	limit := maxListLimit
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	if limit > maxListLimit {
+		limit = maxListLimit
+	}
+	comps, err := s.observe.ListFirmware(r.Context(), id, limit)
+	if err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": err.Error()})
+		return
+	}
+	if comps == nil {
+		comps = []telemetry.FirmwareComponent{}
+	}
+	var ts time.Time
+	if len(comps) > 0 {
+		ts = comps[0].TS
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"device_id":  id,
+		"ts":         ts,
+		"components": comps,
 	})
 }

@@ -12,7 +12,7 @@ class ShoalConfig(PluginConfig):
     name = "netbox_shoal"
     verbose_name = "Shoal Telemetry"
     description = "Shoal device status/events tabs on the NetBox device page"
-    version = "0.3.0"
+    version = "0.4.0"
     author = "Shoal contributors"
     base_url = "shoal"
 

@@ -166,6 +166,8 @@ services:
       - SHOAL_ISO_PUBLISH_DIR=/srv/iso
       - SHOAL_ISO_BASE_URL=http://{{ shoal_lab_network_gateway }}:{{ shoal_iso_server_port }}
       - SHOAL_API_TOKEN={{ shoal_api_token | default('') }}
+      - SHOAL_POLL_IDLE_INTERVAL={{ shoal_poll_idle_interval | default('5m') }}
+      - SHOAL_POLL_WATCH_INTERVAL={{ shoal_poll_watch_interval | default('30s') }}
       # Durable BMC job credentials so orphan cleanup after restart can auth.
       - SHOAL_SECRETS_DIR=/var/lib/shoal/secrets
 {% if (shoal_fewshot_dir | default('') | length) > 0 %}

@@ -221,10 +221,16 @@ export SHOAL_BMC_USERNAME=… SHOAL_BMC_PASSWORD=…
 go run ./cmd/shoal observe status -device-id shoal-node-1
 go run ./cmd/shoal observe status -device-id shoal-node-1 -events 10
 
-# One-shot Redfish SEL + sensor poll → durable telemetry only
+# One-shot Redfish SEL + sensors + firmware + power → durable telemetry only
 go run ./cmd/shoal observe poll \
   -device-id shoal-node-1 \
   -bmc-url http://192.168.122.100:8001
+
+# Serve also exposes:
+#   POST /v1/devices/{id}/poll
+#   GET  /v1/devices/{id}/firmware
+#   POST /v1/devices/{id}/power
+#   GET/PUT /v1/devices/{id}/credentials
 
 # Multi-system sushy: pass -system-id when using -bmc-url for power state
 go run ./cmd/shoal observe status -device-id shoal-node-1 \
@@ -232,7 +238,8 @@ go run ./cmd/shoal observe status -device-id shoal-node-1 \
 
 # With serve: GET /v1/devices/{id}/status and /v1/devices/{id}/events
 # Background poller runs only when DSN is healthy; seeds jobs with bmc_endpoint;
-# interval elevates while a SOL watch is active (15s vs 60s idle).
+# interval elevates while a SOL watch is active (SHOAL_POLL_WATCH_INTERVAL,
+# default 30s vs SHOAL_POLL_IDLE_INTERVAL default 5m).
 ```
 
 **What “pass” means on lab:**
@@ -243,7 +250,13 @@ go run ./cmd/shoal observe status -device-id shoal-node-1 \
 - `ActiveJobID` is only set for `provisioning` jobs (failed jobs expose lifecycle
   + error, not an “active” id).
 
-**Lab fidelity:** rich SEL/sensors need real BMC hardware.
+**Lab fidelity:** rich SEL/sensors/firmware need real BMC hardware. Nested
+sushy often returns empty SEL/sensors and no UpdateService (empty is valid).
+On-demand `POST /v1/devices/{id}/poll` (NetBox Sensors/Firmware **Poll BMC**)
+also registers the device on the background poller. Idle default is **5m**
+(`SHOAL_POLL_IDLE_INTERVAL`); **30s** while SOL is watched
+(`SHOAL_POLL_WATCH_INTERVAL`). The poller auto-seeds only devices that already
+have a job.
 
 ### Phase 5a: NetBox lifecycle on deploy
 
@@ -789,8 +802,8 @@ ansible-playbook -i infra/ansible/inventory/lab-vm.yml infra/ansible/playbooks/b
 ### Rebuild the NetBox Shoal plugin only
 The lab's NetBox image is built from `extras/netbox-plugin-shoal` (see that
 package's README) rather than pulled directly, so it always includes the
-`netbox_shoal` plugin (Status, Events, Jobs, and Sensors tabs on the device
-page). `shoal_netbox_plugin: true` in `all/defaults.yml` controls this; set it
+`netbox_shoal` plugin (Status, Events, Jobs, Sensors, and Firmware tabs on the
+device page). `shoal_netbox_plugin: true` in `all/defaults.yml` controls this; set it
 to `false` to fall back to the plain upstream image.
 
 ```bash
@@ -802,9 +815,9 @@ ssh -i ~/.ssh/shoal_lab_vm lab@192.168.122.100 "docker logs shoal-netbox --tail 
 
 # Verify in the browser: log into http://192.168.122.100:8000 (admin/admin),
 # open any shoal-node-* device, look for "Shoal Status", "Shoal Events",
-# "Shoal Jobs", and "Shoal Sensors" tabs. Empty/error states render a plain
-# message (never a stack trace) when Shoal is unreachable or a device has no
-# data yet.
+# "Shoal Jobs", "Shoal Sensors", and "Shoal Firmware" tabs. Empty/error states
+# render a plain message (never a stack trace) when Shoal is unreachable or a
+# device has no data yet.
 ```
 If tabs don't appear: check `PLUGINS_CONFIG` landed correctly
 (`docker exec shoal-netbox cat /etc/netbox/config/plugins.py`), and that
@@ -863,10 +876,10 @@ list, job log lines from SOL markers, and NetBox `lifecycle_state` CF updates.
    | Tab / field | What you should see |
    |-------------|---------------------|
    | Device custom field `lifecycle_state` | `provisioning` → `provisioned` (or `failed`) |
-   | **Shoal Status** | Lifecycle badge, phase, animated progress while running; stages panel; job log (`SHOAL\|…` lines) |
-   | **Shoal Status → Provision** | **Start provision** (demo write path): prefills lab BMC URL + marker ISO; uses Shoal `SHOAL_BMC_*` when user/pass left blank. Requires `dcim.change_device` (NetBox admin). **Cancel** when a job is provisioning. |
+   | **Shoal Status** | Lifecycle badge, last polled power, phase, animated progress while running; stages panel; job log (`SHOAL\|…` lines); **BMC credentials** (saved in Shoal secrets); **Host power** |
+   | **Shoal Status → Provision** | **Start provision** (demo write path): prefills lab BMC URL + marker ISO (real servers use `https://<bmc_ip>`). Empty user/pass uses `SHOAL_BMC_*` (not the stored per-device secret). Requires `dcim.change_device`. **Cancel** when a job is provisioning. Lab sushy + libvirt SOL is the path that completes; real BMC SOL + ISO reachability is still a gap. |
    | **Shoal Jobs** | Job row with state badge + progress + stages; log for active/latest job; cancel active |
-   | **Shoal Events / Sensors** | Often empty on nested sushy (valid); not the demo focus |
+   | **Shoal Events / Sensors / Firmware** | Often empty on nested sushy (valid). Real BMC: **Poll BMC** fills SEL, sensors (null readings keep a note), firmware inventory, and power. |
 
    Status/Jobs **auto-refresh every 5s** while a job is `provisioning`.
 

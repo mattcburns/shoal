@@ -24,11 +24,13 @@ type Fake struct {
 	FailNextCleanup bool
 
 	// SEL and Sensors are returned by ListSEL / ListSensors (Phase 4 Observe).
-	SEL     []SELEntry
-	Sensors []SensorSample
-	// ListSELErr / ListSensorsErr force errors when set.
-	ListSELErr     error
-	ListSensorsErr error
+	SEL      []SELEntry
+	Sensors  []SensorSample
+	Firmware []FirmwareComponent
+	// ListSELErr / ListSensorsErr / ListFirmwareErr force errors when set.
+	ListSELErr      error
+	ListSensorsErr  error
+	ListFirmwareErr error
 
 	// Screenshot is returned by CaptureScreenshot when set.
 	Screenshot    *Screenshot
@@ -177,10 +179,34 @@ func (f *Fake) EjectVirtualMedia(_ context.Context, mediaURI string) error {
 func (f *Fake) Power(_ context.Context, systemID, resetType string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	rt := resetType
+	if rt == "On" {
+		for _, s := range f.Systems {
+			if (systemID == "" || s.ID == systemID) && strings.EqualFold(s.PowerState, "On") {
+				rt = "ForceRestart"
+				break
+			}
+		}
+	}
+	return f.resetLocked(systemID, rt)
+}
+
+func (f *Fake) Reset(_ context.Context, systemID, resetType string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.resetLocked(systemID, resetType)
+}
+
+func (f *Fake) resetLocked(systemID, resetType string) error {
 	f.PowerCalls = append(f.PowerCalls, resetType)
+	state := "On"
+	switch resetType {
+	case "ForceOff", "GracefulShutdown":
+		state = "Off"
+	}
 	for i, s := range f.Systems {
 		if systemID == "" || s.ID == systemID {
-			s.PowerState = "On"
+			s.PowerState = state
 			f.Systems[i] = s
 		}
 	}
@@ -227,6 +253,17 @@ func (f *Fake) ListSEL(_ context.Context, _ string, opts SELOptions) ([]SELEntry
 	return out, nil
 }
 
+func (f *Fake) ListFirmware(_ context.Context) ([]FirmwareComponent, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.ListFirmwareErr != nil {
+		return nil, f.ListFirmwareErr
+	}
+	out := make([]FirmwareComponent, len(f.Firmware))
+	copy(out, f.Firmware)
+	return out, nil
+}
+
 func (f *Fake) ListSensors(_ context.Context, _ string) ([]SensorSample, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -235,6 +272,11 @@ func (f *Fake) ListSensors(_ context.Context, _ string) ([]SensorSample, error) 
 	}
 	out := make([]SensorSample, len(f.Sensors))
 	copy(out, f.Sensors)
+	for i := range out {
+		if !out[i].HasReading && out[i].Note == "" {
+			out[i].HasReading = true
+		}
+	}
 	return out, nil
 }
 

@@ -402,3 +402,42 @@ func CancelJobRequest(r models.CancelJobRequest) error {
 	}
 	return nil
 }
+
+// DevicePowerResetTypes is the operator allow-list for POST /v1/devices/{id}/power.
+var DevicePowerResetTypes = map[string]struct{}{
+	"On":               {},
+	"ForceOff":         {},
+	"ForceRestart":     {},
+	"GracefulRestart":  {},
+	"GracefulShutdown": {},
+}
+
+// DeviceCredentials requires a username. Password may be empty (keep existing).
+func DeviceCredentials(username, password string) error {
+	_ = password
+	if strings.TrimSpace(username) == "" {
+		return fmt.Errorf("validate: username is required")
+	}
+	return nil
+}
+
+// DevicePoll checks a BMC endpoint for on-demand SEL/sensor poll.
+func DevicePoll(bmcEndpoint string) error {
+	if strings.TrimSpace(bmcEndpoint) == "" {
+		return fmt.Errorf("validate: bmc_endpoint is required")
+	}
+	return nil
+}
+
+// DevicePower checks reset_type and BMC endpoint. Username/password may be empty
+// (Shoal env defaults). Never inspects password contents.
+func DevicePower(resetType, bmcEndpoint string) error {
+	if strings.TrimSpace(bmcEndpoint) == "" {
+		return fmt.Errorf("validate: bmc_endpoint is required")
+	}
+	rt := strings.TrimSpace(resetType)
+	if _, ok := DevicePowerResetTypes[rt]; !ok {
+		return fmt.Errorf("validate: reset_type must be one of On, ForceOff, ForceRestart, GracefulRestart, GracefulShutdown")
+	}
+	return nil
+}

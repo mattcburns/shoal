@@ -63,6 +63,12 @@ func (s *Service) Status(ctx context.Context, deviceID string) (models.DeviceSta
 	}
 
 	if s.Telemetry != nil {
+		if pw, err := s.Telemetry.LatestPower(ctx, deviceID); err == nil && pw.PowerState != "" {
+			st.PowerState = pw.PowerState
+			if pw.TS.After(st.UpdatedAt) {
+				st.UpdatedAt = pw.TS
+			}
+		}
 		evs, err := s.Telemetry.ListEvents(ctx, deviceID, time.Time{}, 1)
 		if err != nil {
 			return st, fmt.Errorf("observe: list events: %w", err)
@@ -106,6 +112,17 @@ func (s *Service) ListEvents(ctx context.Context, deviceID string, since time.Ti
 		return nil, fmt.Errorf("observe: device_id required")
 	}
 	return s.Telemetry.ListEvents(ctx, deviceID, since, limit)
+}
+
+// ListFirmware returns the latest firmware inventory snapshot for a device.
+func (s *Service) ListFirmware(ctx context.Context, deviceID string, limit int) ([]telemetry.FirmwareComponent, error) {
+	if s.Telemetry == nil {
+		return nil, fmt.Errorf("observe: telemetry store not configured (set SHOAL_TELEMETRY_DATABASE_URL)")
+	}
+	if deviceID == "" {
+		return nil, fmt.Errorf("observe: device_id required")
+	}
+	return s.Telemetry.ListFirmware(ctx, deviceID, limit)
 }
 
 // ListSensors returns recent sensor readings for a device.

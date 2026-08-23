@@ -31,6 +31,9 @@ type Server struct {
 	start    JobStarter
 	discover *discover.Service
 	observe  *observe.Service
+	power    DevicePower
+	creds    DeviceCredentials
+	poll     DevicePoll
 }
 
 // New constructs a Server with routes registered.
@@ -67,6 +70,11 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /v1/devices/{id}/events", s.handleDeviceEvents)
 	s.mux.HandleFunc("GET /v1/devices/{id}/jobs", s.handleDeviceJobs)
 	s.mux.HandleFunc("GET /v1/devices/{id}/sensors", s.handleDeviceSensors)
+	s.mux.HandleFunc("GET /v1/devices/{id}/firmware", s.handleDeviceFirmware)
+	s.mux.HandleFunc("POST /v1/devices/{id}/power", s.handleDevicePower)
+	s.mux.HandleFunc("POST /v1/devices/{id}/poll", s.handleDevicePoll)
+	s.mux.HandleFunc("GET /v1/devices/{id}/credentials", s.handleDeviceCredentialsGet)
+	s.mux.HandleFunc("PUT /v1/devices/{id}/credentials", s.handleDeviceCredentialsPut)
 }
 
 func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {

@@ -141,7 +141,7 @@ func TestDeviceSensors(t *testing.T) {
 	ctx := context.Background()
 	ts := time.Now().UTC()
 	_ = store.WriteSensor(ctx, telemetry.SensorReading{
-		DeviceID: "n3", TS: ts, Sensor: "Inlet Temp", Value: 24.5, Unit: "Cel",
+		DeviceID: "n3", TS: ts, Sensor: "Inlet Temp", Value: telemetry.SensorValue(24.5), Unit: "Cel",
 	})
 	obs := observe.New(nil, jobstore.NewMemory(), store, nil)
 	s := api.New(config.Config{}, nil).WithObserve(obs)
@@ -181,5 +181,43 @@ func TestDeviceSensorsWithoutTelemetry(t *testing.T) {
 	s.Handler().ServeHTTP(rr, req)
 	if rr.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status %d", rr.Code)
+	}
+}
+
+func TestDeviceFirmwareAndPolledPower(t *testing.T) {
+	store := telemetry.NewMemory()
+	ctx := context.Background()
+	ts := time.Now().UTC()
+	_ = store.WriteFirmware(ctx, telemetry.FirmwareComponent{
+		DeviceID: "n4", TS: ts, ID: "Installed-0-BIOS", Name: "BIOS", Version: "1.8.0",
+	})
+	_ = store.WritePower(ctx, telemetry.PowerReading{DeviceID: "n4", TS: ts, PowerState: "Off"})
+	obs := observe.New(nil, jobstore.NewMemory(), store, nil)
+	s := api.New(config.Config{}, nil).WithObserve(obs)
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/devices/n4/firmware", nil)
+	s.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status %d body=%s", rr.Code, rr.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	comps, ok := body["components"].([]any)
+	if !ok || len(comps) != 1 {
+		t.Fatalf("components: %+v", body["components"])
+	}
+
+	rr = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/v1/devices/n4/status", nil)
+	s.Handler().ServeHTTP(rr, req)
+	var st models.DeviceStatus
+	if err := json.Unmarshal(rr.Body.Bytes(), &st); err != nil {
+		t.Fatal(err)
+	}
+	if st.PowerState != "Off" {
+		t.Fatalf("power %+v", st)
 	}
 }
