@@ -160,7 +160,7 @@ func cmdObservePoll(args []string) int {
 	}
 
 	log := newLogger(cfg.LogLevel)
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
 	// Durable store required — no silent memory fallback.

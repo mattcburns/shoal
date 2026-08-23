@@ -149,13 +149,13 @@ func (p *Poller) PollOnce(ctx context.Context, t Target) (selWritten, sensorsWri
 	if maxSEL <= 0 {
 		maxSEL = DefaultSELMaxEntries
 	}
-	entries, err := bmc.ListSEL(ctx, t.SystemID, redfish.SELOptions{MaxEntries: maxSEL})
-	if err != nil {
-		return 0, 0, fmt.Errorf("poll: list sel: %w", err)
+	entries, selErr := bmc.ListSEL(ctx, t.SystemID, redfish.SELOptions{MaxEntries: maxSEL})
+	if selErr != nil {
+		entries = nil
 	}
-	samples, err := bmc.ListSensors(ctx, t.SystemID)
-	if err != nil {
-		return 0, 0, fmt.Errorf("poll: list sensors: %w", err)
+	samples, sensErr := bmc.ListSensors(ctx, t.SystemID)
+	if sensErr != nil {
+		samples = nil
 	}
 
 	p.mu.Lock()
@@ -240,6 +240,12 @@ func (p *Poller) PollOnce(ctx context.Context, t Target) (selWritten, sensorsWri
 		"sel_seen", len(entries),
 		"sensor_seen", len(samples),
 	)
+	if selErr != nil {
+		return selWritten, sensorsWritten, fmt.Errorf("poll: list sel: %w", selErr)
+	}
+	if sensErr != nil {
+		return selWritten, sensorsWritten, fmt.Errorf("poll: list sensors: %w", sensErr)
+	}
 	if failN > 0 {
 		return selWritten, sensorsWritten, fmt.Errorf("poll: %d item failure(s) after sel_new=%d sensors=%d: %w",
 			failN, selWritten, sensorsWritten, firstFail)

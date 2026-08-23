@@ -2,6 +2,8 @@ package poll_test
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -60,6 +62,38 @@ func TestPollOnceWritesSELAndSensors(t *testing.T) {
 	}
 	if evs[0].Component != "Temperature" {
 		t.Fatalf("component=%q", evs[0].Component)
+	}
+}
+
+func TestPollOnceWritesSELWhenSensorsFail(t *testing.T) {
+	store := telemetry.NewMemory()
+	fake := redfish.NewFake()
+	ts := time.Now().UTC()
+	fake.SEL = []redfish.SELEntry{
+		{ID: "1", Message: "chassis closed", Severity: "OK", Created: ts, ODataID: "/e/1"},
+	}
+	fake.ListSensorsErr = errors.New("context deadline exceeded")
+	p := poll.New(nil, store, func(redfish.Config) (redfish.BMC, error) { return fake, nil })
+
+	selN, sensN, err := p.PollOnce(context.Background(), poll.Target{
+		DeviceID: "dev-1",
+		BMC:      redfish.Config{BaseURL: "http://fake"},
+	})
+	if err == nil {
+		t.Fatal("expected sensor error")
+	}
+	if !strings.Contains(err.Error(), "list sensors") {
+		t.Fatalf("err=%v", err)
+	}
+	if selN != 1 {
+		t.Fatalf("sel written=%d want 1", selN)
+	}
+	if sensN != 0 {
+		t.Fatalf("sensors=%d", sensN)
+	}
+	evs, _ := store.ListEvents(context.Background(), "dev-1", time.Time{}, 10)
+	if len(evs) != 1 {
+		t.Fatalf("events=%d", len(evs))
 	}
 }
 

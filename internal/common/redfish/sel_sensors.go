@@ -6,8 +6,40 @@ import (
 	"strings"
 	"time"
 
+	gofishcommon "github.com/stmcginnis/gofish/common"
 	gofishredfish "github.com/stmcginnis/gofish/redfish"
 )
+
+const (
+	logRankVerbose = 0 // Dell Lclog / FaultList: skip unless nothing else yielded entries
+	logRankNormal  = 1
+	logRankSEL     = 2
+)
+
+// logServiceRank prefers IPMI SEL over vendor dumps (iDRAC LC log can be thousands
+// of entries; gofish Entries() GETs every member and blows a poll deadline).
+func logServiceRank(ls *gofishredfish.LogService) int {
+	if ls == nil {
+		return logRankVerbose
+	}
+	if ls.LogEntryType == gofishredfish.SELLogEntryTypes {
+		return logRankSEL
+	}
+	blob := strings.ToLower(ls.Name + " " + ls.ID + " " + ls.ODataID)
+	switch {
+	case strings.Contains(blob, "lclog"),
+		strings.Contains(blob, "lifecycle"),
+		strings.Contains(blob, "faultlist"),
+		strings.Contains(blob, "fault-list"):
+		return logRankVerbose
+	case strings.Contains(blob, "sel"),
+		strings.Contains(blob, "systemevent"),
+		strings.Contains(blob, "system_event"):
+		return logRankSEL
+	default:
+		return logRankNormal
+	}
+}
 
 // ListSEL collects log entries from the computer system, managers, and chassis.
 //
@@ -15,8 +47,14 @@ import (
 // (or no LogServices) — normal for sushy-tools.
 // Non-nil error means a hard failure: not open, system not found (when requested),
 // or every discovered log service failed while reading entries (and no entries returned).
+//
+// Reads IPMI SEL first. Vendor lifecycle / fault dumps (iDRAC Lclog, FaultList)
+// are skipped unless no other service returned entries. Entry collections are
+// fetched with $top=MaxEntries so a huge log cannot stall Observe poll.
 func (c *client) ListSEL(ctx context.Context, systemID string, opts SELOptions) ([]SELEntry, error) {
-	_ = ctx
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	api, err := c.apiClient()
 	if err != nil {
 		return nil, err
@@ -26,9 +64,47 @@ func (c *client) ListSEL(ctx context.Context, systemID string, opts SELOptions) 
 		max = 200
 	}
 
+	var discovered []*gofishredfish.LogService
+	var firstReadErr error
+	var sysErr error
+
+	sys, sysErr := c.computerSystem(systemID)
+	if sysErr != nil {
+		firstReadErr = sysErr
+	} else if sys != nil {
+		if services, err := sys.LogServices(); err == nil {
+			discovered = append(discovered, services...)
+		}
+	}
+
+	if managers, err := api.Service.Managers(); err == nil {
+		for _, m := range managers {
+			if m == nil {
+				continue
+			}
+			if services, err := m.LogServices(); err == nil {
+				discovered = append(discovered, services...)
+			}
+		}
+	} else if firstReadErr == nil {
+		firstReadErr = fmt.Errorf("redfish: managers: %w", err)
+	}
+
+	if chassis, err := api.Service.Chassis(); err == nil {
+		for _, ch := range chassis {
+			if ch == nil {
+				continue
+			}
+			if services, err := ch.LogServices(); err == nil {
+				discovered = append(discovered, services...)
+			}
+		}
+	} else if firstReadErr == nil {
+		firstReadErr = fmt.Errorf("redfish: chassis: %w", err)
+	}
+
 	seen := make(map[string]struct{})
 	var out []SELEntry
-	var firstReadErr error
 	logServicesSeen := 0
 	entryReadOK := 0
 	entryReadFail := 0
@@ -38,6 +114,9 @@ func (c *client) ListSEL(ctx context.Context, systemID string, opts SELOptions) 
 		for _, e := range entries {
 			if e == nil {
 				continue
+			}
+			if len(out) >= max {
+				return
 			}
 			se := mapLogEntry(logName, e)
 			key := se.ODataID
@@ -55,90 +134,72 @@ func (c *client) ListSEL(ctx context.Context, systemID string, opts SELOptions) 
 		}
 	}
 
-	readLogServices := func(services []*gofishredfish.LogService) {
-		for _, ls := range services {
-			if ls == nil {
+	readOne := func(ls *gofishredfish.LogService, allowUnfiltered bool) {
+		if ls == nil {
+			return
+		}
+		if err := ctx.Err(); err != nil {
+			if firstReadErr == nil {
+				firstReadErr = err
+			}
+			return
+		}
+		logServicesSeen++
+		remain := max - len(out)
+		if remain <= 0 {
+			return
+		}
+		entries, err := ls.FilteredEntries(gofishcommon.WithTop(remain))
+		if err != nil && allowUnfiltered {
+			entries, err = ls.Entries()
+		}
+		if err != nil {
+			entryReadFail++
+			if firstReadErr == nil {
+				firstReadErr = err
+			}
+			return
+		}
+		appendEntries(ls.Name, entries)
+	}
+
+	// Pass 0: SEL. Pass 1: other non-verbose. Pass 2: LC/fault dumps only if still empty.
+	for pass := logRankSEL; pass >= logRankVerbose; pass-- {
+		if len(out) >= max {
+			break
+		}
+		if pass == logRankVerbose && len(out) > 0 {
+			break
+		}
+		if err := ctx.Err(); err != nil {
+			if firstReadErr == nil {
+				firstReadErr = err
+			}
+			break
+		}
+		for _, ls := range discovered {
+			if logServiceRank(ls) != pass {
 				continue
 			}
-			logServicesSeen++
-			entries, err := ls.Entries()
-			if err != nil {
-				entryReadFail++
-				if firstReadErr == nil {
-					firstReadErr = err
-				}
-				continue
-			}
-			appendEntries(ls.Name, entries)
+			readOne(ls, pass >= logRankNormal)
 			if len(out) >= max {
-				return
+				break
 			}
 		}
-	}
-
-	// System log services — system lookup failure is hard when systemID is set
-	// or when there is not exactly one system for empty id.
-	sys, sysErr := c.computerSystem(systemID)
-	if sysErr != nil {
-		// Still try managers/chassis (BMC may log there only), but remember error.
-		if firstReadErr == nil {
-			firstReadErr = sysErr
-		}
-	} else if sys != nil {
-		if services, err := sys.LogServices(); err == nil {
-			readLogServices(services)
-		}
-		// LogServices() missing/empty is soft.
-	}
-	if len(out) >= max {
-		return out[:max], nil
-	}
-
-	if managers, err := api.Service.Managers(); err == nil {
-		for _, m := range managers {
-			if m == nil {
-				continue
-			}
-			if services, err := m.LogServices(); err == nil {
-				readLogServices(services)
-				if len(out) >= max {
-					return out[:max], nil
-				}
-			}
-		}
-	} else if firstReadErr == nil {
-		firstReadErr = fmt.Errorf("redfish: managers: %w", err)
-	}
-
-	if chassis, err := api.Service.Chassis(); err == nil {
-		for _, ch := range chassis {
-			if ch == nil {
-				continue
-			}
-			if services, err := ch.LogServices(); err == nil {
-				readLogServices(services)
-				if len(out) >= max {
-					return out[:max], nil
-				}
-			}
-		}
-	} else if firstReadErr == nil {
-		firstReadErr = fmt.Errorf("redfish: chassis: %w", err)
 	}
 
 	if len(out) > max {
 		out = out[:max]
 	}
 
-	// Hard fail only when we could not return any entries and something went wrong
-	// reading entries from discovered log services, or system resolution failed with
-	// no other data path producing entries.
 	if len(out) == 0 {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		if entryReadFail > 0 && logServicesSeen > 0 {
 			return nil, fmt.Errorf("redfish: log entry reads failed (%d services, %d read errors): %w",
 				logServicesSeen, entryReadFail, firstReadErr)
 		}
-		// systemID explicitly requested but system missing and no entries elsewhere
 		if systemID != "" && sysErr != nil {
 			return nil, fmt.Errorf("redfish: list SEL: %w", sysErr)
 		}
@@ -199,18 +260,30 @@ func parseRedfishTime(s string) time.Time {
 // Chassis collection failure is an error. Missing Thermal/Power on a chassis is soft
 // (skipped). Empty chassis or empty sensors with successful enumeration is OK.
 func (c *client) ListSensors(ctx context.Context, systemID string) ([]SensorSample, error) {
-	_ = ctx
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	_ = systemID
 	api, err := c.apiClient()
 	if err != nil {
 		return nil, err
 	}
 	chassis, err := api.Service.Chassis()
-	if err != nil {
-		return nil, fmt.Errorf("redfish: chassis for sensors: %w", err)
+	if len(chassis) == 0 {
+		if err != nil {
+			return nil, fmt.Errorf("redfish: chassis for sensors: %w", err)
+		}
+		return nil, nil
 	}
+	// Partial collection (one enclosure member failed) is usable; only empty+err is fatal.
 	var out []SensorSample
 	for _, ch := range chassis {
+		if err := ctx.Err(); err != nil {
+			if len(out) > 0 {
+				return out, nil
+			}
+			return nil, err
+		}
 		if ch == nil {
 			continue
 		}
