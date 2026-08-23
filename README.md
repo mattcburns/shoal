@@ -83,6 +83,7 @@ release builds: `./scripts/build-release.sh` (see Phase 6c).
 - [Multi-stage provisioning design (M1–M6 implemented)](docs/multi-stage-provisioning-design.md)
 - [NetBox telemetry UI design (backend API + plugin N1–N6)](docs/netbox-telemetry-ui-design.md)
 - [Real-hardware SOL runbook](docs/real-hardware-sol-runbook.md)
+- [Real-hardware SOL transports design (Dell SSH + stdlib IPMI)](docs/sol-transports-design.md)
 
 ## Prerequisites (L0 host)
 Install and verify:
