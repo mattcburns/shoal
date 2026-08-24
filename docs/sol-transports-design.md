@@ -2,7 +2,7 @@
 
 **Author:** TBD  
 **Date:** 2026-08-23  
-**Status:** PR1 implemented (`feature/sol-transports` / live iDRAC attach). PR2 (stdlib IPMI SOL) not started. Rev 5.  
+**Status:** PR1 implemented (live iDRAC SSH attach). PR2 stdlib IPMI SOL implemented (`internal/common/redfish/internal/ipmi`). Rev 6.  
 **Companion to:** `SHOAL_COMPREHENSIVE_DESIGN_AND_IMPLEMENTATION_PLAN.md` v2.0.9, `docs/real-hardware-sol-runbook.md`, `AGENTS.md` Golden Rule 6  
 **Not a rewrite of those documents.** This records field findings from a live Dell iDRAC and the rule/interface changes needed so `BMC.OpenSOL` can actually attach on real hardware. Sections below that say “today” / “current implementation” describe the **pre-PR1** tree; see the runbook for what shipped.
 

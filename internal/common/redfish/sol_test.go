@@ -10,14 +10,30 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"golang.org/x/crypto/ssh"
 
 	"github.com/coder/websocket"
+
+	"github.com/mattcburns/shoal/internal/common/redfish/internal/ipmi"
 )
+
+func TestMain(m *testing.M) {
+	ln, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	if err != nil {
+		panic(err)
+	}
+	ipmiPort = ln.LocalAddr().(*net.UDPAddr).Port
+	ipmiTimeout = 50 * time.Millisecond
+	code := m.Run()
+	_ = ln.Close()
+	os.Exit(code)
+}
 
 // --- fake Redfish HTTP server (drives real gofish parsing, not a mock of *client) ---
 
@@ -462,6 +478,46 @@ func TestOpenSOL_IPMIOnly_Unsupported(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("ConnectTypes = %v, want it to include IPMI", unsupported.ConnectTypes)
+	}
+	trail := err.Error()
+	if !strings.Contains(trail, "udp 623") && !strings.Contains(trail, "ipmi") {
+		t.Fatalf("error = %q, want ipmi/udp timeout in debug trail", trail)
+	}
+	if strings.Contains(trail, "cipher suite 17") {
+		t.Fatal("must not try suite 17 after Get Channel Auth Caps timeout")
+	}
+}
+
+func TestOpenSOL_IPMI_Success(t *testing.T) {
+	bmc, err := ipmi.StartTestBMC(ipmi.TestBMCOptions{Username: "admin", Password: "password", Greet: []byte("ipmi-hello\n")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bmc.Close()
+	oldPort, oldTO := ipmiPort, ipmiTimeout
+	ipmiPort = bmc.Addr.Port
+	ipmiTimeout = 500 * time.Millisecond
+	t.Cleanup(func() { ipmiPort, ipmiTimeout = oldPort, oldTO })
+
+	srv := newFakeSOLServer(t, fakeSOLServerOpts{
+		systemJSON: systemJSONWithHostSerialConsole(false, false, true, 623, ""),
+	})
+	c := openFakeClient(t, srv.URL)
+	stream, err := c.OpenSOL(context.Background(), "1")
+	if err != nil {
+		t.Fatalf("OpenSOL: %v", err)
+	}
+	defer stream.Close()
+	if stream.Kind != SOLConnectIPMI {
+		t.Fatalf("kind = %q, want ipmi", stream.Kind)
+	}
+	buf := make([]byte, 64)
+	n, rerr := stream.Read(buf)
+	if rerr != nil && n == 0 {
+		t.Fatalf("read: %v", rerr)
+	}
+	if !strings.Contains(string(buf[:n]), "ipmi-hello") {
+		t.Fatalf("stream = %q, want ipmi-hello", buf[:n])
 	}
 }
 

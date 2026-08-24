@@ -48,10 +48,10 @@ type BMC interface {
 	// only keeps a socket that sniffs as line-oriented SOL (not HTML5 KVM). Then
 	// SSH attach when eligible (Redfish SerialConsole.SSH, manager SSH connect
 	// type, or Dell NetworkProtocol/OEM serial-redirection even if SerialConsole
-	// is empty). IPMI 2.0 SOL last resort is specified, not implemented: IPMI-only
-	// BMCs return *SOLUnsupportedError. ctx cancellation aborts discovery/dial;
-	// this is the first BMC method that owns a long-lived connection rather than
-	// one round trip, so callers must cancel ctx to release it.
+	// is empty), then IPMI 2.0 SOL as last resort (stdlib client; not a second
+	// BMC API). ctx cancellation aborts discovery/dial; this is the first BMC
+	// method that owns a long-lived connection rather than one round trip, so
+	// callers must cancel ctx to release it.
 	OpenSOL(ctx context.Context, systemID string) (SOLStream, error)
 }
 
@@ -68,6 +68,8 @@ const (
 	// backend (Redfish SerialConsole.SSH, manager SSH connect type, or Dell
 	// NetworkProtocol/OEM serial-redirection).
 	SOLConnectSSH SOLConnectKind = "ssh"
+	// SOLConnectIPMI is IPMI 2.0 SOL (RMCP+) used as last resort inside OpenSOL.
+	SOLConnectIPMI SOLConnectKind = "ipmi"
 )
 
 // SOLStream is an open SOL byte stream plus how it was obtained. Callers read
@@ -81,10 +83,9 @@ type SOLStream struct {
 	Debug []CaptureDebugStep
 }
 
-// SOLUnsupportedError is returned when a BMC has no usable Redfish-discovered
-// SOL path: no native WebSocket candidate worked and Redfish's own metadata
-// did not advertise SSH (Telnet-only and IPMI/Oem-only BMCs land here too —
-// Telnet is deferred and raw IPMI is never attempted).
+// SOLUnsupportedError is returned when no OpenSOL backend attached: WebSocket
+// was not line-oriented SOL, SSH was ineligible or failed, and IPMI 2.0 SOL
+// timed out or failed. Telnet is deferred. IPMI is a SOL payload only.
 type SOLUnsupportedError struct {
 	Vendor       VendorID
 	ConnectTypes []string // observed enabled serial-console protocols, e.g. "IPMI", "Telnet"

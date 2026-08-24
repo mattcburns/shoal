@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -15,6 +16,15 @@ import (
 	gofishredfish "github.com/stmcginnis/gofish/redfish"
 
 	"github.com/coder/websocket"
+
+	"github.com/mattcburns/shoal/internal/common/redfish/internal/ipmi"
+)
+
+// ipmiDial is DialSOL in production; tests inject timeout/port and fakes.
+var (
+	ipmiDial    = ipmi.DialSOL
+	ipmiTimeout = 2 * time.Second
+	ipmiPort    = 623
 )
 
 // OpenSOL opens a serial-over-LAN byte stream for systemID.
@@ -24,7 +34,7 @@ import (
 // Supermicro) but only keep a socket that sniffs as line-oriented SOL text,
 // then SSH when eligible (Redfish SerialConsole.SSH, manager SSH connect type,
 // or Dell NetworkProtocol/OEM serial-redirection even if SerialConsole is
-// empty). IPMI 2.0 SOL last resort is specified, not implemented. Telnet-only
+// empty), then IPMI 2.0 SOL (stdlib client) as last resort. Telnet-only
 // BMCs are unsupported (deferred).
 func (c *client) OpenSOL(ctx context.Context, systemID string) (SOLStream, error) {
 	var dbg []CaptureDebugStep
@@ -97,11 +107,49 @@ func (c *client) OpenSOL(ctx context.Context, systemID string) (SOLStream, error
 		}
 	}
 
+	if stream, ipmiErr := c.tryIPMISOL(ctx, sys, vendor, add); ipmiErr == nil {
+		stream.Debug = dbg
+		return stream, nil
+	} else {
+		add(CaptureDebugStep{Phase: "probe", Vendor: string(vendor), OK: false, Method: "IPMI", Message: sanitizePreview(ipmiErr.Error())})
+	}
+
 	add(CaptureDebugStep{
 		Phase: "probe", Vendor: string(vendor), OK: false,
-		Message: fmt.Sprintf("no supported SOL path (native WS unsupported/failed, SSH ineligible or failed); observed connect types: %v", observed),
+		Message: fmt.Sprintf("no supported SOL path (native WS unsupported/failed, SSH ineligible or failed, IPMI SOL failed); observed connect types: %v", observed),
 	})
 	return SOLStream{}, &SOLUnsupportedError{Vendor: vendor, ConnectTypes: observed, Debug: dbg}
+}
+
+func (c *client) tryIPMISOL(ctx context.Context, sys *gofishredfish.ComputerSystem, vendor VendorID, add func(CaptureDebugStep)) (SOLStream, error) {
+	host, err := sshHost(c.cfg.BaseURL)
+	if err != nil {
+		return SOLStream{}, err
+	}
+	ps := strings.TrimSpace(string(sys.PowerState))
+	if ps == "" || strings.EqualFold(ps, "Off") {
+		add(CaptureDebugStep{
+			Phase: "probe", Vendor: string(vendor), OK: true,
+			Message: fmt.Sprintf("PowerState=%s; SOL attach expected silent until power-on", ps),
+		})
+	}
+	cfg := ipmi.Config{
+		Host:     host,
+		Port:     ipmiPort,
+		Username: c.cfg.Username,
+		Password: c.cfg.Password,
+		Timeout:  ipmiTimeout,
+	}
+	add(CaptureDebugStep{
+		Phase: "request", Vendor: string(vendor), Method: "IPMI", URL: net.JoinHostPort(host, fmt.Sprintf("%d", cfg.Port)),
+		Message: "dial IPMI 2.0 SOL (last resort, suite 3 then 17)",
+	})
+	rc, err := ipmiDial(ctx, cfg)
+	if err != nil {
+		return SOLStream{}, err
+	}
+	add(CaptureDebugStep{Phase: "request", Vendor: string(vendor), Method: "IPMI", OK: true, Message: "ipmi sol session started"})
+	return SOLStream{ReadCloser: rc, Vendor: vendor, Kind: SOLConnectIPMI}, nil
 }
 
 // observedConnectTypes summarizes enabled serial-console protocols from
