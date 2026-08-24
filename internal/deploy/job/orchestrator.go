@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
 	"sort"
 	"strings"
@@ -284,6 +285,7 @@ func (o *Orchestrator) Start(ctx context.Context, req models.StartJobRequest) (m
 	if err := o.resolveDeviceID(ctx, &req); err != nil {
 		return models.ProvisioningJob{}, err
 	}
+	o.applyStartBindings(ctx, &req)
 	o.applyDefaultCredentials(&req)
 
 	// M6: apply profile defaults before validation so profile-only starts work.
@@ -548,6 +550,13 @@ func (o *Orchestrator) startStage(ctx context.Context, job models.ProvisioningJo
 
 	if err := bmc.InsertVirtualMedia(ctx, primaryURI, mediaURL); err != nil {
 		return fmt.Errorf("insert media: %w", err)
+	}
+	// Real BMCs often boot a different virtual-CD slot than URI-sort picks first.
+	// Mirror the install ISO onto the unused secondary slot so either device works.
+	if seedDelivery != models.SeedDeliverySecondMedia && secondaryURI != "" {
+		if err := bmc.InsertVirtualMedia(ctx, secondaryURI, mediaURL); err != nil {
+			o.log.Warn("secondary CD insert failed (continuing with primary)", "err", err.Error())
+		}
 	}
 	if seedDelivery == models.SeedDeliverySecondMedia {
 		if err := bmc.InsertVirtualMedia(ctx, secondaryURI, seedURL); err != nil {
@@ -1662,8 +1671,51 @@ func (p *progressAdapter) stillProvisioning(ctx context.Context, jobID string) b
 	return j.State == models.StateProvisioning
 }
 
+// applyStartBindings fills credential_ref from NetBox and infers redfish_sol
+// for HTTPS BMC endpoints before validation. Explicit request fields win.
+func (o *Orchestrator) applyStartBindings(ctx context.Context, req *models.StartJobRequest) {
+	if strings.TrimSpace(req.CredentialRef) == "" &&
+		strings.TrimSpace(req.BMCUsername) == "" &&
+		strings.TrimSpace(req.BMCPassword) == "" {
+		if id, ok := o.lookupDevice(ctx, req.DeviceID); ok {
+			if r := strings.TrimSpace(id.CredentialRef); r != "" {
+				if _, err := o.secrets.Get(ctx, r); err == nil {
+					req.CredentialRef = r
+				}
+			}
+		}
+	}
+	if strings.TrimSpace(req.SerialTransport) == "" && looksLikeHTTPSBMC(req.BMCEndpoint) {
+		req.SerialTransport = "redfish_sol"
+	}
+}
+
+func (o *Orchestrator) lookupDevice(ctx context.Context, key string) (models.DeviceIdentity, bool) {
+	type getter interface {
+		GetDevice(context.Context, string) (models.DeviceIdentity, error)
+	}
+	g, ok := o.netbox.(getter)
+	if !ok || strings.TrimSpace(key) == "" {
+		return models.DeviceIdentity{}, false
+	}
+	id, err := g.GetDevice(ctx, key)
+	if err != nil {
+		return models.DeviceIdentity{}, false
+	}
+	return id, true
+}
+
+func looksLikeHTTPSBMC(endpoint string) bool {
+	u, err := url.Parse(strings.TrimSpace(endpoint))
+	if err != nil || u.Host == "" {
+		return false
+	}
+	return strings.EqualFold(u.Scheme, "https")
+}
+
 // applyDefaultCredentials fills empty username/password from orchestrator defaults
-// (composition root wires SHOAL_BMC_*). Does not override credential_ref-only starts.
+// (composition root wires SHOAL_BMC_*). Does not override credential_ref-only starts
+// (including refs copied from NetBox in applyStartBindings).
 func (o *Orchestrator) applyDefaultCredentials(req *models.StartJobRequest) {
 	if strings.TrimSpace(req.CredentialRef) != "" {
 		return
