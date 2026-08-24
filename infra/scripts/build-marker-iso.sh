@@ -59,13 +59,36 @@ fi
 # Resolve symlinks for logging / version checks.
 KERNEL="$(readlink -f "$KERNEL" 2>/dev/null || echo "$KERNEL")"
 
-BUSYBOX="$(command -v busybox || true)"
+BUSYBOX="${SHOAL_BUSYBOX:-}"
 if [[ -z "$BUSYBOX" ]]; then
-  echo "error: busybox not found" >&2
-  exit 1
+  BUSYBOX="$(command -v busybox || true)"
+  if [[ -z "$BUSYBOX" ]]; then
+    echo "error: busybox not found" >&2
+    exit 1
+  fi
+  if [[ -x /bin/busybox ]]; then
+    BUSYBOX=/bin/busybox
+  fi
 fi
-if [[ -x /bin/busybox ]]; then
-  BUSYBOX=/bin/busybox
+# The initramfs packs only the busybox binary, no shared libs. A dynamically
+# linked busybox cannot exec as /init (kernel panics "Failed to execute /init
+# (error -2)" within ~3s, before /init even runs) — every boot then shows zero
+# SHOAL| markers with no build-time signal that anything is wrong. Prefer a
+# static build and fail loudly rather than silently packing a dead ISO.
+if file "$BUSYBOX" 2>/dev/null | grep -q "dynamically linked"; then
+  for alt in /usr/bin/busybox /bin/busybox-static /usr/bin/busybox-static /sbin/busybox-static; do
+    if [[ -x "$alt" ]] && file "$alt" 2>/dev/null | grep -q "statically linked"; then
+      BUSYBOX="$alt"
+      break
+    fi
+  done
+fi
+if file "$BUSYBOX" 2>/dev/null | grep -q "dynamically linked"; then
+  echo "error: $BUSYBOX is dynamically linked; it cannot run as /init in this" >&2
+  echo "       minimal initramfs (no libc packed) and will panic on boot with" >&2
+  echo "       zero markers. Install busybox-static (apt-get install busybox-static)" >&2
+  echo "       or set SHOAL_BUSYBOX=/path/to/static/busybox." >&2
+  exit 1
 fi
 
 ISOLINUX_BIN=""
@@ -91,6 +114,25 @@ fi
 if ! command -v xorriso >/dev/null 2>&1; then
   echo "error: xorriso required" >&2
   exit 1
+fi
+
+# UEFI boot catalog (in addition to the BIOS isolinux entry above). Many real
+# BMCs (e.g. Dell iDRAC on current-gen PowerEdge) run BootSourceOverrideMode=UEFI
+# and silently skip a CD with no UEFI boot image — it falls through to the next
+# boot device instead of erroring. Soft-required: degrade to BIOS-only with a
+# warning if grub-mkstandalone or the x86_64-efi module set is missing.
+GRUB_MKSTANDALONE="$(command -v grub-mkstandalone || true)"
+GRUB_EFI_MODDIR=""
+for d in /usr/lib/grub/x86_64-efi /usr/lib/grub2/x86_64-efi; do
+  if [[ -d "$d" ]]; then GRUB_EFI_MODDIR="$d"; break; fi
+done
+if ! command -v mformat >/dev/null 2>&1 || ! command -v mcopy >/dev/null 2>&1 || ! command -v mmd >/dev/null 2>&1; then
+  GRUB_MKSTANDALONE=""
+fi
+BUILD_UEFI=1
+if [[ -z "$GRUB_MKSTANDALONE" || -z "$GRUB_EFI_MODDIR" ]]; then
+  BUILD_UEFI=0
+  echo "warn: grub-mkstandalone/mtools/x86_64-efi modules not found — ISO will be BIOS-only (install grub-efi-amd64-bin + mtools for UEFI boot)" >&2
 fi
 
 INSTALL_MODE="${SHOAL_INSTALL_MODE:-simulate}"
@@ -124,6 +166,13 @@ INSTALL_TARGET_DEFAULT="${SHOAL_INSTALL_TARGET:-}"
 INSTALL_REBOOT="${SHOAL_INSTALL_REBOOT:-0}"
 # Wipe style for prep: discard (try blkdiscard) or zero (dd first N MiB of disk).
 PREP_WIPE_LEVEL="${SHOAL_PREP_WIPE_LEVEL:-discard}"
+
+VOLID="SHOAL_MARKER"
+if [[ "$INSTALL_MODE" = "write" ]]; then
+  VOLID="SHOAL_INSTALL"
+elif [[ "$INSTALL_MODE" = "prep" ]]; then
+  VOLID="SHOAL_PREP"
+fi
 
 echo "kernel:  $KERNEL"
 echo "busybox: $BUSYBOX"
@@ -257,7 +306,7 @@ if [[ -n "${SHOAL_SEED_IMG:-}" && -r "${SHOAL_SEED_IMG}" ]]; then
   echo "seed.img: on ISO as /seed.img ($(wc -c <"${SHOAL_SEED_IMG}" | tr -d ' ') bytes) — not in initrd"
 fi
 
-# Init emits markers then powers off. console=ttyS0 from kernel cmdline.
+# Init emits markers then powers off. Lab libvirt is ttyS0; iDRAC SOL is COM2 (ttyS1).
 cat > "$ROOT/init" << 'INIT'
 #!/bin/busybox sh
 export PATH=/bin
@@ -266,13 +315,28 @@ export PATH=/bin
 /bin/busybox mount -t sysfs none /sys 2>/dev/null || true
 /bin/busybox mount -t devtmpfs none /dev 2>/dev/null || true
 
-# Prefer serial console for markers
-for dev in /dev/ttyS0 /dev/console /dev/tty0; do
+# Fan-out markers to lab virtio (ttyS0) and iDRAC SOL COM2 (ttyS1).
+serials=""
+for dev in /dev/ttyS0 /dev/ttyS1; do
   if [ -w "$dev" ]; then
-    exec >"$dev" 2>&1
-    break
+    serials="$serials $dev"
   fi
 done
+set -- $serials
+if [ "$#" -ge 2 ]; then
+  mkfifo /tmp/shoal-cons
+  /bin/busybox tee $serials </tmp/shoal-cons >/dev/null &
+  exec >/tmp/shoal-cons 2>&1
+elif [ -n "$1" ]; then
+  exec >"$1" 2>&1
+else
+  for dev in /dev/console /dev/tty0; do
+    if [ -w "$dev" ]; then
+      exec >"$dev" 2>&1
+      break
+    fi
+  done
+fi
 
 # Load modules for SATA CD (ahci), ISO9660, and virtio disk (payload + /dev/vda).
 load_mods() {
@@ -710,7 +774,7 @@ if [[ -n "$ISO_PAYLOAD_SRC" && -n "$ISO_PAYLOAD_NAME" ]]; then
 fi
 
 # Pass mode/target on kernel cmdline for runtime override.
-CMDLINE="initrd=/boot/initrd.img console=ttyS0,115200n8 console=tty0 quiet shoal.mode=${INSTALL_MODE}"
+CMDLINE="initrd=/boot/initrd.img console=ttyS0,115200n8 console=ttyS1,115200n8 console=tty0 quiet shoal.mode=${INSTALL_MODE}"
 if [[ -n "$INSTALL_TARGET_DEFAULT" ]]; then
   CMDLINE="${CMDLINE} shoal.target=${INSTALL_TARGET_DEFAULT}"
 fi
@@ -723,26 +787,68 @@ LABEL shoal
   APPEND ${CMDLINE}
 CFG
 
-VOLID="SHOAL_MARKER"
-if [[ "$INSTALL_MODE" = "write" ]]; then
-  VOLID="SHOAL_INSTALL"
-elif [[ "$INSTALL_MODE" = "prep" ]]; then
-  VOLID="SHOAL_PREP"
+# UEFI: grub standalone EFI binary that finds the ISO9660 root by searching for
+# a known file (works regardless of whether firmware presents the El Torito FAT
+# image or the outer ISO as the boot device) and chainloads the same kernel/initrd
+# as isolinux, with the same cmdline.
+if [[ "$BUILD_UEFI" -eq 1 ]]; then
+  GRUB_CFG="$WORK/grub-standalone.cfg"
+  cat > "$GRUB_CFG" << GRUBCFG
+insmod part_gpt
+insmod part_msdos
+insmod iso9660
+insmod search
+insmod search_fs_file
+insmod search_label
+search --no-floppy --set=root --file /boot/vmlinuz
+linux /boot/vmlinuz ${CMDLINE}
+initrd /boot/initrd.img
+boot
+GRUBCFG
+  EFI_STUB="$WORK/bootx64.efi"
+  "$GRUB_MKSTANDALONE" \
+    -O x86_64-efi \
+    -o "$EFI_STUB" \
+    --modules="part_gpt part_msdos iso9660 fat search search_fs_file search_label normal linux" \
+    --fonts="" --themes="" --locales="" \
+    "boot/grub/grub.cfg=$GRUB_CFG" 2>&1 | sed 's/^/grub-mkstandalone: /' >&2
+  if [[ -s "$EFI_STUB" ]]; then
+    EFI_IMG="$WORK/efiboot.img"
+    stub_kb="$(( ($(wc -c < "$EFI_STUB") + 1023) / 1024 ))"
+    img_kb=$(( stub_kb + 1024 ))
+    if [[ "$img_kb" -lt 4096 ]]; then img_kb=4096; fi
+    truncate -s "${img_kb}K" "$EFI_IMG"
+    mformat -i "$EFI_IMG" ::
+    mmd -i "$EFI_IMG" ::EFI
+    mmd -i "$EFI_IMG" ::EFI/BOOT
+    mcopy -i "$EFI_IMG" "$EFI_STUB" ::EFI/BOOT/BOOTX64.EFI
+    mkdir -p "$ISO/boot"
+    cp "$EFI_IMG" "$ISO/boot/efiboot.img"
+    echo "uefi: boot/efiboot.img (${img_kb}KiB, stub $(wc -c < "$EFI_STUB") bytes)"
+  else
+    echo "warn: grub-mkstandalone produced no output — ISO will be BIOS-only" >&2
+    BUILD_UEFI=0
+  fi
 fi
 
 mkdir -p "$(dirname "$OUT")"
+XORRISO_ARGS=(
+  -as mkisofs
+  -quiet
+  -o "$OUT"
+  -V "$VOLID"
+  -R -J
+  -b boot/isolinux/isolinux.bin
+  -c boot/isolinux/boot.cat
+  -no-emul-boot
+  -boot-load-size 4
+  -boot-info-table
+)
+if [[ "$BUILD_UEFI" -eq 1 ]]; then
+  XORRISO_ARGS+=( -eltorito-alt-boot -e boot/efiboot.img -no-emul-boot )
+fi
 # -R/-J so payload.gz keeps its name when mounted (not ISO9660 PAYLOAD.GZ;1).
-xorriso -as mkisofs \
-  -quiet \
-  -o "$OUT" \
-  -V "$VOLID" \
-  -R -J \
-  -b boot/isolinux/isolinux.bin \
-  -c boot/isolinux/boot.cat \
-  -no-emul-boot \
-  -boot-load-size 4 \
-  -boot-info-table \
-  "$ISO"
+xorriso "${XORRISO_ARGS[@]}" "$ISO"
 
 chmod 644 "$OUT" 2>/dev/null || true
 SIZE="$(wc -c < "$OUT" | tr -d ' ')"

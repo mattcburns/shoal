@@ -229,7 +229,8 @@ func (c *client) GetBoot(_ context.Context, systemID string) (BootInfo, error) {
 	}, nil
 }
 
-// SetBootOverrideOnceCD sets one-time CD boot (idempotent).
+// SetBootOverrideOnceCD sets one-time CD/virtual-CD boot (idempotent).
+// Dell iDRAC virtual media is typically UsbCd, not physical Cd; sushy uses Cd.
 func (c *client) SetBootOverrideOnceCD(ctx context.Context, systemID string) error {
 	sys, err := c.computerSystem(systemID)
 	if err != nil {
@@ -239,14 +240,26 @@ func (c *client) SetBootOverrideOnceCD(ctx context.Context, systemID string) err
 	if err != nil {
 		return err
 	}
+	vendor := detectVendor(sys.Manufacturer, sys.Model)
+	primary := gofishredfish.CdBootSourceOverrideTarget
+	if vendor == VendorDell {
+		primary = gofishredfish.BootSourceOverrideTarget("UsbCd")
+	}
 	if cur.OverrideEnabled == string(gofishredfish.OnceBootSourceOverrideEnabled) &&
-		cur.OverrideTarget == string(gofishredfish.CdBootSourceOverrideTarget) {
+		(cur.OverrideTarget == string(primary) || cur.OverrideTarget == string(gofishredfish.CdBootSourceOverrideTarget) ||
+			cur.OverrideTarget == "UsbCd") {
 		return nil
 	}
 	boot := sys.Boot
 	boot.BootSourceOverrideEnabled = gofishredfish.OnceBootSourceOverrideEnabled
-	boot.BootSourceOverrideTarget = gofishredfish.CdBootSourceOverrideTarget
+	boot.BootSourceOverrideTarget = primary
 	if err := sys.SetBoot(boot); err != nil {
+		if primary != gofishredfish.CdBootSourceOverrideTarget {
+			boot.BootSourceOverrideTarget = gofishredfish.CdBootSourceOverrideTarget
+			if err2 := sys.SetBoot(boot); err2 == nil {
+				return nil
+			}
+		}
 		return fmt.Errorf("redfish: set boot override: %w", err)
 	}
 	return nil
@@ -421,14 +434,22 @@ func (c *client) virtualMediaByURI(mediaURI string) (*gofishredfish.VirtualMedia
 	return nil, fmt.Errorf("redfish: virtual media %q not found", mediaURI)
 }
 
-// InsertVirtualMedia inserts an image URL (idempotent if already inserted with same image).
+// InsertVirtualMedia inserts an image URL, always ejecting first if already
+// inserted -- including when the reported Image URL already matches. A BMC's
+// virtual-media HTTP redirection session can go stale between jobs (e.g. the
+// serving process on the operator side restarted, or the BMC's own session
+// timed out) while Redfish still reports Inserted=true with the same URL;
+// skipping the eject/reinsert in that case silently boots a dead media mount
+// -- the boot override gets consumed (BIOS attempts the CD) but the guest
+// never actually reads anything, so no SHOAL| markers ever appear. Confirmed
+// live: a job stalled with zero markers for the full 15-minute window
+// immediately after a prior job on this device left the same iso_url
+// "Inserted", while a fresh eject+insert with an unchanged BMC/ISO/network
+// path had succeeded minutes earlier. Always eject-then-reinsert instead.
 func (c *client) InsertVirtualMedia(_ context.Context, mediaURI, imageURL string) error {
 	vm, err := c.virtualMediaByURI(mediaURI)
 	if err != nil {
 		return err
-	}
-	if vm.Inserted && vm.Image == imageURL {
-		return nil
 	}
 	if vm.Inserted {
 		if err := vm.EjectMedia(); err != nil {
