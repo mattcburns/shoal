@@ -93,11 +93,13 @@ func (t *RedfishTransport) Open(ctx context.Context, target string) (<-chan stri
 	scanCtx, cancel := context.WithCancel(ctx)
 	t.cancel = cancel
 	t.activity = make(chan struct{}, 8)
+	dbg := solDebugFile("redfish", target)
 
 	ch := make(chan string, 32)
 	go func() {
 		defer close(ch)
-		sc := bufio.NewScanner(&activityReader{r: stream, activity: t.activity})
+		defer closeIfSet(dbg)
+		sc := bufio.NewScanner(&activityReader{r: stream, activity: t.activity, tee: dbg})
 		buf := make([]byte, 0, 64*1024)
 		sc.Buffer(buf, 1024*1024)
 		for sc.Scan() {

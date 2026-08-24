@@ -7,8 +7,10 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Transport opens a line-oriented serial/console stream.
@@ -43,20 +45,72 @@ type ActivityReporter interface {
 // kept separate from the lines channel so Transport.Open's documented
 // contract ("a channel of lines") stays true for every caller. See
 // ActivityReporter.
+//
+// When tee is non-nil every raw byte is also copied there (best-effort,
+// write errors ignored) -- see solDebugFile.
 type activityReader struct {
 	r        io.Reader
 	activity chan<- struct{}
+	tee      io.Writer
 }
 
 func (a *activityReader) Read(p []byte) (int, error) {
 	n, err := a.r.Read(p)
-	if n > 0 && a.activity != nil {
-		select {
-		case a.activity <- struct{}{}:
-		default:
+	if n > 0 {
+		if a.tee != nil {
+			_, _ = a.tee.Write(p[:n])
+		}
+		if a.activity != nil {
+			select {
+			case a.activity <- struct{}{}:
+			default:
+			}
 		}
 	}
 	return n, err
+}
+
+// solDebugFile opens a raw-byte capture file for one SOL session when
+// SHOAL_SOL_DEBUG_DIR is set (empty = disabled, the default). Returns nil on
+// any failure -- debug capture must never break a watch. The file records the
+// console exactly as the transport read it, unfiltered by line-splitting or
+// marker parsing; this is the only way to see what a job's console actually
+// did during a "phase never left WAITING_SOL" failure, because the job holds
+// the (sometimes only) SOL session itself so an operator cannot attach a
+// second capture alongside it. Raw boot console only -- no BMC credentials
+// ever transit this stream.
+func solDebugFile(kind, target string) io.WriteCloser {
+	dir := strings.TrimSpace(os.Getenv("SHOAL_SOL_DEBUG_DIR"))
+	if dir == "" {
+		return nil
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return nil
+	}
+	san := strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '.', r == '-':
+			return r
+		default:
+			return '_'
+		}
+	}, target)
+	if len(san) > 64 {
+		san = san[:64]
+	}
+	name := fmt.Sprintf("sol-%s-%s-%s.raw", kind, san, time.Now().UTC().Format("20060102T150405Z"))
+	f, err := os.Create(filepath.Join(dir, name))
+	if err != nil {
+		return nil
+	}
+	return f
+}
+
+// closeIfSet closes an optional debug tee (nil-safe helper for scan goroutines).
+func closeIfSet(c io.Closer) {
+	if c != nil {
+		_ = c.Close()
+	}
 }
 
 // errorTransport fails Open with a fixed error. Used for unrecognized
@@ -176,14 +230,16 @@ func (t *LibvirtTransport) Open(ctx context.Context, target string) (<-chan stri
 	ctx, cancel := context.WithCancel(ctx)
 	t.cancel = cancel
 	t.activity = make(chan struct{}, 8)
+	dbg := solDebugFile("libvirt", target)
 	ch := make(chan string, 32)
 	go func() {
 		defer close(ch)
+		defer closeIfSet(dbg)
 		defer func() {
 			// Scanner/PTY edge cases must not kill the process.
 			_ = recover()
 		}()
-		sc := bufio.NewScanner(&activityReader{r: f, activity: t.activity}) // local f, not t.file
+		sc := bufio.NewScanner(&activityReader{r: f, activity: t.activity, tee: dbg}) // local f, not t.file
 		buf := make([]byte, 0, 64*1024)
 		sc.Buffer(buf, 1024*1024)
 		for sc.Scan() {
