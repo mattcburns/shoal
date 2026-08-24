@@ -8,6 +8,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -184,7 +185,13 @@ func TestLiveMarkerBootCapture(t *testing.T) {
 	if isoURL == "" {
 		t.Skip("SHOAL_ISO_URL required (BMC-reachable HTTP ISO)")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 11*time.Minute)
+	ctxMinutes := 11
+	if v := os.Getenv("SHOAL_CAPTURE_MINUTES"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			ctxMinutes = n + 2
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(ctxMinutes)*time.Minute)
 	defer cancel()
 	bmc, sys := liveBMC(t, ctx)
 	defer func() { _ = bmc.Close(context.Background()) }()
@@ -249,12 +256,27 @@ func TestLiveMarkerBootCapture(t *testing.T) {
 		}
 	}()
 
-	t.Logf("ForceRestart (was PowerState=%s)", sys.PowerState)
-	if err := bmc.Reset(ctx, sys.ID, "ForceRestart"); err != nil {
-		t.Fatalf("Reset ForceRestart: %v", err)
+	// Mirror the orchestrator's power path: ForceRestart, falling back to On
+	// for a host that is powered off. The cold Power-On path matters: on this
+	// R750 every observed success started warm (ForceRestart from On) and the
+	// hard failures started cold, where POST does memory training / LC init
+	// with long console-silent stretches.
+	resetType := "ForceRestart"
+	if err := bmc.Reset(ctx, sys.ID, resetType); err != nil {
+		resetType = "On"
+		if err2 := bmc.Reset(ctx, sys.ID, resetType); err2 != nil {
+			t.Fatalf("Reset ForceRestart: %v (On fallback: %v)", err, err2)
+		}
 	}
+	t.Logf("power action %s sent (was PowerState=%s)", resetType, sys.PowerState)
 
-	deadline := time.Now().Add(9 * time.Minute)
+	captureMinutes := 9
+	if v := os.Getenv("SHOAL_CAPTURE_MINUTES"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			captureMinutes = n
+		}
+	}
+	deadline := time.Now().Add(time.Duration(captureMinutes) * time.Minute)
 	var last int
 	for time.Now().Before(deadline) {
 		time.Sleep(10 * time.Second)

@@ -241,6 +241,23 @@ func (c *client) SetBootOverrideOnceCD(ctx context.Context, systemID string) err
 		return err
 	}
 	vendor := detectVendor(sys.Manufacturer, sys.Model)
+	// Dell first: stage one-time virtual-CD boot through the iDRAC's own OEM
+	// attributes instead of the standard Boot PATCH. A raw SOL capture on a
+	// live R750 (iDRAC9) showed the standard override never actually winning:
+	// UsbCd is absent from this iDRAC's AllowableValues, the Cd PATCH reads
+	// back Disabled/None, and the host walks its normal boot order (disk →
+	// "Boot Failed: Ubuntu" → PXE → virtual media last). Every apparent
+	// success was the boot order falling through to the virtual optical after
+	// PXE failed *quickly*; every unexplained stall was PXE retrying slowly.
+	// The Boot PATCH also queues a Lifecycle Controller "BIOS.Setup.1-1"
+	// config job that runs during POST with console redirection disabled,
+	// adding minutes of marker-less boot time per job. ServerBoot.1 is
+	// iDRAC-native (no LC job) and targets the virtual CD explicitly.
+	if vendor == VendorDell {
+		if err := c.dellOneTimeVirtualCD(); err == nil {
+			return nil
+		}
+	}
 	primary := gofishredfish.CdBootSourceOverrideTarget
 	if vendor == VendorDell {
 		primary = gofishredfish.BootSourceOverrideTarget("UsbCd")
@@ -263,6 +280,60 @@ func (c *client) SetBootOverrideOnceCD(ctx context.Context, systemID string) err
 		return fmt.Errorf("redfish: set boot override: %w", err)
 	}
 	return nil
+}
+
+// dellOneTimeVirtualCD stages a one-time boot from the iDRAC virtual CD/DVD
+// via Dell's OEM manager attributes (ServerBoot.1.FirstBootDevice=VCD-DVD,
+// BootOnce=Enabled) -- the racadm-equivalent mechanism the iDRAC applies
+// itself on the next power cycle, with no BIOS Lifecycle Controller job.
+// Tries each manager's DellAttributes then plain Attributes endpoint;
+// returns nil on the first accepted PATCH.
+func (c *client) dellOneTimeVirtualCD() error {
+	api, err := c.apiClient()
+	if err != nil {
+		return err
+	}
+	managers, err := api.Service.Managers()
+	if err != nil {
+		return fmt.Errorf("redfish: managers: %w", err)
+	}
+	payload := map[string]any{
+		"Attributes": map[string]any{
+			"ServerBoot.1.BootOnce":        "Enabled",
+			"ServerBoot.1.FirstBootDevice": "VCD-DVD",
+		},
+	}
+	var firstErr error
+	for _, m := range managers {
+		if m == nil {
+			continue
+		}
+		base := strings.TrimSuffix(m.ODataID, "/")
+		for _, u := range []string{
+			base + "/Oem/Dell/DellAttributes/" + m.ID,
+			base + "/Attributes",
+		} {
+			resp, perr := api.Patch(u, payload)
+			if perr != nil {
+				if firstErr == nil {
+					firstErr = perr
+				}
+				continue
+			}
+			code := resp.StatusCode
+			_ = resp.Body.Close()
+			if code >= 200 && code < 300 {
+				return nil
+			}
+			if firstErr == nil {
+				firstErr = fmt.Errorf("redfish: dell ServerBoot PATCH %s: HTTP %d", u, code)
+			}
+		}
+	}
+	if firstErr == nil {
+		firstErr = fmt.Errorf("redfish: dell ServerBoot: no manager accepted PATCH")
+	}
+	return firstErr
 }
 
 // ClearBootOverride disables boot override (idempotent).
