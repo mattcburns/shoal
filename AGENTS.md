@@ -299,7 +299,7 @@ go run ./cmd/shoal deploy run \
 | `SHOAL_FEWSHOT_DIR` | Append-only learned few-shot JSONL (confirm learning). Lab Ansible default: `/var/lib/shoal/fewshot` via `shoal_fewshot_dir` + `env.j2`. Empty disables confirm |
 | `SHOAL_PROFILE_DIR` | JSON provisioning profiles + approval records (Phase 5b). Lab Ansible default: `/var/lib/shoal/profiles` via `shoal_profile_dir` + `env.j2`. Empty disables non-spike profile load |
 | `SHOAL_API_TOKEN` | Phase 6d: if non-empty, require `Authorization: Bearer …` for `/v1/*`. Empty = open (lab default). Never log. |
-| `SHOAL_SERIAL_TRANSPORT` | `libvirt` (default, unchanged lab behavior) \| `redfish_sol`. Orchestrator-wide default; `StartJobRequest.serial_transport` overrides per job. Real-hardware only; see `docs/real-hardware-sol-runbook.md`. |
+| `SHOAL_SERIAL_TRANSPORT` | `libvirt` (default, unchanged lab behavior) \| `redfish_sol`. Orchestrator-wide default; `StartJobRequest.serial_transport` overrides per job. HTTPS BMC endpoints infer `redfish_sol` when the field is empty. See `docs/real-hardware-sol-runbook.md`. |
 | `SHOAL_POLL_IDLE_INTERVAL` | Background SEL/sensor poll when no SOL watch. Go duration (default `5m`). |
 | `SHOAL_POLL_WATCH_INTERVAL` | Elevated poll while a SOL watch is active. Go duration (default `30s`). |
 

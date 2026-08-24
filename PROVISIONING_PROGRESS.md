@@ -1,0 +1,548 @@
+# Real-BMC provisioning progress
+
+**Date:** 2026-08-24  
+**Target:** Dell PowerEdge R750, iDRAC 7.30.10.50, BMC `172.16.21.202`, service tag `C784MH3` (NetBox device id `6`)  
+**Operator path:** L0 `wg0` `172.16.20.138` ↔ BMC `172.16.21.202/28`
+
+This is a field log, not a design rewrite. Design remains
+`docs/sol-transports-design.md` and
+`docs/real-hardware-sol-runbook.md`.
+
+## UPDATE 2026-08-24 (later same day): first clean end-to-end spike PASSED
+
+Job `aed5014210f0c9313bc89edad9d3e20b`: `state=provisioned`, `reason=done_ok`,
+`last_marker_seq=7`, NetBox synced to `lifecycle_state=provisioned`. SOL
+attached ~25s after start; markers ran `BOOT → IMAGE_WRITE → VERIFY → DONE`
+over ~6 minutes, inside the 12m stall window.
+
+Root causes of all four prior stalls (`last_marker_seq=0` every time),
+**both fixed in `infra/scripts/build-marker-iso.sh`** (uncommitted; synced to
+`infra/ansible/roles/marker_iso/files/build-marker-iso.sh`):
+
+1. **No UEFI boot catalog on the ISO.** It was isolinux/BIOS-only via a
+   single `-b/-c` El Torito entry. This iDRAC's Redfish `Boot` object reports
+   `BootSourceOverrideMode=UEFI`; a UEFI-mode CD boot with no UEFI boot image
+   fails silently and falls through to the next boot device — matches the
+   earlier-observed `Boot Failed: Ubuntu` → PXE. Fix: build a
+   `grub-mkstandalone -O x86_64-efi` stub embedding a grub.cfg that
+   `search`es for `/boot/vmlinuz` on the ISO9660 root and chainloads the same
+   kernel/initrd/cmdline as isolinux, package it as a FAT image via `mtools`
+   (no root/loop-mount needed), and add it as a second El Torito entry
+   (`-eltorito-alt-boot -e boot/efiboot.img -no-emul-boot`). Requires
+   `grub-efi-amd64-bin` + `mtools`; degrades to BIOS-only with a build
+   warning if either is missing.
+2. **Dynamically-linked busybox.** The initramfs packs only the busybox
+   binary, no shared libs. A dynamic busybox's `/init` (`#!/bin/busybox sh`)
+   can never exec → kernel panics `Failed to execute /init (error -2)`
+   ~3s after boot, before the marker script runs at all — **on every boot
+   path**, confirmed identically in local QEMU tests under both BIOS and
+   UEFI before this fix. This alone explained the zero-marker pattern
+   independent of the UEFI bug above; both had to be fixed together. Fix:
+   require/prefer a statically-linked busybox (`busybox-static` package),
+   hard error at build time if only a dynamic one is found (previously
+   silent — no build error, just a dead ISO).
+
+Both fixes were validated locally first: booted the rebuilt ISO in QEMU under
+both SeaBIOS and OVMF (UEFI), full marker sequence to `DONE` in both, before
+spending another live BMC cycle. That local repro loop (QEMU + OVMF, no real
+hardware needed) is the fast path for any future marker-ISO boot regression —
+don't burn a live iDRAC cycle to debug boot failures when QEMU reproduces the
+same panic in seconds.
+
+Remaining before this counts as "provisioning actually works": rerun a
+second/third spike for repeatability, then move to Phase 7 (real OS image
+write) per item 5 in "Still open" below — the simulate marker path is now
+proven, the full write path is not.
+
+## UPDATE 2026-08-24 (same day, later): tested via Shoal API and NetBox trigger
+
+The successful run above used `deploy run` (CLI), which builds its own
+in-process `job.Orchestrator` and never touches the HTTP API or NetBox. Used
+the lab stack (already running on the L1 VM, `192.168.122.100`: NetBox
+`:8000`, shoal-app `:8088`, sushy `:8001`) to test the other two trigger
+paths against the *real* BMC (device already enrolled there as NetBox id 6).
+
+**Shoal HTTP API (`POST /v1/jobs` on the lab's shoal-app) — works.**
+Direct API call with explicit `system_id=System.Embedded.1`,
+`serial_transport=redfish_sol`, and real BMC creds reached `WAITING_SOL`
+(SOL attach + media insert + boot override + power cycle all succeeded) —
+full parity with the CLI path through job start. One of two attempts then
+failed shortly after `WAITING_SOL` with a generic `"bmc error"` and no log
+lines; BMC state afterward was clean (powered on, no media inserted, boot
+override cleared, 0 active Redfish sessions) — no stuck state. This came
+after several rapid-fire real-BMC hits in a few minutes (two job attempts +
+several read-only Redfish probes); plausible iDRAC session/rate hiccup
+rather than a code bug, but **not confirmed** — worth an isolated single
+retry (nothing else hitting the BMC concurrently) before ruling that out.
+
+**NetBox trigger (Start button on the device's Shoal Status tab) — does
+NOT currently work end-to-end**, for two stacked reasons:
+
+1. The lab's deployed `netbox_shoal` plugin container is running the
+   pre-session code — confirmed by inspecting the rendered form: no
+   `serial_transport`/`credential_ref` fields exist, and `iso_url` still
+   defaults to the nested-lab-only `http://192.168.124.1:8080/...` (not
+   BMC-reachable). This session's plugin/backend fixes are local,
+   uncommitted changes; nothing has been redeployed to the lab stack.
+2. **New bug, independent of (1):** `_start_defaults()` in `views.py`
+   defaults `system_id` to the NetBox device name (`instance.name`) —
+   correct for the lab's sushy simulator (`System.Name` == the libvirt
+   domain name there) but **wrong for a real iDRAC**, whose Redfish System
+   resource is always `System.Embedded.1`, not the service tag. Submitting
+   the Start form with `bmc_endpoint` correct (pre-filled fine) and
+   `iso_url` manually corrected still failed fast with `"bmc error"`
+   because of this — no real-hardware side effects (job failed before
+   inserting media or setting boot override), but it means today, an
+   operator clicking Start in NetBox against a real BMC device cannot
+   succeed even with a manually-fixed ISO URL, until `system_id` is also
+   fixed (either a plugin default for physical roles, or leaving it blank
+   and letting the orchestrator's own default apply — need to check what
+   the orchestrator does when `system_id` is empty, since the CLI/API tests
+   above always passed it explicitly).
+
+**Net: two more fixes needed before "click Start in NetBox" works on real
+hardware:** deploy this session's plugin+backend changes to the lab stack,
+and fix the `system_id` default in `netbox_shoal/views.py` for non-lab
+(physical) device roles.
+
+## UPDATE 2026-08-24 (same day, later still): system_id fixed + real root cause of remaining failures found
+
+Fixed `system_id` in `defaults.py`/`views.py` (new `system_id(role_slug,
+device_name)`: blank for physical roles so the orchestrator auto-resolves
+the BMC's single System; device name only for lab sushy nodes, which need
+an explicit match). 3 new unit tests, 11/11 passing.
+
+Hot-patched the fix into the *running* lab NetBox container (`docker cp` the
+two files into both `/opt/netbox-shoal/` and the installed venv
+site-packages path, `docker restart shoal-netbox`) since the plugin is baked
+into the `netbox-shoal:lab` image, not bind-mounted — a real rebuild would
+need an ansible run. Also added `SHOAL_REAL_BMC_ISO_URL` to the live
+`/opt/shoal/infra/netbox-config/plugins.py` on the lab VM (backed up as
+`.bak`) so `iso_url` prefills correctly too. Verified live: device 6's
+rendered Shoal Status form now shows `bmc_endpoint`, `iso_url`, and
+`system_id` all correct with **zero manual overrides** — this is a real,
+if host-local, deploy of the fix, not just a local diff.
+
+Submitted that exact form (simulating a real "Start" click). Job
+`6df036d1...` created correctly (`system_id` auto-resolved to
+`System.Embedded.1`, `credential_ref` correctly pulled from NetBox's stored
+`bmc-C784MH3`), reached `WAITING_SOL`, then failed with `"bmc error"` — same
+shape as the earlier direct-API test (`d7c9e54...`) that I'd previously
+chalked up to a possible rate-limit hiccup. **That theory was wrong.**
+
+Checked `docker logs shoal-app` on the lab VM directly (SSH access:
+`lab@192.168.122.100` via `~/.ssh/shoal_lab_vm`, ansible-provisioned key) and
+found the real, deterministic cause:
+
+```
+register watch: sol: open transport: sol: redfish transport: open sol:
+redfish: SOL unsupported for vendor "dell" (connect types: [])
+  ...
+  8. [probe] ok=false vendor=dell — no supported SOL path (native WS
+     unsupported/failed, Redfish did not advertise SSH); observed connect
+     types: []
+```
+
+**The lab's deployed `shoal-app` container is running a binary older than
+PR #39** (`c6eba6d feat(sol): Dell SSH attach when SerialConsole is empty`,
+already merged to `master`). It never attempts the SSH fallback that makes
+SOL work on this iDRAC — the probe stops after both WebSocket candidates
+fail and reports no path, exactly like Shoal's behavior *before* PR #39
+landed. This explains every lab-routed failure today (both the direct
+`POST /v1/jobs` test and the NetBox-triggered one): they all go through
+this same stale binary. It is unrelated to the `system_id` bug or to any of
+this session's uncommitted changes — the lab's `shoal-app` image is simply
+several merged PRs behind current `master`.
+
+**Only the CLI (`deploy run`, built fresh from the local working tree) has
+ever actually succeeded end-to-end on this iDRAC.** The lab-hosted API and
+NetBox paths are code-correct as of this session's fixes but are running
+against stale compiled binaries — they need a real image rebuild + redeploy
+(ansible) to prove out, not a hotfix. That's a bigger, more consequential
+step than the Python hotfixes above and hasn't been done.
+
+BMC state checked clean after both `WAITING_SOL`-then-`bmc error` failures:
+powered on, boot override disabled, no media inserted, 0 active Redfish
+sessions — no cleanup needed.
+
+## UPDATE 2026-08-24 (same day, later still): full lab redeploy + two more real bugs fixed + one still-open failure
+
+Redeployed the lab stack from current source via
+`ansible-playbook -i infra/ansible/inventory/lab-vm.yml
+infra/ansible/playbooks/lab_up.yml --tags config,shoal,start,wait,status,compose`
+(the `compose_stack` role builds the Go binary from the controller's working
+tree and re-stages the plugin source every run — confirmed this picks up
+uncommitted changes with no need to commit first). This is the durable
+deploy path; the earlier `docker cp` hotfix was a stopgap only.
+
+**Two more real, confirmed bugs found and fixed:**
+
+1. **`SHOAL_REQUEST_TIMEOUT` (plugin config, default 30s) was shorter than
+   real SOL-attach + NetBox-resolve latency**, causing the Django view's
+   `requests.post()` to abort client-side before shoal-app finished (or in
+   one case, before it even inserted a job row —
+   `"start job","err":"jobstore: insert: context canceled"`, i.e. the
+   client's abort tore down the request context the Go handler was using).
+   Bumped to 120s via `-e shoal_netbox_plugin_request_timeout=120`.
+2. **`orchestrator`'s default `StallTimeout` (3 minutes,
+   `DefaultSOLStall` in `orchestrator.go`) is too short for real BMC virtual
+   media boot latency** and nothing in the plugin/API path was setting it
+   (only the CLI's `-stall-timeout` flag did). Added
+   `stall_timeout_ns(role_slug)` to `defaults.py` (blank/0 for lab nodes —
+   let the fast orchestrator default apply; 15 minutes in nanoseconds for
+   physical roles, matching the CLI's own bump for `image_write` jobs) and
+   wired it into `_start_defaults`/`_handle_control_post` in `views.py`.
+
+**Also fixed, independent of the above:** `InsertVirtualMedia` in
+`internal/common/redfish/client.go` had a fast-path
+(`if vm.Inserted && vm.Image == imageURL { return nil }`) that skipped
+eject+reinsert whenever the BMC already reported the *same* URL inserted —
+true for every repeat job against this device, since they all reuse
+`shoal-marker.iso`. Theory: a stale BMC-side redirection session can persist
+under `Inserted=true` with a matching URL after a completed/failed job;
+skipping the refresh means the next job's boot override gets consumed (BIOS
+attempts the CD) against a dead mount, producing zero markers with no
+error anywhere. Removed the fast path — always eject-if-inserted, then
+insert. **This did not fully explain the failures seen after fixing it**
+(see below) but is still a correct, real fix on its own logic — kept.
+
+**With all of the above deployed and verified individually correct** (11→14
+plugin unit tests passing; `go build`/`go test` clean; ansible dry-run then
+real run both clean), submitted the actual NetBox Start form (not a direct
+API call — the real button, real CSRF/session, zero manual field overrides)
+three more times against the real R750:
+
+- Job `6df036d1...`: failed fast — this was *before* the lab redeploy,
+  caught the pre-PR#39 stale binary (see previous update).
+- Job `dce52843...`: reached `WAITING_SOL`, ran the full **15-minute**
+  stall window, zero markers. This was *before* the `InsertVirtualMedia`
+  fix — consistent with the stale-media-session theory.
+- Job `d5f88ade...`: reached `WAITING_SOL`, ran the full 15-minute window
+  again, zero markers — **this was *after* the `InsertVirtualMedia` fix**.
+  Checked `ss -tn` on the workstation serving the ISO during the entire
+  window: **two (later one) TCP connections from `172.16.21.202` to the
+  ISO server stayed ESTABLISHED throughout** — the BMC's virtual-media
+  redirection genuinely was pulling the ISO live, not a dead/stale
+  connection. So the eject fix did what it was supposed to (a fresh,
+  live redirection existed) and the job *still* produced zero markers.
+
+**Net: the media-redirection-refresh theory is disproven as the (sole)
+explanation.** Something else is preventing markers from appearing on
+repeat attempts against this specific R750, despite: a proven-good ISO
+(succeeded once via CLI + twice in local QEMU under both BIOS and UEFI), a
+confirmed-live BMC-side media fetch, and a generous 15-minute budget. The
+one and only success today (`aed50142...`, via CLI) was the *first* real
+job of the session in a genuinely cold state. Every subsequent attempt —
+regardless of which bugs were fixed in between — has failed with zero
+markers, which points at something session/state-dependent on the iDRAC
+itself (rapid repeated `ForceRestart` + boot-override cycles; today was
+roughly a dozen real power cycles) rather than remaining Shoal-side bugs.
+
+**Not yet done, and the clear next diagnostic step:** capture *raw* SOL
+output during one of these failing boots (attach to SOL directly, not
+through the marker-parsing watch layer) to see what the console actually
+shows — stuck at BIOS POST, looping, booting disk/PXE instead of the CD, or
+genuinely silent. This is original item 1 from "Still open" above and was
+never actually completed; every fix since has been inferred from job
+state/logs, not a direct look at the boot screen. Given ~12 real power
+cycles on this box today, also worth considering a cooldown before the next
+attempt in case this is iDRAC-side session/thermal fatigue rather than a
+deterministic bug.
+
+BMC left in a clean-ish state: powered on, boot override cleared, one
+lingering Redfish session (likely expires on its own).
+
+## UPDATE 2026-08-24 (same day, final): raw SOL capture — root cause found, mystery solved
+
+Added `TestLiveMarkerBootCapture` to `internal/common/redfish/sol_live_test.go`
+(`live_sol`-gated, kept as a reusable diagnostic): inserts the marker ISO
+into every `SupportsCD` virtual media slot, sets the one-time CD override,
+opens SOL *before* `ForceRestart`, then dumps raw (unfiltered by the
+`SHOAL|` marker parser) console output for up to 9 minutes.
+
+```bash
+set -a && . ./.env && set +a
+SHOAL_BMC_URL=https://172.16.21.202 \
+SHOAL_ISO_URL=http://172.16.20.138:8080/shoal-marker.iso \
+  go test ./internal/common/redfish -tags=live_sol -run TestLiveMarkerBootCapture -v -count=1 -timeout 12m
+```
+
+**Result: full marker sequence came through clean, `BOOT` → `DONE`.** But
+the raw capture also showed *why* prior attempts stalled. Between BIOS POST
+and the marker ISO ever getting a chance to boot, the console printed:
+
+```
+Lifecycle Controller: Applying Updates or Setting System Configuration.
+Unified Server Configurator does not support console redirection.
+```
+
+...followed by a live-updating BIOS Configuration progress screen
+(`BIOS Configuration (JID_876055629082)`). Checked the iDRAC's job queue
+(`GET /redfish/v1/Managers/iDRAC.Embedded.1/Jobs`) for jobs started today:
+
+```
+JID_875532384062 | Configure: BIOS.Setup.1-1 | Completed | 2026-08-24T01:33:58
+JID_875538676672 | Configure: BIOS.Setup.1-1 | Completed | 2026-08-24T01:44:27
+... (11 total today, one per SetBootOverrideOnceCD call, all Completed)
+JID_876055629082 | Configure: BIOS.Setup.1-1 | Completed | 2026-08-24T16:06:02
+```
+
+**Root cause, confirmed mechanistically, not a Shoal bug:** on this
+R750/iDRAC9, writing the one-time boot override isn't an instant BIOS
+variable set — it's staged as a Lifecycle Controller "Configure:
+BIOS.Setup.1-1" job that gets *applied during the next POST* via the Unified
+Server Configurator, and **SOL/console redirection is explicitly
+unavailable while that job runs.** Every job start queues a fresh one of
+these (one per `SetBootOverrideOnceCD` call — unavoidable, each job
+legitimately needs its own one-time override). Duration is variable and
+sometimes large enough to eat most or all of even a 15-minute stall budget
+before the marker ISO ever prints a byte, independent of every other fix
+made today (all of which were real and are still correct). This is the
+actual explanation for the intermittent zero-marker stalls, not the
+media-redirection theory (already shown live to be wrong) or anything
+UEFI/busybox/system_id/timeout-related (all separately confirmed fixed).
+
+**Recommendation, not yet implemented:** the SOL stall watcher currently
+resets its timer only on parsed `SHOAL|` lines, by deliberate design (noted
+elsewhere in this doc/runbook as a considered choice). Given this finding,
+that choice is worth revisiting — resetting the stall timer on *any*
+incoming SOL byte (not just markers) would let the watcher correctly treat
+"the LC job is actively repainting a progress screen" as "still alive"
+instead of silent, and would only genuinely stall when the console goes
+truly quiet. That's a more targeted fix than further-inflating the stall
+timeout, which just gambles on the LC job finishing in time rather than
+reacting to what the console is actually doing. Not implemented this
+session — flagging for the next pass.
+
+## UPDATE 2026-08-24 (final): stall watcher now resets on any SOL activity, not just markers
+
+Implemented the recommendation above. `internal/observe/sol/watch.go`'s
+stall timer previously reset only when a line parsed as a `SHOAL|` marker —
+by design, per the original tradeoff note in this doc/runbook. The raw SOL
+capture showed why that's no longer the right tradeoff: Dell's Lifecycle
+Controller / Unified Server Configurator BIOS-config screen repaints via
+cursor-positioning escapes (`\x1b[row;colH...`) with few or no newline
+characters for minutes at a time. A naive "reset on any *line*" fix isn't
+enough either — `bufio.Scanner` (used by every transport) only yields a line
+on `\n`, so a screen that never prints one would still starve a line-based
+reset.
+
+Fix, in two parts:
+
+1. **`ActivityReporter` interface** (`transport.go`): an optional capability
+   a `Transport` can implement — `Activity() <-chan struct{}`, fed by a new
+   `activityReader` that wraps the underlying `io.Reader` and best-effort
+   pings (non-blocking, may drop under backpressure) on *every raw byte
+   read*, independent of whether `bufio.Scanner` has found a line yet. Kept
+   deliberately separate from the `lines` channel — mixing pings into
+   `lines` was the first approach tried and it broke
+   `TestRedfishTransportOpenReadsLines`, which reasonably assumes every
+   value from `lines` is real content (the channel's documented contract).
+   Wired into all four transports: `ReaderTransport`, `LibvirtTransport`
+   (`transport.go`), `RedfishTransport` (`redfish_transport.go` — the one
+   that matters for real hardware), and `SSHLibvirtTransport`
+   (`ssh_libvirt.go`).
+2. **`watch.go`'s `run()`**: type-asserts `aw.trans` (already available, no
+   signature change needed) for `ActivityReporter` and adds a
+   `case <-activityC: resetStall()` arm to the select loop — nil-channel-safe
+   (a transport that doesn't implement it just makes that case permanently
+   non-ready, a correct no-op). Also moved the existing line-received
+   `resetStall()` earlier so it fires on *any* received line, not only ones
+   that parse as markers (belt-and-suspenders alongside `activityC`).
+   Stall message text updated from `"no SOL marker for %s"` to
+   `"no SOL activity for %s"` to match the new, more accurate semantics.
+
+New regression test,
+`TestWatchServiceActivityWithoutMarkersPreventsStall` in
+`internal/observe/sol/watch_test.go`: feeds continuous no-newline,
+non-marker bytes faster than the stall timeout for ~5 timeout-multiples,
+asserts zero stalls, then goes silent and asserts a stall *does* still fire
+— proving both halves (activity prevents a false stall; true silence still
+stalls correctly, this isn't "never stall").
+
+Verified: `gofmt`, `go vet ./...`, `go vet -tags=live_sol ./...`, and the
+full `go test ./...` all clean. Redeployed to the lab stack via the same
+`ansible-playbook ... lab_up.yml --tags config,shoal,start,wait,status,compose`
+path (no real-BMC action — container rebuild only). Not yet re-verified
+against the real R750 with a live job in this session; the fix is proven at
+the unit-test level (exact reproduction of the failure condition found via
+the raw SOL capture) and the underlying mechanism (SOL attach → media →
+boot → markers) was already independently proven working multiple times
+today. Next real-hardware run against this device is a good opportunity to
+confirm end-to-end, but isn't required to trust this change — it's a
+narrowly-scoped, well-tested fix for a concretely diagnosed problem, not a
+speculative one.
+
+## UPDATE 2026-08-24 (truly final): live-confirmed the stall fix works — and found a separate, still-open problem
+
+Ran one more real NetBox Start against the R750 (job `566a2e90...`) to
+confirm the activity-based stall fix live, not just at the unit-test level.
+
+**The fix itself is proven correct, live:**
+
+- Old behavior: would have failed at 15 minutes with `"no SOL marker for
+  15m0s"`, full stop, regardless of what the console was doing.
+- New behavior, observed: the job ran `WAITING_SOL` for **~24 minutes**
+  past start with zero markers — well past the old 15-minute boundary —
+  without falsely stalling, because *something* on the console kept
+  producing activity. This job's own `Configure: BIOS.Setup.1-1` LC job
+  (`JID_876087610700`) actually completed in under a minute this time (not
+  the multi-minute delay from the earlier raw capture), so whatever kept it
+  alive for 24 minutes was not that same LC-job mechanism — some other
+  activity. **Then it went genuinely silent, and correctly stalled**:
+  `"no SOL activity for 15m0s"`, 15 minutes after the last real byte, not
+  15 minutes after job start. Exactly the intended behavior — no false
+  stall during real activity, a true stall once things actually went quiet.
+- BMC checked clean afterward: powered on, boot override consumed/cleared,
+  0 active Redfish sessions. No cleanup needed.
+
+**But the underlying job still failed to reach `DONE`.** This is a
+*different*, not-yet-diagnosed problem from anything fixed today: ~24
+minutes of unexplained console activity (not the LC job this time) that
+never resulted in a `SHOAL|` marker, on a device/ISO/BMC combination that
+has independently succeeded multiple times today in well under 10 minutes.
+Boot override showed `Disabled/None` afterward (consumed, meaning BIOS did
+cycle through the one-time CD boot at some point) and virtual media stayed
+`Inserted=true` with the correct URL, so it's not an obviously failed
+insert/override — but there's no way to know *what* those 24 minutes of
+activity actually were without a raw SOL capture running concurrently,
+which wasn't done for this run (starting one would have contended with the
+job's own active SOL session).
+
+**Net for today:** the specific ask ("make the stall-detection change
+solid") is done and live-verified — it behaves correctly in both
+directions. Overall end-to-end reliability on this specific R750 is still
+not 100%: multiple clean successes today, multiple failures with
+increasingly well-understood (and now mostly fixed) causes, and this one
+remaining failure mode that's real but not yet diagnosed. The tool for
+diagnosing it already exists (`TestLiveMarkerBootCapture`, added earlier
+today) — the next step is running it back-to-back with an API/NetBox job
+(or just relying on the CLI, which threads its own SOL watch through the
+same code and could be extended to dump raw bytes) to actually see what a
+~20+-minute "alive but no markers" stretch looks like on the console.
+
+## Short answer (original, before the fix above)
+
+**Plumbing works. End-to-end provision does not.**
+
+Shoal can attach SOL, the iDRAC can fetch and insert a marker ISO over HTTP,
+and a Deploy job starts (watch registered, media attached, NetBox
+`lifecycle_state=provisioning`). Three spike jobs then **stalled** with
+`last_marker_seq=0` — no `SHOAL|` markers, so the job never reached
+`provisioned`. (Superseded — see UPDATE above.)
+
+## What landed in git (merged)
+
+| PR | What |
+|----|------|
+| [#37](https://github.com/mattcburns/shoal/pull/37) | NetBox demo polish: poll, power, credentials, firmware; physical vs lab BMC |
+| [#38](https://github.com/mattcburns/shoal/pull/38) | SOL transports design (`docs/sol-transports-design.md`) |
+| [#39](https://github.com/mattcburns/shoal/pull/39) | Golden Rule 6 split; Dell SSH attach when `SerialConsole` is empty; WS sniff |
+| [#40](https://github.com/mattcburns/shoal/pull/40) | Stdlib IPMI 2.0 SOL last-resort (`internal/common/redfish/internal/ipmi`) |
+
+The **console transport design is implemented** (WS sniff → SSH → IPMI 3 then 17).
+Telnet, HPE `vsp`/`textcons`, ATEN SMASH-CLP, and SSH host-key pinning remain
+non-goals.
+
+Uncommitted on `feature/real-bmc-provision` (when this note was written):
+Start uses stored `credential_ref` when user/pass are empty; HTTPS BMC infers
+`redfish_sol`; NetBox Start sends `redfish_sol` + `credential_ref` for physical
+servers; Dell one-time boot prefers `UsbCd`; both virtual-CD slots get the
+install ISO; marker ISO fans stdout to `ttyS0` and `ttyS1`.
+
+## Proven live on this iDRAC
+
+| Probe | Result |
+|-------|--------|
+| Redfish `SerialConsole` | Empty (`ConnectTypesSupported=[]`) |
+| SSH eligibility | `NetworkProtocol.SSH` port 22 + OEM `SerialRedirection.1.Enable=Enabled` |
+| SSH auth | `keyboard-interactive` (not `password`) |
+| Attach | `session.Start("console com2")` → `Kind=ssh` `vendor=dell` |
+| WebSocket `/console` | HTTP 200, not a 101 upgrade — correctly falls through |
+| WebSocket `/wsman/virtualconsole` | HTTP 404 |
+| BIOS POST over SOL | After `ForceRestart`: BIOS 1.15.2, F2/F10/F11/F12, then `Boot Failed: Ubuntu` → PXE |
+| Virtual Media insert | **Succeeded** for `http://172.16.20.138:8080/shoal-marker.iso` (Range-capable Go `FileServer` on `wg0:8080`) |
+| Job start | SOL watch `sol_kind=ssh`, media attached, NetBox `provisioning` |
+
+ISO HTTP from the nested lab (`http://192.168.124.1:8080/…`) is **not**
+BMC-reachable. Serve on the management path the BMC shares with this
+workstation.
+
+IPMI UDP/623 is still **filtered** from this workstation. IPMI SOL is in
+tree for SuperMicro-class BMCs; it cannot attach here.
+
+## Failed live: spike provision
+
+Command shape (credentials from gitignored `.env`, never logged):
+
+```bash
+go run ./cmd/shoal deploy run \
+  -device-id C784MH3 \
+  -bmc-url https://172.16.21.202 \
+  -serial-transport redfish_sol \
+  -iso-url http://172.16.20.138:8080/shoal-marker.iso \
+  -stall-timeout 12m
+```
+
+| Job id (prefix) | Outcome |
+|-----------------|---------|
+| `5dbbe5f2…` | `failed` / `sol stall` / `last_marker_seq=0` (10m) |
+| `0de8627d…` | same (12m, ISO rebuilt with `console=ttyS1`) |
+| `fc771697…` | same (12m, `UsbCd` boot + ISO on both CD slots + tee to ttyS0/ttyS1) |
+
+Observe resets the stall timer **only** on parsed `SHOAL|` lines, not BIOS
+text. BIOS POST on SOL therefore does not keep the job alive. No markers
+means either:
+
+1. The host did not boot the virtual CD (disk/PXE instead — last watched POST
+   ended `Boot Failed: Ubuntu` then PXE), or
+2. The live image still is not printing on the UART iDRAC SOL is bridging.
+
+The 13 MiB lab `shoal-marker.iso` is the **simulate** marker image, not a
+full OS write. A stall does not imply a disk wipe.
+
+## What “wired” means now
+
+| Path | Behavior |
+|------|----------|
+| Empty Start user/pass | NetBox `credential_ref` if that secret exists in *this* process; else `SHOAL_BMC_*` |
+| HTTPS BMC URL | Infers `serial_transport=redfish_sol` (lab sushy HTTP stays `libvirt`) |
+| NetBox Start on a physical server | POSTs `redfish_sol` + `credential_ref`; ISO prefill `SHOAL_REAL_BMC_ISO_URL` when set |
+| CLI on a machine without the stored secret | Must pass BMC user/pass (env flags). Do not force a NetBox ref whose secret is missing |
+
+Lab sushy + libvirt SOL is unchanged.
+
+## Still open (to actually provision)
+
+1. **Close the marker loop** — confirm one-time `UsbCd`/`Cd` actually booted the
+   virtual CD (Redfish boot override + next POST), and/or log raw SOL during
+   boot to see PXE vs CD vs kernel console.
+2. **Publish the dual-UART marker ISO** into the serve dir the BMC uses
+   (`http://172.16.20.138:8080/shoal-marker.iso` after rebuild).
+3. **NetBox plugin config** — set `SHOAL_REAL_BMC_ISO_URL` (Ansible
+   `shoal_netbox_plugin_real_bmc_iso_url`) so Status → Start prefills a
+   BMC-reachable URL. Needs a plugin/config rollout, not just the Go binary.
+4. **ISO server** — keep a Range-capable HTTP listener on `wg0:8080` for the
+   duration of the job (plain HTTP, Golden Rule 7).
+5. **Full OS install** (Phase 7) is separate: cloud-image write ISO, much
+   larger media, longer stall. Do not attempt until the simulate marker job
+   hits `DONE`.
+
+## Useful commands
+
+```bash
+# SOL attach only (no power)
+set -a && . ./.env && set +a
+SHOAL_BMC_URL=https://172.16.21.202 \
+  go test ./internal/common/redfish -tags=live_sol -run 'TestLiveOpenSOL$' -v -count=1 -timeout 60s
+
+# Virtual Media insert + eject (needs ISO server up)
+SHOAL_BMC_URL=https://172.16.21.202 \
+SHOAL_ISO_URL=http://172.16.20.138:8080/shoal-marker.iso \
+  go test ./internal/common/redfish -tags=live_sol -run TestLiveVirtualMediaISO -v -count=1 -timeout 3m
+
+# Serve ISO (Range support)
+# go run /tmp/shoal-iso/serve.go   # binds 172.16.20.138:8080, dir /tmp/shoal-iso
+```
+
+CI must not use `-tags=live_sol`.

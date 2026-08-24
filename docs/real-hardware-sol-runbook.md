@@ -74,13 +74,44 @@ or override per job on `StartJobRequest`:
 { "serial_transport": "redfish_sol", "bmc_endpoint": "https://<real-bmc>", ... }
 ```
 
-Note: `validate.StartJobRequest` cannot see the config-wide default (it only
-validates the request as submitted), so **`serial_target` is still required
-on the request** even when relying purely on `SHOAL_SERIAL_TRANSPORT`. The
+HTTPS BMC endpoints (`https://…`) infer `redfish_sol` at Start when
+`serial_transport` is empty, so `serial_target` may be omitted. Lab sushy
+(HTTP) still defaults to `libvirt` and still requires `serial_target` unless
+you set `SHOAL_SERIAL_TRANSPORT` or per-job `serial_transport`. The
 orchestrator ignores `serial_target` once `redfish_sol` is selected — the
-watch's `Target` becomes `bmc_endpoint` instead. This is a deliberate v1
-tradeoff (safe/explicit over clever); don't "fix" it by threading config into
-`validate` without discussing the tradeoff first.
+watch's `Target` becomes `bmc_endpoint`.
+
+## ISO the BMC can fetch
+
+Virtual Media `InsertMedia` is an HTTP GET **from the BMC**, not from Shoal.
+The nested-lab URL `http://192.168.124.1:8080/…` is not reachable from
+`172.16.21.202`. Serve a marker/write ISO on an address on the BMC management
+network (this workstation's `wg0` is `172.16.20.138`):
+
+```bash
+# example: publish then serve
+python3 -m http.server 8080 --bind 172.16.20.138 --directory /path/to/iso-dir
+```
+
+Set plugin `SHOAL_REAL_BMC_ISO_URL` (Ansible
+`shoal_netbox_plugin_real_bmc_iso_url`) to `http://172.16.20.138:8080/<name>.iso`
+so NetBox Start prefills it for physical servers. Confirm the BMC can GET
+that URL (same L2/L3 path as Redfish). Plain HTTP only (Golden Rule 7). Serve
+with Range support (`net/http.FileServer`); iDRAC Virtual Media insert of
+`http://172.16.20.138:8080/shoal-marker.iso` **succeeded** on this box
+(2026-08-24).
+
+Marker ISO must emit on **COM2** as well as lab ttyS0: `build-marker-iso.sh`
+puts `console=ttyS0,115200n8 console=ttyS1,115200n8` and fans `/init` stdout
+to both UARTs. Rebuild the ISO after that change. Dell one-time boot uses
+`UsbCd` (virtual CD), falling back to `Cd`. Both virtual-CD slots get the
+install ISO when seed is not using the second slot.
+
+A spike `deploy run` against this R750 (2026-08-24) attached SOL (`kind=ssh`)
+and inserted media, then **stalled**: Observe only resets the stall timer on
+`SHOAL|` markers, not BIOS text. No markers arrived in 12 minutes — next
+debug is whether the host actually booted the virtual CD (one-time `UsbCd`)
+versus disk/PXE.
 
 ## Step-by-step per-vendor checklist
 
