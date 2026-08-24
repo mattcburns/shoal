@@ -179,7 +179,10 @@ Re-run (credentials from gitignored `.env`; never log the password):
 ```bash
 set -a && . ./.env && set +a
 SHOAL_BMC_URL=https://172.16.21.202 \
-  go test ./internal/common/redfish -tags=live_sol -run TestLiveOpenSOL -v -count=1 -timeout 60s
+  go test ./internal/common/redfish -tags=live_sol -run TestLiveOpenSOL$ -v -count=1 -timeout 60s
+# ForceRestart + ~90s POST capture (changes host power):
+SHOAL_BMC_URL=https://172.16.21.202 \
+  go test ./internal/common/redfish -tags=live_sol -run TestLiveOpenSOL_ResetAndRead -v -count=1 -timeout 4m
 ```
 
 CI must not use `-tags=live_sol`. IPMI UDP/623 remains filtered from this

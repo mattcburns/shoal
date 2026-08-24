@@ -2,9 +2,9 @@
 
 **Author:** TBD  
 **Date:** 2026-08-23  
-**Status:** Draft (rev 4 — operator decisions 2026-08-23)  
+**Status:** PR1 implemented (`feature/sol-transports` / live iDRAC attach). PR2 (stdlib IPMI SOL) not started. Rev 5.  
 **Companion to:** `SHOAL_COMPREHENSIVE_DESIGN_AND_IMPLEMENTATION_PLAN.md` v2.0.9, `docs/real-hardware-sol-runbook.md`, `AGENTS.md` Golden Rule 6  
-**Not a rewrite of those documents.** This records field findings from a live Dell iDRAC and the rule/interface changes needed so `BMC.OpenSOL` can actually attach on real hardware.
+**Not a rewrite of those documents.** This records field findings from a live Dell iDRAC and the rule/interface changes needed so `BMC.OpenSOL` can actually attach on real hardware. Sections below that say “today” / “current implementation” describe the **pre-PR1** tree; see the runbook for what shipped.
 
 **Rev 2 notes:** IPMI v2.0 byte-accurate tables (RAKP 1–4 unencrypted; Get Channel Auth Caps `[0x0E, 0x84]`; SIDc vs SIDm; Table 15-2 bits; HMAC fixture vectors); Dell-only SSH command guessing; WS sniff must not drop SOL or hang ahead of SSH; PR1 rule text does not claim an IPMI client that is not in the tree.
 
@@ -12,11 +12,13 @@
 
 **Rev 4 notes (operator decisions):** (1) No live attach, power-on, SSH, or IPMI against `172.16.21.202` until the operator says so — PR1/PR2 are fake-SSH / fake-RMCP only. (2) Cipher suite **17** (RAKP-HMAC-SHA256 + HMAC-SHA256-128 + AES-CBC-128) is **in PR2**: try suite 3 first, then 17 if Open Session rejects 3; no other shopping. Stdlib `crypto/sha256` only.
 
+**Rev 5 notes:** Operator authorized live attach and `ForceRestart`. PR1 SSH path proven on iDRAC 7.30.10.50 (`Kind=ssh`, `console com2`, keyboard-interactive; WS `/console` is not SOL). Constraint (1) is lifted for this box; IPMI/UDP 623 still filtered. Field log: `docs/real-hardware-sol-runbook.md`.
+
 ---
 
 ## Overview
 
-Shoal’s real-hardware serial transport (`SHOAL_SERIAL_TRANSPORT=redfish_sol` → `redfish.BMC.OpenSOL`) cannot attach to a representative Dell 15G iDRAC. Redfish `SerialConsole` on that box is empty, the existing WebSocket candidates are unverified KVM-ish guesses, and Golden Rule 6 currently forbids IPMI even as a SOL payload. The operator path that *does* work on this iDRAC is SSH + `console com2` (BMC bridges IPMI SOL internally). SuperMicro-class BMCs typically have no SSH serial CLI at all and need IPMI 2.0 SOL on UDP/623.
+Shoal’s real-hardware serial transport (`SHOAL_SERIAL_TRANSPORT=redfish_sol` → `redfish.BMC.OpenSOL`) **could not** attach to a representative Dell 15G iDRAC before PR1. Redfish `SerialConsole` on that box is empty, the WebSocket candidates are not SOL (HTTP 200 / 404), and Golden Rule 6 previously forbade IPMI even as a SOL payload. The operator path that works on this iDRAC is SSH + `console com2` (BMC bridges IPMI SOL internally) — **implemented and live-proven in PR1**. SuperMicro-class BMCs typically have no SSH serial CLI at all and need IPMI 2.0 SOL on UDP/623 (PR2).
 
 This design splits Golden Rule 6: **BMC control stays Redfish-only**; **SOL may leave HTTP** in a fixed order (line-oriented WS, then vendor SSH attach, then a stdlib-only IPMI 2.0 SOL client as last resort). No new Go modules. No `ipmitool`. Call sites still only see `BMC.OpenSOL`. Lab default remains `libvirt`.
 

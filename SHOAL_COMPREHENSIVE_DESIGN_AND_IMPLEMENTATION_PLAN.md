@@ -558,7 +558,7 @@ Fields/transitions **only Orchestrator commits**: `state` (`LifecycleState`), `a
 
 Explicit cancel: `PROVISIONING --cancel--> (cleanup) --> FAILED` (with `error=canceled`), then device may return to READY when re-enqueued. Do **not** invent a separate long-lived `CLEANUP` lifecycle enum for MVP; cleanup is a **mandatory finalizer** inside `HandleTerminal`, not a NetBox-facing state.
 
-**Transport**: real hardware uses Redfish `SerialConsole` / IPMI SOL; lab uses libvirt guest serial (Section 8).
+**Transport**: lab uses libvirt guest serial (Section 8). Real hardware uses `redfish_sol` → `BMC.OpenSOL` (line-oriented WS if actually SOL, else SSH attach — Dell `console com2` even when `SerialConsole` is empty). IPMI 2.0 SOL last-resort is specified (`docs/sol-transports-design.md`), not yet in tree.
 
 ```go
 // internal/observe/sol — parser returns models.SOLMarker (common), not deploy types
