@@ -30,6 +30,7 @@ class ShoalConfig(PluginConfig):
         "SHOAL_ENABLE_ACTIONS": True,
         "SHOAL_DEFAULT_BMC_ENDPOINT": "",
         "SHOAL_DEFAULT_ISO_URL": "",
+        "SHOAL_REAL_BMC_ISO_URL": "",  # physical servers; BMC-reachable HTTP ISO
         "SHOAL_DEFAULT_PROFILE_REF": "spike",
     }
 

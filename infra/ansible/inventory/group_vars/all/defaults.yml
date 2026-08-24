@@ -67,6 +67,9 @@ shoal_netbox_plugin: true
 # VM-hosted and direct-host lab modes, so this one value covers both instead
 # of needing a per-mode override.
 shoal_netbox_plugin_base_url: "http://host.docker.internal:{{ shoal_app_http_port }}"
+# Optional BMC-reachable ISO for physical servers (empty = lab ISO URL).
+# Example: http://172.16.20.138:8080/shoal-marker.iso
+shoal_netbox_plugin_real_bmc_iso_url: ""
 
 # --- AI provider (see design doc §6 / v2.0.4 dual-model contract) ---
 # Provider is "ollama" (local, served by the shoal-ollama container) or "cloud".

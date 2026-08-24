@@ -46,6 +46,7 @@ PLUGINS_CONFIG = {
         "SHOAL_ENABLE_ACTIONS": True,                       # Status Start/Cancel forms
         "SHOAL_DEFAULT_BMC_ENDPOINT": "http://127.0.0.1:8001",  # lab virtual BMC nodes only; real servers use https://<bmc_ip>
         "SHOAL_DEFAULT_ISO_URL": "http://192.168.124.1:8080/shoal-marker.iso",
+        "SHOAL_REAL_BMC_ISO_URL": "",  # BMC-reachable HTTP ISO for physical servers
         "SHOAL_DEFAULT_PROFILE_REF": "spike",
     }
 }
@@ -58,9 +59,10 @@ stored secrets, then `SHOAL_BMC_*`. **Start provision** still fills empty
 user/pass from `SHOAL_BMC_*` only. Real servers (role ≠ `virtual-bmc-node`)
 prefill `https://<bmc_ip>`; lab virtual BMC nodes keep
 `SHOAL_DEFAULT_BMC_ENDPOINT` (shared sushy). Lab Start provision completes
-over sushy + libvirt SOL. A real iDRAC needs `SHOAL_SERIAL_TRANSPORT=redfish_sol`
-on the Shoal process (SOL attach is proven; the BMC still must be able to
-fetch the ISO URL — see `docs/real-hardware-sol-runbook.md`).
+over sushy + libvirt SOL. Physical servers POST `serial_transport=redfish_sol`
+and `credential_ref` (stored secret, then `SHOAL_BMC_*`). Prefill
+`SHOAL_REAL_BMC_ISO_URL` when set — the BMC must be able to HTTP-GET that ISO
+(see `docs/real-hardware-sol-runbook.md`).
 
 ## Development
 
