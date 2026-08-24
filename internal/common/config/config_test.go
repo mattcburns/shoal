@@ -2,6 +2,7 @@ package config_test
 
 import (
 	"testing"
+	"time"
 
 	"github.com/mattcburns/shoal/internal/common/config"
 )
@@ -21,6 +22,7 @@ func TestLoadDefaults(t *testing.T) {
 		"SHOAL_REDFISH_AUTH_MODE", "SHOAL_REDFISH_TLS_MODE", "SHOAL_REDFISH_CA_FILE",
 		"SHOAL_BMC_USERNAME", "SHOAL_BMC_PASSWORD", "SHOAL_ISO_BASE_URL",
 		"SHOAL_RECONCILE_FAIL_ORPHANS", "SHOAL_SECRETS_DIR",
+		"SHOAL_POLL_IDLE_INTERVAL", "SHOAL_POLL_WATCH_INTERVAL",
 	} {
 		t.Setenv(k, "")
 	}
@@ -41,6 +43,12 @@ func TestLoadDefaults(t *testing.T) {
 	if !c.ReconcileFailOrphans {
 		t.Fatal("ReconcileFailOrphans default true")
 	}
+	if c.PollIdleInterval != 5*time.Minute {
+		t.Fatalf("PollIdleInterval=%s", c.PollIdleInterval)
+	}
+	if c.PollWatchInterval != 30*time.Second {
+		t.Fatalf("PollWatchInterval=%s", c.PollWatchInterval)
+	}
 }
 
 func TestLoadCustom(t *testing.T) {
@@ -52,6 +60,8 @@ func TestLoadCustom(t *testing.T) {
 	t.Setenv("SHOAL_SERIAL_SSH_HOST", "192.168.122.100")
 	t.Setenv("SHOAL_SERIAL_SSH_USER", "lab")
 	t.Setenv("SHOAL_SERIAL_SSH_KEY", "/tmp/key")
+	t.Setenv("SHOAL_POLL_IDLE_INTERVAL", "2m")
+	t.Setenv("SHOAL_POLL_WATCH_INTERVAL", "10s")
 	c, err := config.Load()
 	if err != nil {
 		t.Fatal(err)
@@ -70,6 +80,20 @@ func TestLoadCustom(t *testing.T) {
 	}
 	if c.SerialSSHHost != "192.168.122.100" || c.SerialSSHKey != "/tmp/key" {
 		t.Fatalf("serial ssh: host=%q key=%q", c.SerialSSHHost, c.SerialSSHKey)
+	}
+	if c.PollIdleInterval != 2*time.Minute || c.PollWatchInterval != 10*time.Second {
+		t.Fatalf("poll intervals idle=%s watch=%s", c.PollIdleInterval, c.PollWatchInterval)
+	}
+}
+
+func TestLoadInvalidPollInterval(t *testing.T) {
+	t.Setenv("SHOAL_POLL_IDLE_INTERVAL", "nope")
+	if _, err := config.Load(); err == nil {
+		t.Fatal("expected error")
+	}
+	t.Setenv("SHOAL_POLL_IDLE_INTERVAL", "0s")
+	if _, err := config.Load(); err == nil {
+		t.Fatal("expected error for zero")
 	}
 }
 

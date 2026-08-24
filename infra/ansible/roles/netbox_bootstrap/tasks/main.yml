@@ -109,6 +109,27 @@
   when: site_info.json.results | length > 0
   tags: [site]
 
+- name: Create Server device role
+  uri:
+    url: "{{ shoal_netbox_url }}/api/dcim/device-roles/"
+    method: POST
+    headers: "{{ netbox_auth_header }}"
+    body_format: json
+    body:
+      name: "Server"
+      slug: "server"
+      color: "2196f3"
+      vm_role: false
+    status_code: [200, 201, 400]
+  register: server_role_create
+  no_log: true
+  failed_when: >
+    server_role_create.status | int not in [200, 201, 400] or
+    (server_role_create.status | int == 400 and
+     'already exists' not in (server_role_create.json | default({}) | to_json | lower) and
+     'unique' not in (server_role_create.json | default({}) | to_json | lower))
+  tags: [role]
+
 - name: Create Virtual BMC Node device role
   uri:
     url: "{{ shoal_netbox_url }}/api/dcim/device-roles/"
@@ -267,10 +288,16 @@
     body_format: json
     body:
       name: "{{ item.name }}"
+      # serial == name so Shoal can resolve -device-id shoal-node-N → NetBox pk
+      # (plugin tabs key by device.pk; Deploy remaps name/serial when NetBox is set).
+      serial: "{{ item.name }}"
       role: "{{ shoal_device_role_id }}"
       device_type: "{{ shoal_device_type_id }}"
       site: "{{ shoal_site_id }}"
       status: "active"
+      custom_fields:
+        bmc_ip: "{{ item.ip }}"
+        lifecycle_state: "discovered"
     status_code: [200, 201, 400]
   loop: "{{ shoal_bmc_nodes }}"
   register: device_create
@@ -280,6 +307,36 @@
     (device_create.status | int == 400 and
      'already exists' not in (device_create.json | default({}) | to_json | lower) and
      'unique' not in (device_create.json | default({}) | to_json | lower))
+  tags: [devices]
+
+# Existing labs may have nodes without serial; patch so demo resolve works after re-bootstrap.
+- name: Ensure BMC node serial and bmc_ip for demo identity
+  uri:
+    url: "{{ shoal_netbox_url }}/api/dcim/devices/?name={{ item.name }}"
+    method: GET
+    headers: "{{ netbox_auth_header }}"
+    status_code: [200]
+  loop: "{{ shoal_bmc_nodes }}"
+  register: device_lookup
+  tags: [devices]
+
+- name: Patch BMC node serial + custom fields when found
+  uri:
+    url: "{{ shoal_netbox_url }}/api/dcim/devices/{{ item.json.results[0].id }}/"
+    method: PATCH
+    headers: "{{ netbox_auth_header }}"
+    body_format: json
+    body:
+      serial: "{{ item.item.name }}"
+      custom_fields:
+        bmc_ip: "{{ item.item.ip }}"
+    status_code: [200]
+  loop: "{{ device_lookup.results }}"
+  when:
+    - item.json is defined
+    - item.json.results is defined
+    - item.json.results | length > 0
+  no_log: true
   tags: [devices]
 
 - name: Display NetBox bootstrap status
@@ -294,8 +351,8 @@
       - Device Type: Virtual Server (ID: {{ shoal_device_type_id }})
       - Custom fields (dcim.device): lifecycle_state, credential_ref, bmc_ip
       
-      Registered devices:
+      Registered devices (serial = name for Shoal device_id resolve):
       {% for node in shoal_bmc_nodes %}
-      - {{ node.name }} ({{ node.ip }})
+      - {{ node.name }} serial={{ node.name }} bmc={{ node.ip }}
       {% endfor %}
   tags: [status]

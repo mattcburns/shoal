@@ -15,10 +15,12 @@ import (
 
 // Memory is an in-process Store for unit tests.
 type Memory struct {
-	mu      sync.RWMutex
-	events  []models.NormalizedEvent
-	sensors []SensorReading
-	jobLogs []jobLogLine
+	mu       sync.RWMutex
+	events   []models.NormalizedEvent
+	sensors  []SensorReading
+	jobLogs  []jobLogLine
+	power    map[string]PowerReading
+	firmware []FirmwareComponent
 }
 
 type jobLogLine struct {
@@ -70,6 +72,94 @@ func (m *Memory) WriteSensor(_ context.Context, r SensorReading) error {
 	defer m.mu.Unlock()
 	m.sensors = append(m.sensors, r)
 	return nil
+}
+
+// WritePower upserts the latest power state for a device.
+func (m *Memory) WritePower(_ context.Context, r PowerReading) error {
+	if r.DeviceID == "" {
+		return fmt.Errorf("telemetry: power device_id required")
+	}
+	if r.PowerState == "" {
+		return fmt.Errorf("telemetry: power_state required")
+	}
+	if r.TS.IsZero() {
+		r.TS = time.Now().UTC()
+	} else {
+		r.TS = r.TS.UTC()
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.power == nil {
+		m.power = map[string]PowerReading{}
+	}
+	m.power[r.DeviceID] = r
+	return nil
+}
+
+// WriteFirmware appends one firmware inventory row.
+func (m *Memory) WriteFirmware(_ context.Context, c FirmwareComponent) error {
+	if c.DeviceID == "" {
+		return fmt.Errorf("telemetry: firmware device_id required")
+	}
+	if c.ID == "" && c.Name == "" {
+		return fmt.Errorf("telemetry: firmware id or name required")
+	}
+	if c.TS.IsZero() {
+		c.TS = time.Now().UTC()
+	} else {
+		c.TS = c.TS.UTC()
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.firmware = append(m.firmware, c)
+	return nil
+}
+
+// LatestPower returns the last written power state (zero value if none).
+func (m *Memory) LatestPower(_ context.Context, deviceID string) (PowerReading, error) {
+	if deviceID == "" {
+		return PowerReading{}, fmt.Errorf("telemetry: device_id required")
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.power == nil {
+		return PowerReading{}, nil
+	}
+	return m.power[deviceID], nil
+}
+
+// ListFirmware returns the latest firmware snapshot for a device.
+func (m *Memory) ListFirmware(_ context.Context, deviceID string, limit int) ([]FirmwareComponent, error) {
+	if deviceID == "" {
+		return nil, fmt.Errorf("telemetry: device_id required")
+	}
+	if limit <= 0 {
+		limit = 200
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var latest time.Time
+	for _, c := range m.firmware {
+		if c.DeviceID == deviceID && c.TS.After(latest) {
+			latest = c.TS
+		}
+	}
+	var out []FirmwareComponent
+	for _, c := range m.firmware {
+		if c.DeviceID == deviceID && c.TS.Equal(latest) {
+			out = append(out, c)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Name == out[j].Name {
+			return out[i].ID < out[j].ID
+		}
+		return out[i].Name < out[j].Name
+	})
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
 }
 
 // WriteJobLog appends a job log line.
@@ -131,18 +221,35 @@ func (m *Memory) ListSensors(_ context.Context, deviceID string, since time.Time
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	var out []SensorReading
-	for _, r := range m.sensors {
-		if r.DeviceID != deviceID {
-			continue
+	if since.IsZero() {
+		var latest time.Time
+		for _, r := range m.sensors {
+			if r.DeviceID == deviceID && r.TS.After(latest) {
+				latest = r.TS
+			}
 		}
-		if !since.IsZero() && r.TS.Before(since) {
-			continue
+		for _, r := range m.sensors {
+			if r.DeviceID == deviceID && r.TS.Equal(latest) {
+				out = append(out, r)
+			}
 		}
-		out = append(out, r)
+		sort.Slice(out, func(i, j int) bool {
+			return out[i].Sensor < out[j].Sensor
+		})
+	} else {
+		for _, r := range m.sensors {
+			if r.DeviceID != deviceID {
+				continue
+			}
+			if r.TS.Before(since) {
+				continue
+			}
+			out = append(out, r)
+		}
+		sort.Slice(out, func(i, j int) bool {
+			return out[i].TS.After(out[j].TS)
+		})
 	}
-	sort.Slice(out, func(i, j int) bool {
-		return out[i].TS.After(out[j].TS)
-	})
 	if len(out) > limit {
 		out = out[:limit]
 	}

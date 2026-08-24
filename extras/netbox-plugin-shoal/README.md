@@ -1,13 +1,14 @@
 # netbox-shoal
 
-A NetBox plugin that adds **Shoal Status**, **Shoal Events**, **Shoal Jobs**,
-and **Shoal Sensors** tabs to the device detail page, reading
+A NetBox plugin that adds **Shoal Status**, **Events**, **Jobs**, **Sensors**,
+and **Firmware** tabs to the device detail page, reading
 [Shoal](https://github.com/mattcburns/shoal)'s HTTP API server-side. See
 [`docs/netbox-telemetry-ui-design.md`](../../docs/netbox-telemetry-ui-design.md)
 in the main repo for the full design. This package covers slices **N4–N6**
-(plugin skeleton + all four read-only device tabs). Optional follow-ons
-(Grafana link, job-log viewer, start/cancel from NetBox) are **N7+** and not
-in this package yet.
+plus demo polish (v0.4): progress/stages/job log, auto-refresh while
+provisioning, **Start provision / Cancel**, **host power**, **BMC credentials**
+(password stored in Shoal, never NetBox), and **Poll BMC** (SEL + sensors +
+firmware + power). Grafana and a full profile wizard remain optional follow-ons.
 
 This is the first Python code in the Shoal repo. It runs entirely inside the
 lab's NetBox container — it is never linked into the Shoal Go binary and
@@ -24,6 +25,11 @@ downstream (jobs, events, telemetry) by the NetBox device ID it gets back.
 No separate `shoal_device_id` custom field is needed or used; each view here
 just reads `instance.pk` off the `Device` it's already rendering.
 
+**Lab demo:** bootstrap sets each `shoal-node-*` **serial equal to its name**.
+With `SHOAL_NETBOX_URL` + token set, Deploy remaps
+`-device-id shoal-node-1` → that device's pk so these tabs light up without
+operators looking up numeric ids. See `docs/lab-runbook.md` § NetBox demo.
+
 ## Configuration
 
 Set in NetBox's `configuration.py` (or, in the lab, the Ansible-rendered
@@ -36,10 +42,22 @@ PLUGINS_CONFIG = {
     "netbox_shoal": {
         "SHOAL_BASE_URL": "http://192.168.122.100:8088",  # empty = "not configured" state in the UI
         "SHOAL_API_TOKEN": "",                             # optional Bearer token; empty = no header sent
-        "SHOAL_REQUEST_TIMEOUT": 10,                        # seconds
+        "SHOAL_REQUEST_TIMEOUT": 30,                        # seconds (Start can be slow)
+        "SHOAL_ENABLE_ACTIONS": True,                       # Status Start/Cancel forms
+        "SHOAL_DEFAULT_BMC_ENDPOINT": "http://127.0.0.1:8001",  # lab virtual BMC nodes only; real servers use https://<bmc_ip>
+        "SHOAL_DEFAULT_ISO_URL": "http://192.168.124.1:8080/shoal-marker.iso",
+        "SHOAL_DEFAULT_PROFILE_REF": "spike",
     }
 }
 ```
+
+Start/cancel/power/credentials/poll require NetBox `dcim.change_device`. BMC
+passwords are **not** stored in NetBox: the credentials card PUTs to Shoal’s
+secrets backend (`credential_ref` only). Empty user/pass on **power/poll** uses
+stored secrets, then `SHOAL_BMC_*`. **Start provision** still fills empty
+user/pass from `SHOAL_BMC_*` only. Real servers (role ≠ `virtual-bmc-node`)
+prefill `https://<bmc_ip>`; lab virtual BMC nodes keep
+`SHOAL_DEFAULT_BMC_ENDPOINT` (shared sushy).
 
 ## Development
 

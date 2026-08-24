@@ -47,6 +47,13 @@ shoal_app_http_port: 8088
 
 # Phase 6d: run Shoal app as a Compose service (binary image staged by Ansible).
 shoal_compose_app: true
+# Lab sushy is HTTP (TLS unused). insecure lets the same Shoal process talk to
+# real BMCs with self-signed HTTPS certs (iDRAC) from NetBox power/poll.
+shoal_redfish_auth_mode: basic
+shoal_redfish_tls_mode: insecure
+# Observe SEL/sensor poll cadence (Go duration). Keep idle high vs real BMCs.
+shoal_poll_idle_interval: 5m
+shoal_poll_watch_interval: 30s
 # Optional Bearer token for /v1/* (empty = open lab API). Prefer vault.
 shoal_api_token: ""
 
@@ -87,6 +94,8 @@ shoal_iso_server_dir: /srv/iso
 # Append-only learned few-shot JSONL (Phase 3b confirm). Outside git; durable on
 # the lab service host. Empty string disables SHOAL_FEWSHOT_DIR in env.j2.
 shoal_fewshot_dir: /var/lib/shoal/fewshot
+# Durable job BMC credential_ref store (Compose mount; orphan cleanup after restart).
+shoal_secrets_dir: /var/lib/shoal/secrets
 # Provisioning profiles + approval records (Phase 5b). Outside git; durable on
 # the lab service host. Empty string disables SHOAL_PROFILE_DIR in env.j2.
 shoal_profile_dir: /var/lib/shoal/profiles

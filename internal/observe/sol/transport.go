@@ -129,6 +129,10 @@ func (t *LibvirtTransport) Open(ctx context.Context, target string) (<-chan stri
 	ch := make(chan string, 32)
 	go func() {
 		defer close(ch)
+		defer func() {
+			// Scanner/PTY edge cases must not kill the process.
+			_ = recover()
+		}()
 		sc := bufio.NewScanner(f) // local f, not t.file
 		buf := make([]byte, 0, 64*1024)
 		sc.Buffer(buf, 1024*1024)

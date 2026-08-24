@@ -1,6 +1,49 @@
 {% extends 'generic/object.html' %}
 
+{% block title %}{{ object }} — Shoal Jobs{% endblock %}
+
+{% block head %}
+  {{ block.super }}
+  {% if shoal_auto_refresh %}
+    <meta http-equiv="refresh" content="5">
+  {% endif %}
+  <style>
+    .shoal-badge { font-size: 0.85em; text-transform: lowercase; }
+    .shoal-progress { min-width: 100px; max-width: 140px; height: 1.1rem; }
+    .shoal-log {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 0.78rem; max-height: 18rem; overflow: auto;
+      background: var(--nb-bg-secondary, #f8f9fa); padding: 0.75rem; border-radius: 0.25rem;
+      white-space: pre-wrap; word-break: break-all;
+    }
+    .shoal-stages small { display: block; }
+  </style>
+{% endblock %}
+
 {% block content %}
+  <div class="row mb-3">
+    <div class="col col-md-12 d-flex justify-content-between align-items-center">
+      <div>
+        {% if shoal_auto_refresh %}
+          <span class="badge bg-info text-dark">Auto-refresh 5s while a job is provisioning</span>
+        {% endif %}
+      </div>
+      <div class="d-flex gap-2">
+        {% if shoal_actions_enabled and shoal_can_control and shoal_active_job.id and shoal_active_job.state == "provisioning" %}
+          <form method="post" class="d-inline">
+            {% csrf_token %}
+            <input type="hidden" name="next" value="{{ request.path }}">
+            <input type="hidden" name="job_id" value="{{ shoal_active_job.id }}">
+            <button type="submit" name="action" value="cancel" class="btn btn-sm btn-outline-danger">
+              Cancel active job
+            </button>
+          </form>
+        {% endif %}
+        <a class="btn btn-sm btn-outline-primary" href="{{ request.path }}">Refresh</a>
+      </div>
+    </div>
+  </div>
+
   <div class="row">
     <div class="col col-md-12">
       <div class="card">
@@ -12,35 +55,102 @@
             </div>
           {% elif not shoal_jobs %}
             <div class="alert alert-info" role="alert">
-              No jobs recorded for this device yet.
+              No jobs recorded for this device yet. Run a deploy with
+              <code>-device-id {{ object.name }}</code> (or this device’s NetBox id)
+              while Shoal has <code>SHOAL_NETBOX_*</code> set so the id remaps to
+              this page’s primary key.
             </div>
           {% else %}
-            <table class="table table-hover">
-              <thead>
-                <tr>
-                  <th scope="col">ID</th>
-                  <th scope="col">State</th>
-                  <th scope="col">Phase</th>
-                  <th scope="col">Percent</th>
-                  <th scope="col">Profile</th>
-                  <th scope="col">Updated</th>
-                  <th scope="col">Error</th>
-                </tr>
-              </thead>
-              <tbody>
-                {% for job in shoal_jobs %}
+            <div class="table-responsive">
+              <table class="table table-hover">
+                <thead>
                   <tr>
-                    <td>{{ job.id|default:"—" }}</td>
-                    <td>{{ job.state|default:"—" }}</td>
-                    <td>{{ job.phase|default:"—" }}</td>
-                    <td>{{ job.percent|default:"—" }}</td>
-                    <td>{{ job.profile_ref|default:"—" }}</td>
-                    <td>{{ job.updated_at|default:"—" }}</td>
-                    <td>{{ job.error|default:"—" }}</td>
+                    <th scope="col">ID</th>
+                    <th scope="col">State</th>
+                    <th scope="col">Phase</th>
+                    <th scope="col">Progress</th>
+                    <th scope="col">Stages</th>
+                    <th scope="col">Profile</th>
+                    <th scope="col">Updated</th>
+                    <th scope="col">Error</th>
                   </tr>
-                {% endfor %}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {% for job in shoal_jobs %}
+                    <tr{% if job.state == "provisioning" %} class="table-primary"{% endif %}>
+                      <td><code title="{{ job.id }}">{{ job.id|truncatechars:12 }}</code></td>
+                      <td>
+                        {% if job.state == "provisioning" %}
+                          <span class="badge bg-primary shoal-badge">{{ job.state }}</span>
+                        {% elif job.state == "provisioned" %}
+                          <span class="badge bg-success shoal-badge">{{ job.state }}</span>
+                        {% elif job.state == "failed" %}
+                          <span class="badge bg-danger shoal-badge">{{ job.state }}</span>
+                        {% else %}
+                          <span class="badge bg-secondary shoal-badge">{{ job.state|default:"—" }}</span>
+                        {% endif %}
+                      </td>
+                      <td><code>{{ job.phase|default:"—" }}</code></td>
+                      <td>
+                        {% if job.percent != None %}
+                          <div class="progress shoal-progress" role="progressbar"
+                               aria-valuenow="{{ job.percent }}" aria-valuemin="0" aria-valuemax="100">
+                            <div class="progress-bar{% if job.state == "provisioning" %} progress-bar-striped progress-bar-animated{% endif %}"
+                                 style="width: {{ job.percent }}%">{{ job.percent }}%</div>
+                          </div>
+                        {% else %}
+                          —
+                        {% endif %}
+                      </td>
+                      <td class="shoal-stages">
+                        {% if job.stages %}
+                          {% for stage in job.stages %}
+                            <small>
+                              {% if stage.state == "done" %}✓{% elif stage.state == "running" %}●{% elif stage.state == "failed" %}✗{% else %}○{% endif %}
+                              {{ stage.kind|default:stage.id }}
+                              {% if stage.phase %} <code>{{ stage.phase }}</code>{% endif %}
+                            </small>
+                          {% endfor %}
+                        {% elif job.current_stage %}
+                          <code>{{ job.current_stage }}</code>
+                        {% else %}
+                          —
+                        {% endif %}
+                      </td>
+                      <td>{{ job.profile_ref|default:"—" }}</td>
+                      <td>{{ job.updated_at|default:"—" }}</td>
+                      <td class="text-danger small">{{ job.error|default:""|truncatechars:40 }}</td>
+                    </tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            </div>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="row mt-3">
+    <div class="col col-md-12">
+      <div class="card">
+        <h5 class="card-header">Job log
+          {% if shoal_active_job.id %}
+            <span class="text-muted small fw-normal">— latest / active {{ shoal_active_job.id|truncatechars:20 }}</span>
+          {% endif %}
+        </h5>
+        <div class="card-body">
+          {% if shoal_job_log_error %}
+            <div class="alert alert-warning" role="alert">Log unavailable: {{ shoal_job_log_error }}</div>
+          {% elif not shoal_active_job %}
+            <div class="alert alert-info" role="alert">No job selected for log view.</div>
+          {% elif not shoal_job_log %}
+            <div class="alert alert-info" role="alert">
+              No log lines yet for this job. SOL markers are written as the job progresses.
+            </div>
+          {% else %}
+            <div class="shoal-log">{% for line in shoal_job_log %}{{ line.ts|default:"" }}  {{ line.line }}
+{% endfor %}</div>
           {% endif %}
         </div>
       </div>

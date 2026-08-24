@@ -48,13 +48,35 @@ CREATE TABLE IF NOT EXISTS sensor_readings (
   unit TEXT
 );
 
+ALTER TABLE sensor_readings ADD COLUMN IF NOT EXISTS note TEXT;
+
 CREATE TABLE IF NOT EXISTS job_log (
   job_id TEXT NOT NULL,
   ts TIMESTAMPTZ NOT NULL,
   line TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS device_power (
+  device_id TEXT PRIMARY KEY,
+  ts TIMESTAMPTZ NOT NULL,
+  power_state TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS firmware_inventory (
+  device_id TEXT NOT NULL,
+  ts TIMESTAMPTZ NOT NULL,
+  component_id TEXT NOT NULL,
+  name TEXT,
+  version TEXT,
+  manufacturer TEXT,
+  software_id TEXT,
+  health TEXT,
+  updateable BOOLEAN,
+  release_date TEXT
+);
+
 CREATE INDEX IF NOT EXISTS jobs_state_idx ON jobs (state);
 CREATE INDEX IF NOT EXISTS jobs_device_idx ON jobs (device_id);
 CREATE INDEX IF NOT EXISTS events_device_ts_idx ON events (device_id, ts);
 CREATE INDEX IF NOT EXISTS job_log_job_ts_idx ON job_log (job_id, ts);
+CREATE INDEX IF NOT EXISTS firmware_inventory_device_ts_idx ON firmware_inventory (device_id, ts);

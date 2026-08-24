@@ -221,10 +221,16 @@ export SHOAL_BMC_USERNAME=… SHOAL_BMC_PASSWORD=…
 go run ./cmd/shoal observe status -device-id shoal-node-1
 go run ./cmd/shoal observe status -device-id shoal-node-1 -events 10
 
-# One-shot Redfish SEL + sensor poll → durable telemetry only
+# One-shot Redfish SEL + sensors + firmware + power → durable telemetry only
 go run ./cmd/shoal observe poll \
   -device-id shoal-node-1 \
   -bmc-url http://192.168.122.100:8001
+
+# Serve also exposes:
+#   POST /v1/devices/{id}/poll
+#   GET  /v1/devices/{id}/firmware
+#   POST /v1/devices/{id}/power
+#   GET/PUT /v1/devices/{id}/credentials
 
 # Multi-system sushy: pass -system-id when using -bmc-url for power state
 go run ./cmd/shoal observe status -device-id shoal-node-1 \
@@ -232,7 +238,8 @@ go run ./cmd/shoal observe status -device-id shoal-node-1 \
 
 # With serve: GET /v1/devices/{id}/status and /v1/devices/{id}/events
 # Background poller runs only when DSN is healthy; seeds jobs with bmc_endpoint;
-# interval elevates while a SOL watch is active (15s vs 60s idle).
+# interval elevates while a SOL watch is active (SHOAL_POLL_WATCH_INTERVAL,
+# default 30s vs SHOAL_POLL_IDLE_INTERVAL default 5m).
 ```
 
 **What “pass” means on lab:**
@@ -243,7 +250,13 @@ go run ./cmd/shoal observe status -device-id shoal-node-1 \
 - `ActiveJobID` is only set for `provisioning` jobs (failed jobs expose lifecycle
   + error, not an “active” id).
 
-**Lab fidelity:** rich SEL/sensors need real BMC hardware.
+**Lab fidelity:** rich SEL/sensors/firmware need real BMC hardware. Nested
+sushy often returns empty SEL/sensors and no UpdateService (empty is valid).
+On-demand `POST /v1/devices/{id}/poll` (NetBox Sensors/Firmware **Poll BMC**)
+also registers the device on the background poller. Idle default is **5m**
+(`SHOAL_POLL_IDLE_INTERVAL`); **30s** while SOL is watched
+(`SHOAL_POLL_WATCH_INTERVAL`). The poller auto-seeds only devices that already
+have a job.
 
 ### Phase 5a: NetBox lifecycle on deploy
 
@@ -262,7 +275,9 @@ them on an existing lab, re-run bootstrap (or create CFs once) and re-ingest
 devices so values land in custom fields instead of comments.
 
 NetBox down does **not** block BMC actions (warn log only). Device key is the
-job `device_id` (serial preferred after Discover ingest).
+job `device_id`. With NetBox configured, Start **remaps** name/serial (e.g.
+`shoal-node-1`) to the NetBox numeric primary key so plugin tabs see the job.
+Bootstrap sets each lab node **serial = name** for that resolve path.
 
 **Cross-process cancel/cleanup:** jobs persist `system_id` + `credential_ref`.
 Use a **shared** secrets dir so the cancel process can resolve BMC credentials:
@@ -787,8 +802,8 @@ ansible-playbook -i infra/ansible/inventory/lab-vm.yml infra/ansible/playbooks/b
 ### Rebuild the NetBox Shoal plugin only
 The lab's NetBox image is built from `extras/netbox-plugin-shoal` (see that
 package's README) rather than pulled directly, so it always includes the
-`netbox_shoal` plugin (Status, Events, Jobs, and Sensors tabs on the device
-page). `shoal_netbox_plugin: true` in `all/defaults.yml` controls this; set it
+`netbox_shoal` plugin (Status, Events, Jobs, Sensors, and Firmware tabs on the
+device page). `shoal_netbox_plugin: true` in `all/defaults.yml` controls this; set it
 to `false` to fall back to the plain upstream image.
 
 ```bash
@@ -800,15 +815,91 @@ ssh -i ~/.ssh/shoal_lab_vm lab@192.168.122.100 "docker logs shoal-netbox --tail 
 
 # Verify in the browser: log into http://192.168.122.100:8000 (admin/admin),
 # open any shoal-node-* device, look for "Shoal Status", "Shoal Events",
-# "Shoal Jobs", and "Shoal Sensors" tabs. Empty/error states render a plain
-# message (never a stack trace) when Shoal is unreachable or a device has no
-# data yet.
+# "Shoal Jobs", "Shoal Sensors", and "Shoal Firmware" tabs. Empty/error states
+# render a plain message (never a stack trace) when Shoal is unreachable or a
+# device has no data yet.
 ```
 If tabs don't appear: check `PLUGINS_CONFIG` landed correctly
 (`docker exec shoal-netbox cat /etc/netbox/config/plugins.py`), and that
 `SHOAL_BASE_URL` (`http://host.docker.internal:8088` by default — see
 `shoal_netbox_plugin_base_url`) is actually reachable from inside the
 container (`docker exec shoal-netbox curl -sf http://host.docker.internal:8088/healthz`).
+
+### NetBox demo (VM-hosted lab)
+
+End-to-end path for a polished read-only demo: Status/Jobs progress bars, stage
+list, job log lines from SOL markers, and NetBox `lifecycle_state` CF updates.
+
+**Prereqs:** lab up + smoke green; marker ISO published; Shoal app listening on
+`:8088` (Compose app or `go run ./cmd/shoal serve`); NetBox plugin tabs present.
+
+1. **Identity (bootstrap once / after re-bootstrap)** — lab nodes get
+   `serial = name` (`shoal-node-1`, …) and `bmc_ip`:
+
+   ```bash
+   ansible-playbook -i infra/ansible/inventory/lab-vm.yml \
+     infra/ansible/playbooks/bootstrap_netbox.yml
+   ```
+
+2. **Env on the operator (L0) against the VM lab** (token from vault /
+   bootstrap):
+
+   ```bash
+   export SHOAL_NETBOX_URL=http://192.168.122.100:8000
+   export SHOAL_NETBOX_TOKEN=…   # shoal_netbox_api_token
+   export SHOAL_TELEMETRY_DATABASE_URL='postgres://shoal:…@192.168.122.100:5433/shoal_telemetry?sslmode=disable'
+   export SHOAL_BMC_USERNAME=admin SHOAL_BMC_PASSWORD=…   # vault
+   export SHOAL_SERIAL_SSH_HOST=192.168.122.100
+   export SHOAL_SERIAL_SSH_KEY=$HOME/.ssh/shoal_lab_vm
+   # Optional if not using Compose app:
+   # go run ./cmd/shoal serve -addr :8088
+   ```
+
+3. **Start a short simulate job** (hostname is fine — Start remaps to NetBox pk
+   when NetBox env is set):
+
+   ```bash
+   go run ./cmd/shoal deploy run \
+     -device-id shoal-node-1 \
+     -bmc-url http://192.168.122.100:8001 \
+     -serial-target shoal-node-1 \
+     -iso-url http://192.168.124.1:8080/shoal-marker.iso \
+     -wait
+   ```
+
+   Prefer starting via the **Compose `shoal` service** (same env) if that is how
+   the lab runs, so the plugin’s `SHOAL_BASE_URL` hits the same process that
+   owns the job + job_log writer.
+
+4. **Open NetBox** → Devices → **shoal-node-1**:
+
+   | Tab / field | What you should see |
+   |-------------|---------------------|
+   | Device custom field `lifecycle_state` | `provisioning` → `provisioned` (or `failed`) |
+   | **Shoal Status** | Lifecycle badge, last polled power, phase, animated progress while running; stages panel; job log (`SHOAL\|…` lines); **BMC credentials** (saved in Shoal secrets); **Host power** |
+   | **Shoal Status → Provision** | **Start provision** (demo write path): prefills lab BMC URL + marker ISO (real servers use `https://<bmc_ip>`). Empty user/pass uses `SHOAL_BMC_*` (not the stored per-device secret). Requires `dcim.change_device`. **Cancel** when a job is provisioning. Lab sushy + libvirt SOL is the path that completes; real BMC SOL + ISO reachability is still a gap. |
+   | **Shoal Jobs** | Job row with state badge + progress + stages; log for active/latest job; cancel active |
+   | **Shoal Events / Sensors / Firmware** | Often empty on nested sushy (valid). Real BMC: **Poll BMC** fills SEL, sensors (null readings keep a note), firmware inventory, and power. |
+
+   Status/Jobs **auto-refresh every 5s** while a job is `provisioning`.
+
+   Prefer starting from NetBox when Compose `shoal-app` has libvirt SOL (privileged +
+   `/var/run/libvirt` mount from current compose template). CLI `deploy run` from L0
+   with `SHOAL_SERIAL_SSH_*` remains the fallback.
+
+5. **If Jobs/Status are empty** while deploy succeeded:
+
+   - Confirm resolve: job JSON `device_id` should be a **number string** (NetBox
+     pk), not `shoal-node-1`. If it stayed a hostname, NetBox env was missing
+     on the process that started the job, or serial was never set (re-run
+     bootstrap).
+   - From NetBox container:
+     `curl -sf http://host.docker.internal:8088/v1/devices/<pk>/jobs`
+   - Rebuild plugin image if templates are stale (`up.yml --tags shoal,compose`).
+
+**Fidelity notes for demos:** simulate/marker jobs prove the NetBox UX loop.
+Full OS image-write (Phase 7a) and multi-stage prep demos take longer but use
+the same tabs. Events/Sensors need real BMC SEL/sensors or seeded telemetry.
 
 ## 4) Direct host mode
 Run the lab stack directly on the L0 host (no nested VM):

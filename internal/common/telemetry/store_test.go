@@ -76,7 +76,7 @@ func TestMemorySensorsAndJobLog(t *testing.T) {
 	ctx := context.Background()
 	ts := time.Now().UTC()
 	if err := st.WriteSensor(ctx, telemetry.SensorReading{
-		DeviceID: "d1", TS: ts, Sensor: "Inlet Temp", Value: 24.5, Unit: "Cel",
+		DeviceID: "d1", TS: ts, Sensor: "Inlet Temp", Value: telemetry.SensorValue(24.5), Unit: "Cel",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -87,8 +87,43 @@ func TestMemorySensorsAndJobLog(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(sensors) != 1 || sensors[0].Value != 24.5 {
+	if len(sensors) != 1 || sensors[0].Value == nil || *sensors[0].Value != 24.5 {
 		t.Fatalf("%+v", sensors)
+	}
+	old := ts.Add(-time.Minute)
+	if err := st.WriteSensor(ctx, telemetry.SensorReading{
+		DeviceID: "d1", TS: old, Sensor: "CPU1 VCCIN PG", Value: telemetry.SensorValue(0), Unit: "V",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.WriteSensor(ctx, telemetry.SensorReading{
+		DeviceID: "d1", TS: ts, Sensor: "Pwr Consumption", Value: telemetry.SensorValue(30), Unit: "W",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	snap, err := st.ListSensors(ctx, "d1", time.Time{}, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snap) != 2 {
+		t.Fatalf("snapshot want 2 latest-poll rows, got %+v", snap)
+	}
+	for _, r := range snap {
+		if r.Sensor == "CPU1 VCCIN PG" {
+			t.Fatalf("stale PG rail in snapshot: %+v", snap)
+		}
+	}
+	if err := st.WriteSensor(ctx, telemetry.SensorReading{
+		DeviceID: "d2", TS: ts, Sensor: "CPU1 Temp", Note: "No reading while host is off",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	absent, err := st.ListSensors(ctx, "d2", time.Time{}, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(absent) != 1 || absent[0].Value != nil || absent[0].Note == "" {
+		t.Fatalf("absent reading: %+v", absent)
 	}
 	if st.JobLogCount("job-1") != 1 {
 		t.Fatal("job log")
@@ -134,6 +169,35 @@ func TestMemoryListJobLog(t *testing.T) {
 	}
 	if len(capped) != 1 || capped[0].Line != "first" {
 		t.Fatalf("limit: %+v", capped)
+	}
+}
+
+func TestMemoryFirmwareAndPower(t *testing.T) {
+	st := telemetry.NewMemory()
+	ctx := context.Background()
+	ts := time.Now().UTC()
+	if err := st.WriteFirmware(ctx, telemetry.FirmwareComponent{
+		DeviceID: "d1", TS: ts, ID: "BIOS", Name: "BIOS", Version: "1.0",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.WritePower(ctx, telemetry.PowerReading{DeviceID: "d1", TS: ts, PowerState: "On"}); err != nil {
+		t.Fatal(err)
+	}
+	fw, err := st.ListFirmware(ctx, "d1", 10)
+	if err != nil || len(fw) != 1 || fw[0].Version != "1.0" {
+		t.Fatalf("%v %+v", err, fw)
+	}
+	pw, err := st.LatestPower(ctx, "d1")
+	if err != nil || pw.PowerState != "On" {
+		t.Fatalf("%v %+v", err, pw)
+	}
+	if err := st.WritePower(ctx, telemetry.PowerReading{DeviceID: "d1", TS: ts.Add(time.Second), PowerState: "Off"}); err != nil {
+		t.Fatal(err)
+	}
+	pw, _ = st.LatestPower(ctx, "d1")
+	if pw.PowerState != "Off" {
+		t.Fatalf("upsert %+v", pw)
 	}
 }
 

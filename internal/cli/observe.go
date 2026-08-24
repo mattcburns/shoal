@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mattcburns/shoal/internal/api"
 	"github.com/mattcburns/shoal/internal/common/config"
 	"github.com/mattcburns/shoal/internal/common/models"
 	"github.com/mattcburns/shoal/internal/common/redfish"
@@ -21,7 +22,7 @@ import (
 
 func cmdObserve(args []string) int {
 	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "usage: shoal observe <status|poll|ocr> [flags]")
+		fmt.Fprintln(os.Stderr, "usage: shoal observe <status|poll|ocr|power> [flags]")
 		return 2
 	}
 	switch args[0] {
@@ -31,6 +32,8 @@ func cmdObserve(args []string) int {
 		return cmdObservePoll(args[1:])
 	case "ocr":
 		return cmdObserveOCR(args[1:])
+	case "power":
+		return cmdObservePower(args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown observe subcommand %q\n", args[0])
 		return 2
@@ -160,7 +163,7 @@ func cmdObservePoll(args []string) int {
 	}
 
 	log := newLogger(cfg.LogLevel)
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
 	// Durable store required — no silent memory fallback.
@@ -175,7 +178,7 @@ func cmdObservePoll(args []string) int {
 
 	// Deterministic normalize only (no ai.Fake). Core reconciler optional later.
 	p := poll.New(log, telem, redfish.NewBMC)
-	selN, sensN, err := p.PollOnce(ctx, poll.Target{
+	res, err := p.PollOnce(ctx, poll.Target{
 		DeviceID: *deviceID,
 		SystemID: *systemID,
 		BMC: redfish.Config{
@@ -188,9 +191,11 @@ func cmdObservePoll(args []string) int {
 		},
 	})
 	out := map[string]any{
-		"device_id":       *deviceID,
-		"sel_new":         selN,
-		"sensors_written": sensN,
+		"device_id":        *deviceID,
+		"sel_new":          res.SELNew,
+		"sensors_written":  res.SensorsWritten,
+		"firmware_written": res.FirmwareWritten,
+		"power_state":      res.PowerState,
 	}
 	if err != nil {
 		out["error"] = err.Error()
@@ -323,6 +328,46 @@ func cmdObserveOCR(args []string) int {
 		// Capture debug already in JSON when redfish path used.
 		return 1
 	}
+	return 0
+}
+
+func cmdObservePower(args []string) int {
+	cfg, err := config.Load()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "config: %v\n", err)
+		return 1
+	}
+	fs := flag.NewFlagSet("observe power", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	deviceID := fs.String("device-id", "", "device id (required)")
+	bmcURL := fs.String("bmc-url", "", "Redfish base URL (required)")
+	bmcUser := fs.String("bmc-user", cfg.BMCUsername, "BMC username")
+	bmcPass := fs.String("bmc-pass", cfg.BMCPassword, "BMC password (never logged)")
+	systemID := fs.String("system-id", "", "optional Redfish system id")
+	resetType := fs.String("reset-type", "", "On | ForceOff | ForceRestart | GracefulRestart | GracefulShutdown")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if *deviceID == "" || *bmcURL == "" || *resetType == "" {
+		fmt.Fprintln(os.Stderr, "observe power: -device-id, -bmc-url, and -reset-type required")
+		return 2
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	out, err := (devicePower{cfg: cfg}).Power(ctx, *deviceID, api.DevicePowerRequest{
+		ResetType:   *resetType,
+		BMCEndpoint: *bmcURL,
+		BMCUsername: *bmcUser,
+		BMCPassword: *bmcPass,
+		SystemID:    *systemID,
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "power: %v\n", err)
+		return 1
+	}
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	_ = enc.Encode(out)
 	return 0
 }
 

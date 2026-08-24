@@ -357,9 +357,9 @@ func (c *client) ListVirtualMedia(_ context.Context, systemID string) ([]Virtual
 		}
 	}
 
-	if len(out) == 0 {
-		return nil, fmt.Errorf("redfish: no virtual media found")
-	}
+	// Empty is valid: sushy-tools eject removes the libvirt CD device entirely,
+	// so a successful cleanup leaves zero slots until the next InsertMedia path
+	// recreates them. Callers that need a tray for insert must check len==0.
 	return out, nil
 }
 
@@ -456,22 +456,27 @@ func (c *client) EjectVirtualMedia(_ context.Context, mediaURI string) error {
 	return nil
 }
 
-// Power performs a reset action (idempotent for On when already on).
+// Power performs a reset action. On when already On becomes ForceRestart so
+// one-time virtual media is observed (Deploy). Operator power control uses Reset.
 func (c *client) Power(ctx context.Context, systemID, resetType string) error {
-	sys, err := c.computerSystem(systemID)
-	if err != nil {
-		return err
-	}
 	info, err := c.GetSystem(ctx, systemID)
 	if err != nil {
 		return err
 	}
-	rt := gofishredfish.ResetType(resetType)
 	if resetType == "On" && strings.EqualFold(info.PowerState, "On") {
-		// Force restart so one-time media is observed.
-		rt = gofishredfish.ForceRestartResetType
+		resetType = "ForceRestart"
 	}
-	if err := sys.Reset(rt); err != nil {
+	return c.Reset(ctx, systemID, resetType)
+}
+
+// Reset applies the named Redfish reset type with no rewriting.
+func (c *client) Reset(ctx context.Context, systemID, resetType string) error {
+	_ = ctx
+	sys, err := c.computerSystem(systemID)
+	if err != nil {
+		return err
+	}
+	if err := sys.Reset(gofishredfish.ResetType(resetType)); err != nil {
 		return fmt.Errorf("redfish: power %s: %w", resetType, err)
 	}
 	return nil

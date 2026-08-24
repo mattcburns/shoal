@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -14,10 +15,10 @@ import (
 	"github.com/mattcburns/shoal/internal/core/reconcile"
 )
 
-// Default idle vs watch-elevated intervals.
+// Default idle vs watch-elevated intervals (serve overrides from SHOAL_POLL_*).
 const (
-	DefaultIdleInterval  = 60 * time.Second
-	DefaultWatchInterval = 15 * time.Second
+	DefaultIdleInterval  = 5 * time.Minute
+	DefaultWatchInterval = 30 * time.Second
 	DefaultMaxConcurrent = 1
 	DefaultSELMaxEntries = 100
 )
@@ -112,15 +113,23 @@ func (p *Poller) Targets() []Target {
 	return out
 }
 
-// PollOnce runs a single SEL+sensor poll for one target (deduped SEL writes).
+// Result is the outcome of one PollOnce.
+type Result struct {
+	SELNew          int
+	SensorsWritten  int
+	FirmwareWritten int
+	PowerState      string
+}
+
+// PollOnce runs a single SEL+sensor+firmware+power poll for one target (deduped SEL writes).
 // Returns a non-nil error if Redfish fails or any normalize/write fails (counts
-// still reflect successful writes). Empty SEL/sensors with nil error is valid.
-func (p *Poller) PollOnce(ctx context.Context, t Target) (selWritten, sensorsWritten int, err error) {
+// still reflect successful writes). Empty SEL/sensors/firmware with nil error is valid.
+func (p *Poller) PollOnce(ctx context.Context, t Target) (Result, error) {
 	if p.Store == nil {
-		return 0, 0, fmt.Errorf("poll: telemetry store not configured")
+		return Result{}, fmt.Errorf("poll: telemetry store not configured")
 	}
 	if t.DeviceID == "" || t.BMC.BaseURL == "" {
-		return 0, 0, fmt.Errorf("poll: incomplete target")
+		return Result{}, fmt.Errorf("poll: incomplete target")
 	}
 	if p.MaxConcurrent <= 0 {
 		p.MaxConcurrent = DefaultMaxConcurrent
@@ -133,15 +142,15 @@ func (p *Poller) PollOnce(ctx context.Context, t Target) (selWritten, sensorsWri
 	case p.sem <- struct{}{}:
 		defer func() { <-p.sem }()
 	case <-ctx.Done():
-		return 0, 0, ctx.Err()
+		return Result{}, ctx.Err()
 	}
 
 	bmc, err := p.NewBMC(t.BMC)
 	if err != nil {
-		return 0, 0, fmt.Errorf("poll: bmc: %w", err)
+		return Result{}, fmt.Errorf("poll: bmc: %w", err)
 	}
 	if err := bmc.Open(ctx); err != nil {
-		return 0, 0, fmt.Errorf("poll: open: %w", err)
+		return Result{}, fmt.Errorf("poll: open: %w", err)
 	}
 	defer func() { _ = bmc.Close(context.Background()) }()
 
@@ -149,14 +158,19 @@ func (p *Poller) PollOnce(ctx context.Context, t Target) (selWritten, sensorsWri
 	if maxSEL <= 0 {
 		maxSEL = DefaultSELMaxEntries
 	}
-	entries, err := bmc.ListSEL(ctx, t.SystemID, redfish.SELOptions{MaxEntries: maxSEL})
-	if err != nil {
-		return 0, 0, fmt.Errorf("poll: list sel: %w", err)
+	entries, selErr := bmc.ListSEL(ctx, t.SystemID, redfish.SELOptions{MaxEntries: maxSEL})
+	if selErr != nil {
+		entries = nil
 	}
-	samples, err := bmc.ListSensors(ctx, t.SystemID)
-	if err != nil {
-		return 0, 0, fmt.Errorf("poll: list sensors: %w", err)
+	samples, sensErr := bmc.ListSensors(ctx, t.SystemID)
+	if sensErr != nil {
+		samples = nil
 	}
+	fwItems, fwErr := bmc.ListFirmware(ctx)
+	if fwErr != nil {
+		fwItems = nil
+	}
+	sys, sysErr := bmc.GetSystem(ctx, t.SystemID)
 
 	p.mu.Lock()
 	if p.seenSEL[t.DeviceID] == nil {
@@ -167,6 +181,8 @@ func (p *Poller) PollOnce(ctx context.Context, t Target) (selWritten, sensorsWri
 
 	var failN int
 	var firstFail error
+	out := Result{}
+	now := time.Now().UTC()
 
 	for _, e := range entries {
 		key := e.ODataID
@@ -199,10 +215,9 @@ func (p *Poller) PollOnce(ctx context.Context, t Target) (selWritten, sensorsWri
 			p.Log.Warn("poll write event", "device_id", t.DeviceID, "err", err.Error())
 			continue
 		}
-		selWritten++
+		out.SELNew++
 	}
 
-	now := time.Now().UTC()
 	for _, s := range samples {
 		name := s.Name
 		if name == "" {
@@ -215,13 +230,17 @@ func (p *Poller) PollOnce(ctx context.Context, t Target) (selWritten, sensorsWri
 			}
 			continue
 		}
-		if err := p.Store.WriteSensor(ctx, telemetry.SensorReading{
+		row := telemetry.SensorReading{
 			DeviceID: t.DeviceID,
 			TS:       now,
 			Sensor:   name,
-			Value:    s.Reading,
 			Unit:     s.Units,
-		}); err != nil {
+			Note:     s.Note,
+		}
+		if s.HasReading {
+			row.Value = telemetry.SensorValue(s.Reading)
+		}
+		if err := p.Store.WriteSensor(ctx, row); err != nil {
 			failN++
 			if firstFail == nil {
 				firstFail = fmt.Errorf("write sensor: %w", err)
@@ -229,22 +248,85 @@ func (p *Poller) PollOnce(ctx context.Context, t Target) (selWritten, sensorsWri
 			p.Log.Warn("poll write sensor", "device_id", t.DeviceID, "err", err.Error())
 			continue
 		}
-		sensorsWritten++
+		out.SensorsWritten++
+	}
+
+	for _, fw := range fwItems {
+		id := strings.TrimSpace(fw.ID)
+		if id == "" {
+			id = strings.TrimSpace(fw.Name)
+		}
+		if id == "" {
+			failN++
+			if firstFail == nil {
+				firstFail = fmt.Errorf("firmware item missing id")
+			}
+			continue
+		}
+		row := telemetry.FirmwareComponent{
+			DeviceID:     t.DeviceID,
+			TS:           now,
+			ID:           id,
+			Name:         fw.Name,
+			Version:      fw.Version,
+			Manufacturer: fw.Manufacturer,
+			SoftwareID:   fw.SoftwareID,
+			Health:       fw.Health,
+			Updateable:   fw.Updateable,
+			ReleaseDate:  fw.ReleaseDate,
+		}
+		if err := p.Store.WriteFirmware(ctx, row); err != nil {
+			failN++
+			if firstFail == nil {
+				firstFail = fmt.Errorf("write firmware: %w", err)
+			}
+			p.Log.Warn("poll write firmware", "device_id", t.DeviceID, "err", err.Error())
+			continue
+		}
+		out.FirmwareWritten++
+	}
+
+	if sysErr == nil && strings.TrimSpace(sys.PowerState) != "" {
+		out.PowerState = sys.PowerState
+		if err := p.Store.WritePower(ctx, telemetry.PowerReading{
+			DeviceID: t.DeviceID, TS: now, PowerState: sys.PowerState,
+		}); err != nil {
+			failN++
+			if firstFail == nil {
+				firstFail = fmt.Errorf("write power: %w", err)
+			}
+			p.Log.Warn("poll write power", "device_id", t.DeviceID, "err", err.Error())
+		}
 	}
 
 	p.Log.Info("poll complete",
 		"device_id", t.DeviceID,
-		"sel_new", selWritten,
-		"sensors", sensorsWritten,
+		"sel_new", out.SELNew,
+		"sensors", out.SensorsWritten,
+		"firmware", out.FirmwareWritten,
+		"power_state", out.PowerState,
 		"failures", failN,
 		"sel_seen", len(entries),
 		"sensor_seen", len(samples),
+		"firmware_seen", len(fwItems),
 	)
-	if failN > 0 {
-		return selWritten, sensorsWritten, fmt.Errorf("poll: %d item failure(s) after sel_new=%d sensors=%d: %w",
-			failN, selWritten, sensorsWritten, firstFail)
+	if selErr != nil {
+		return out, fmt.Errorf("poll: list sel: %w", selErr)
 	}
-	return selWritten, sensorsWritten, nil
+	if sensErr != nil {
+		return out, fmt.Errorf("poll: list sensors: %w", sensErr)
+	}
+	if fwErr != nil {
+		return out, fmt.Errorf("poll: list firmware: %w", fwErr)
+	}
+	if sysErr != nil {
+		return out, fmt.Errorf("poll: power state: %w", sysErr)
+	}
+	if failN > 0 {
+		return out, fmt.Errorf("poll: %d item failure(s) after sel_new=%d sensors=%d firmware=%d: %w",
+			failN, out.SELNew, out.SensorsWritten, out.FirmwareWritten, firstFail)
+	}
+	return out, nil
 }
 
 func (p *Poller) normalizeSEL(ctx context.Context, deviceID string, e redfish.SELEntry) (models.NormalizedEvent, error) {
@@ -293,7 +375,7 @@ func (p *Poller) Run(ctx context.Context) {
 			if t0, ok := last[t.DeviceID]; ok && time.Since(t0) < interval {
 				continue
 			}
-			if _, _, err := p.PollOnce(ctx, t); err != nil && ctx.Err() == nil {
+			if _, err := p.PollOnce(ctx, t); err != nil && ctx.Err() == nil {
 				p.Log.Warn("poll once failed", "device_id", t.DeviceID, "err", err.Error())
 			}
 			last[t.DeviceID] = time.Now()

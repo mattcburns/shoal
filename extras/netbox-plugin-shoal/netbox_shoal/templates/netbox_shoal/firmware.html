@@ -1,6 +1,6 @@
 {% extends 'generic/object.html' %}
 
-{% block title %}{{ object }} — Shoal Sensors{% endblock %}
+{% block title %}{{ object }} — Shoal Firmware{% endblock %}
 
 {% block content %}
   <div class="row mb-3">
@@ -26,18 +26,18 @@
               <input type="hidden" name="action" value="poll">
               <input type="hidden" name="system_id" value="{{ shoal_power_system_id }}">
               <div class="col-md-5">
-                <label class="form-label small mb-0" for="id_poll_bmc_endpoint">BMC endpoint</label>
-                <input class="form-control form-control-sm" id="id_poll_bmc_endpoint" name="bmc_endpoint"
+                <label class="form-label small mb-0" for="id_fw_bmc_endpoint">BMC endpoint</label>
+                <input class="form-control form-control-sm" id="id_fw_bmc_endpoint" name="bmc_endpoint"
                        value="{{ d.bmc_endpoint }}" required>
               </div>
               <div class="col-md-3">
-                <label class="form-label small mb-0" for="id_poll_bmc_username">BMC user (optional)</label>
-                <input class="form-control form-control-sm" id="id_poll_bmc_username" name="bmc_username"
+                <label class="form-label small mb-0" for="id_fw_bmc_username">BMC user (optional)</label>
+                <input class="form-control form-control-sm" id="id_fw_bmc_username" name="bmc_username"
                        autocomplete="off" placeholder="stored credentials, then env">
               </div>
               <div class="col-md-3">
-                <label class="form-label small mb-0" for="id_poll_bmc_password">BMC password (optional)</label>
-                <input class="form-control form-control-sm" type="password" id="id_poll_bmc_password"
+                <label class="form-label small mb-0" for="id_fw_bmc_password">BMC password (optional)</label>
+                <input class="form-control form-control-sm" type="password" id="id_fw_bmc_password"
                        name="bmc_password" autocomplete="new-password"
                        placeholder="stored credentials, then env">
               </div>
@@ -46,10 +46,8 @@
               </div>
             </form>
             <p class="text-muted small mt-2 mb-0">
-              Runs <code>POST /v1/devices/{{ d.device_id }}/poll</code> (Redfish SEL + sensors).
-              Background poll uses <code>SHOAL_POLL_IDLE_INTERVAL</code> (default 5m)
-              for devices with a job, or <code>SHOAL_POLL_WATCH_INTERVAL</code>
-              (default 30s) while SOL is watched. On-demand poll also adds this device to that loop.
+              Gather-only: Redfish FirmwareInventory plus power and sensors in the same poll.
+              Does not flash firmware.
             </p>
             {% endwith %}
           {% endif %}
@@ -61,43 +59,43 @@
   <div class="row">
     <div class="col col-md-12">
       <div class="card">
-        <h5 class="card-header">Shoal Sensors</h5>
+        <h5 class="card-header">Firmware inventory
+          {% if shoal_firmware_ts %}
+            <span class="text-muted small fw-normal">as of {{ shoal_firmware_ts }}</span>
+          {% endif %}
+        </h5>
         <div class="card-body">
           {% if shoal_error %}
             <div class="alert alert-warning" role="alert">
               Shoal unavailable: {{ shoal_error }}
             </div>
-          {% elif not shoal_sensors %}
+          {% elif not shoal_firmware %}
             <div class="alert alert-info" role="alert">
-              No sensor readings yet — has Observe poll run? Nested sushy often
-              returns no sensors (empty is valid). Real BMC hardware fills this tab.
+              No firmware inventory yet — Poll BMC (this tab or Sensors). Nested sushy
+              often has no UpdateService (empty is valid). Real BMCs fill this tab.
             </div>
           {% else %}
             <div class="table-responsive">
               <table class="table table-hover">
                 <thead>
                   <tr>
-                    <th scope="col">Sensor</th>
-                    <th scope="col">Value</th>
-                    <th scope="col">Unit</th>
-                    <th scope="col">Note</th>
-                    <th scope="col">Time</th>
+                    <th scope="col">Name</th>
+                    <th scope="col">Version</th>
+                    <th scope="col">Manufacturer</th>
+                    <th scope="col">Health</th>
+                    <th scope="col">Updateable</th>
+                    <th scope="col">Id</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {% for reading in shoal_sensors %}
+                  {% for c in shoal_firmware %}
                     <tr>
-                      <td>{{ reading.sensor|default:"—" }}</td>
-                      <td>
-                        {% if reading.value == None %}
-                          <span class="text-muted">—</span>
-                        {% else %}
-                          <strong>{{ reading.value }}</strong>
-                        {% endif %}
-                      </td>
-                      <td>{{ reading.unit|default:"—" }}</td>
-                      <td class="text-muted">{{ reading.note|default:"" }}</td>
-                      <td>{{ reading.ts|default:"—" }}</td>
+                      <td>{{ c.name|default:c.id }}</td>
+                      <td><code>{{ c.version|default:"—" }}</code></td>
+                      <td>{{ c.manufacturer|default:"—" }}</td>
+                      <td>{{ c.health|default:"—" }}</td>
+                      <td>{% if c.updateable %}yes{% else %}no{% endif %}</td>
+                      <td class="text-muted"><code>{{ c.id }}</code></td>
                     </tr>
                   {% endfor %}
                 </tbody>

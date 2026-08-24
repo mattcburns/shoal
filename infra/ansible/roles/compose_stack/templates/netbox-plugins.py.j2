@@ -11,6 +11,13 @@ PLUGINS_CONFIG = {
     "netbox_shoal": {
         "SHOAL_BASE_URL": "{{ shoal_netbox_plugin_base_url }}",
         "SHOAL_API_TOKEN": "{{ shoal_api_token | default('') }}",
-        "SHOAL_REQUEST_TIMEOUT": 10,
+        # Start can wait on media attach + SOL register.
+        "SHOAL_REQUEST_TIMEOUT": {{ shoal_netbox_plugin_request_timeout | default(30) }},
+        # Demo write path (Start/Cancel on device Status tab).
+        "SHOAL_ENABLE_ACTIONS": {{ 'True' if (shoal_netbox_plugin_enable_actions | default(true)) else 'False' }},
+        # Prefill only — BMC passwords stay on Shoal (SHOAL_BMC_* in shoal-app).
+        "SHOAL_DEFAULT_BMC_ENDPOINT": "{{ shoal_netbox_plugin_default_bmc_endpoint | default('http://127.0.0.1:' ~ shoal_sushy_port) }}",
+        "SHOAL_DEFAULT_ISO_URL": "{{ shoal_netbox_plugin_default_iso_url | default('http://' ~ shoal_lab_network_gateway ~ ':' ~ shoal_iso_server_port ~ '/shoal-marker.iso') }}",
+        "SHOAL_DEFAULT_PROFILE_REF": "{{ shoal_netbox_plugin_default_profile_ref | default('spike') }}",
     }
 }

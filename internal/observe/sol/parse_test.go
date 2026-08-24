@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mattcburns/shoal/internal/common/models"
 	"github.com/mattcburns/shoal/internal/observe/sol"
 )
 
@@ -94,6 +95,41 @@ func TestIsStageComplete(t *testing.T) {
 	if !ok || !sol.IsStageComplete(m) {
 		t.Fatal("DONE should be stage-complete")
 	}
+}
+
+func TestFormatMarkerLine(t *testing.T) {
+	p := 65
+	m := models.SOLMarker{
+		SchemaVer: 1,
+		Seq:       41,
+		Timestamp: mustTime(t, "2026-06-19T04:10:11Z"),
+		Phase:     "IMAGE_WRITE",
+		Percent:   &p,
+		State:     "OK",
+		Detail:    "writing rootfs",
+	}
+	got := sol.FormatMarkerLine(m)
+	want := "SHOAL|1|41|2026-06-19T04:10:11Z|IMAGE_WRITE|65|OK|writing rootfs"
+	if got != want {
+		t.Fatalf("got %q want %q", got, want)
+	}
+	// Round-trip through ParseLine.
+	parsed, ok := sol.ParseLine(got)
+	if !ok {
+		t.Fatal("parse failed")
+	}
+	if parsed.Phase != "IMAGE_WRITE" || parsed.Seq != 41 || parsed.Percent == nil || *parsed.Percent != 65 {
+		t.Fatalf("%+v", parsed)
+	}
+}
+
+func mustTime(t *testing.T, s string) time.Time {
+	t.Helper()
+	ts, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ts
 }
 
 func intPtr(v int) *int { return &v }

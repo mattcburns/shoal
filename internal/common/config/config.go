@@ -6,6 +6,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Config is the app configuration contract (env-backed).
@@ -49,6 +50,10 @@ type Config struct {
 	ProfileDir string
 	// APIToken protects /v1/* when non-empty (Bearer). Empty = open (lab MVP default).
 	APIToken string
+	// PollIdleInterval is the background SEL/sensor poll period when no SOL watch is active.
+	PollIdleInterval time.Duration
+	// PollWatchInterval is the elevated poll period while a SOL watch is active.
+	PollWatchInterval time.Duration
 }
 
 // Load reads SHOAL_* environment variables with Phase 1-friendly defaults.
@@ -85,6 +90,16 @@ func Load() (Config, error) {
 		ProfileDir:           os.Getenv("SHOAL_PROFILE_DIR"),
 		APIToken:             os.Getenv("SHOAL_API_TOKEN"),
 	}
+	idle, err := envDuration("SHOAL_POLL_IDLE_INTERVAL", 5*time.Minute)
+	if err != nil {
+		return Config{}, err
+	}
+	c.PollIdleInterval = idle
+	watch, err := envDuration("SHOAL_POLL_WATCH_INTERVAL", 30*time.Second)
+	if err != nil {
+		return Config{}, err
+	}
+	c.PollWatchInterval = watch
 
 	if v := os.Getenv("SHOAL_RECONCILE_FAIL_ORPHANS"); v != "" {
 		b, err := strconv.ParseBool(v)
@@ -159,4 +174,19 @@ func envOr(key, def string) string {
 		return v
 	}
 	return def
+}
+
+func envDuration(key string, def time.Duration) (time.Duration, error) {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return def, nil
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		return 0, fmt.Errorf("config: %s: %w", key, err)
+	}
+	if d <= 0 {
+		return 0, fmt.Errorf("config: %s must be > 0", key)
+	}
+	return d, nil
 }

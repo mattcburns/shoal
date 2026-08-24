@@ -77,7 +77,7 @@ Commands:
   serve      Run the HTTP API server
   deploy     Provisioning: run | status | cancel | iso
   discover   Assets: ingest | confirm
-  observe    Status / poll / ocr (failure-screen graphics OCR)
+  observe    Status / poll / ocr / power (host On, ForceOff, ForceRestart)
 
   profile    Profiles: generate | save | show | list | approve
 
@@ -145,6 +145,13 @@ func cmdServe(args []string) int {
 	slog.SetDefault(log)
 
 	srvAPI := api.New(cfg, log)
+	secretBackend := openSecrets(cfg)
+	var nbClient *netbox.Client
+	if cfg.NetBoxURL != "" && cfg.NetBoxToken != "" {
+		nbClient = netbox.New(cfg.NetBoxURL, cfg.NetBoxToken)
+	}
+	srvAPI.WithDeviceCredentials(deviceCreds{secrets: secretBackend, nb: nbClient})
+	srvAPI.WithDevicePower(devicePower{cfg: cfg, newBMC: redfish.NewBMC})
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -186,7 +193,6 @@ func cmdServe(args []string) int {
 		}
 		srvAPI.WithJobStore(store)
 		// Wire Orchestrator so cancel works and orphans are reconciled on boot.
-		secretBackend := openSecrets(cfg)
 		watchSvc := sol.NewWatchService(log, nil)
 		watchSvc.NewTransport = sol.NewCombinedTransportFactory(
 			sol.RedfishSOLConfig{
@@ -204,8 +210,8 @@ func cmdServe(args []string) int {
 			},
 		)
 		var nb netbox.LifecycleWriter
-		if cfg.NetBoxURL != "" && cfg.NetBoxToken != "" {
-			nb = netbox.New(cfg.NetBoxURL, cfg.NetBoxToken)
+		if nbClient != nil {
+			nb = nbClient
 		}
 		var profStore profile.Store
 		if cfg.ProfileDir != "" {
@@ -216,6 +222,20 @@ func cmdServe(args []string) int {
 				log.Info("profile store enabled", "dir", cfg.ProfileDir)
 			}
 		}
+		// Phase 4: Telemetry is Postgres-only — no silent memory fallback.
+		// Open before Orchestrator so SOL markers can append job_log for the NetBox UI.
+		var telemStore telemetry.Store
+		if cfg.TelemetryDatabaseURL != "" {
+			db, err := telemetry.OpenAndMigrate(ctx, cfg.TelemetryDatabaseURL)
+			if err != nil {
+				log.Error("telemetry store open failed; observe events/poll and job_log disabled", "err", err.Error())
+			} else {
+				defer db.Close()
+				telemStore = telemetry.NewPostgres(db)
+			}
+		} else {
+			log.Warn("SHOAL_TELEMETRY_DATABASE_URL unset; observe events/poll and job_log disabled")
+		}
 		orchOpts := job.Options{
 			Log:                    log,
 			Store:                  store,
@@ -223,6 +243,7 @@ func cmdServe(args []string) int {
 			NewBMC:                 redfish.NewBMC,
 			Watches:                watchSvc,
 			NetBox:                 nb,
+			Telemetry:              telemStore,
 			Profiles:               profStore,
 			ISOBaseURL:             cfg.ISOBaseURL,
 			ISOPublishDir:          cfg.ISOPublishDir,
@@ -232,6 +253,8 @@ func cmdServe(args []string) int {
 			CAFile:                 cfg.RedfishCAFile,
 			ReconcileFailOrphan:    cfg.ReconcileFailOrphans,
 			DefaultSerialTransport: cfg.SerialTransport,
+			DefaultBMCUsername:     cfg.BMCUsername,
+			DefaultBMCPassword:     cfg.BMCPassword,
 		}
 		if cfg.ISOPublishDir != "" && cfg.ISOBaseURL != "" {
 			orchOpts.ISOBuilder = iso.NewScriptBuilder(cfg.ISOBuildScript, log)
@@ -245,19 +268,6 @@ func cmdServe(args []string) int {
 			log.Warn("orphan reconcile", "err", err.Error())
 		}
 
-		// Phase 4: Observe status. Telemetry is Postgres-only — no silent memory fallback.
-		var telemStore telemetry.Store
-		if cfg.TelemetryDatabaseURL != "" {
-			db, err := telemetry.OpenAndMigrate(ctx, cfg.TelemetryDatabaseURL)
-			if err != nil {
-				log.Error("telemetry store open failed; observe events/poll disabled", "err", err.Error())
-			} else {
-				defer db.Close()
-				telemStore = telemetry.NewPostgres(db)
-			}
-		} else {
-			log.Warn("SHOAL_TELEMETRY_DATABASE_URL unset; observe events/poll disabled")
-		}
 		obsSvc := observe.New(log, store, telemStore, watchSvc)
 		srvAPI.WithObserve(obsSvc)
 		log.Info("observe device status API enabled", "telemetry", telemStore != nil)
@@ -265,6 +275,12 @@ func cmdServe(args []string) int {
 		// Background SEL/sensor poll only with durable telemetry.
 		if telemStore != nil {
 			poller := poll.New(log, telemStore, redfish.NewBMC)
+			if cfg.PollIdleInterval > 0 {
+				poller.IdleInterval = cfg.PollIdleInterval
+			}
+			if cfg.PollWatchInterval > 0 {
+				poller.WatchInterval = cfg.PollWatchInterval
+			}
 			poller.Watching = watchSvc
 			// Use real Core reconciler when AI is configured; else deterministic poll path.
 			if rec != nil {
@@ -284,9 +300,10 @@ func cmdServe(args []string) int {
 				}
 			}()
 			go poller.Run(ctx)
+			srvAPI.WithDevicePoll(devicePoll{p: poller, cfg: cfg})
 			log.Info("observe SEL/sensor poller started",
-				"idle", poll.DefaultIdleInterval.String(),
-				"watch", poll.DefaultWatchInterval.String(),
+				"idle", poller.IdleInterval.String(),
+				"watch", poller.WatchInterval.String(),
 			)
 		}
 	}

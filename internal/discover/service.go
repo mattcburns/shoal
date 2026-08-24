@@ -187,6 +187,8 @@ func (s *Service) finalize(ctx context.Context, in models.RawAssetInput, result 
 		id, err := s.NetBox.UpsertDevice(ctx, models.DeviceIdentity{
 			Name:           result.Asset.Serial,
 			Serial:         result.Asset.Serial,
+			Vendor:         result.Asset.Vendor,
+			Model:          result.Asset.Model,
 			LifecycleState: models.StateDiscovered,
 			CredentialRef:  result.Asset.CredentialRef,
 			BMCIP:          result.Asset.BMCIP,

@@ -1,8 +1,17 @@
 # NetBox integration: visual telemetry, events, and job context
 
 **Status:** Read-only MVP complete — backend APIs **N1–N3** and plugin tabs
-**N4–N6** (Status, Events, Jobs, Sensors) implemented and lab-verified; **N7+**
-(Grafana link, last-job pointer, write actions) not started.  
+**N4–N6** (Status, Events, Jobs, Sensors) plus **Firmware** (gather-only). Demo
+polish: job_log production writer (SOL markers), device_id name/serial → NetBox
+pk remap on Start, plugin progress/stages/log + auto-refresh, bootstrap
+serial=name. Demo write path: NetBox Status **Start provision / Cancel** (plugin
+v0.4) → `POST /v1/jobs` / cancel; **Host power**, **BMC credentials** (password
+in Shoal secrets only), **Poll BMC** (SEL + sensors + firmware + power).
+Physical servers prefill `https://<bmc_ip>`; lab virtual BMC nodes keep the
+shared sushy URL. Status credentials GET passes `credential_ref` so Shoal does
+not call NetBox while a device page is rendering. Power/poll resolve stored
+secrets then `SHOAL_BMC_*`; Start provision still uses env defaults when the
+form leaves user/pass blank. **N7** Grafana and richer wizard still open.
 **Date:** July 2026 (status updated August 2026)  
 **Audience:** Human architect + coding agents  
 **Related:** Design SoT `SHOAL_COMPREHENSIVE_DESIGN_AND_IMPLEMENTATION_PLAN.md` (v2.0.9+);
@@ -30,8 +39,8 @@ inventory inside Shoal.
 | Layer | Role today |
 |-------|------------|
 | **NetBox** | Device identity + current `lifecycle_state` (+ credential ref / BMC metadata as designed) |
-| **Shoal telemetry DB** | `jobs`, `events`, `sensor_readings`, `job_log` |
-| **Shoal API** | Device status/events; job start/status/cancel; metrics |
+| **Shoal telemetry DB** | `jobs`, `events`, `sensor_readings`, `job_log`, `device_power`, `firmware_inventory` |
+| **Shoal API** | Device status/events/sensors/firmware; poll; power; credentials; job start/status/cancel; metrics |
 | **Operator UX** | API + CLI only (no first-party browser UI in MVP) |
 
 ### 2.2 What operators want
@@ -40,6 +49,7 @@ From **NetBox** (where they already look at devices):
 
 - See recent **SEL / normalized events**
 - See **sensor** context (latest and/or simple history)
+- See **firmware inventory** (gather-only) and last **power state**
 - See **active / recent provisioning jobs** and phase/progress
 - Optionally tail **job log** lines related to that device
 - Navigate without juggling raw URLs and tokens
@@ -188,7 +198,11 @@ MVP may use the existing single token with plugin only calling GET routes.
 
 | Method | Path | Use in UI |
 |--------|------|-----------|
-| `GET` | `/v1/devices/{id}/status` | Status tab: lifecycle, power, active job, phase/percent |
+| `GET` | `/v1/devices/{id}/status` | Status tab: lifecycle, power (from last poll), active job, phase/percent |
+| `GET` | `/v1/devices/{id}/firmware` | Firmware tab: gather-only Redfish FirmwareInventory snapshot |
+| `POST` | `/v1/devices/{id}/poll` | On-demand Redfish SEL + sensors + firmware + power into telemetry (also registers the device on the background poller: `SHOAL_POLL_IDLE_INTERVAL` / `SHOAL_POLL_WATCH_INTERVAL`) |
+| `POST` | `/v1/devices/{id}/power` | Host power: `{reset_type,bmc_endpoint,…}` — On / ForceOff / ForceRestart (not a provision job). Empty `bmc_endpoint` fills `https://<bmc_ip>` from NetBox. |
+| `GET`/`PUT` | `/v1/devices/{id}/credentials` | BMC username + has_password + credential_ref (password never returned; stored in secrets backend). `GET ?credential_ref=` skips NetBox lookup. |
 | `GET` | `/v1/devices/{id}/events?since=&limit=` | Events/SEL tab |
 | `GET` | `/v1/jobs/{id}` | Job detail panel |
 | `GET` | `/metrics` | Ops only; not NetBox-facing |
@@ -270,10 +284,11 @@ Plugin shows a button: “Open sensor dashboard” with `device_id` variable.
 
 | Tab | Content | Data | Status |
 |-----|---------|------|--------|
-| **Shoal Status** | Lifecycle, power, active job, phase | `GET …/status` | ✅ N5 |
-| **Shoal Events** | Table: ts, severity, type, component, message | `GET …/events` | ✅ N5 |
-| **Jobs** | Table of recent jobs (id, state, phase, percent, profile, updated, error) | `GET …/jobs` | ✅ N6 |
+| **Shoal Status** | Lifecycle badge, last polled power, progress/stages/log, BMC credentials form, host power, Start/Cancel; 5s auto-refresh while provisioning | `GET …/status` + jobs + log + credentials | ✅ N5 + demo polish |
+| **Shoal Events** | Table: ts, severity badge, type, component, message | `GET …/events` | ✅ N5 |
+| **Jobs** | Table with badges/progress/stages + active/latest job log; auto-refresh | `GET …/jobs` + log | ✅ N6 + demo polish |
 | **Sensors** | Flat readings table (sensor, value, unit, ts); no sparkline yet | `GET …/sensors` | ✅ N6 |
+| **Firmware** | Gather-only inventory (name, version, health); Poll BMC | `GET …/firmware` | gather-only |
 
 Empty states: “No events yet — has Observe poll run?” with lab runbook link.
 
@@ -360,7 +375,7 @@ NetBox plugin ──GET jobs by device──► Shoal
 | **N0** | This design merged | Docs only |
 | **N1** | ✅ Shoal API: `GET /v1/devices/{id}/jobs` (+ tests) | Done — `jobstore.Store.ListByDevice`, unit + lab-integration tests |
 | **N2** | ✅ Shoal API: sensors latest (and/or since) | Done — `GET /v1/devices/{id}/sensors`, unit + lab-integration tests |
-| **N3** | ✅ Shoal API: `GET /v1/jobs/{id}/log` | Done — honest empty state confirmed: `job_log` has no production writer yet (`WriteJobLog` is only called from tests), so this endpoint correctly returns `{"lines":[]}` until a writer lands; that writer work is a separate, not-yet-scoped slice |
+| **N3** | ✅ Shoal API: `GET /v1/jobs/{id}/log` + production writer | Done — Deploy `progressAdapter` best-effort `WriteJobLog` on SOL markers (and stall/transport); empty list only when no markers yet or telemetry DSN unset |
 | **N4** | ✅ Config context for Shoal base URL (no new custom fields needed — see §4.2) | Done — `extras/netbox-plugin-shoal`, Ansible `plugins.py` wiring |
 | **N5** | ✅ NetBox plugin MVP: Status + Events tabs | Done — `extras/netbox-plugin-shoal/netbox_shoal/views.py`; verified live in the lab (both tabs render real job/event data and the designed empty states) |
 | **N6** | ✅ Plugin Jobs + Sensors tabs | Done — `ShoalJobsView`/`ShoalSensorsView`; verified live in the lab |
@@ -392,10 +407,8 @@ Do **not** block N5 on Grafana or job start-from-NetBox.
 3. **Read-only API token** vs single token for MVP: still open, but moot for N4/N5 — the
    plugin only calls `GET` routes (never starts/cancels jobs), so the existing single
    `SHOAL_API_TOKEN` is sufficient until a write-capable feature is built.
-4. ✅ **job_log population:** resolved (see N3, PR #32) — no production writer exists yet;
-   `GET /v1/jobs/{id}/log` honestly returns `{"lines":[]}` until one lands. Not relevant to
-   N4/N5 (Status/Events tabs don't call this endpoint).
-5. **Historical sensor retention** and Grafana retention policy: still open, relevant to N6/N7.
+4. ✅ **job_log population:** Deploy writes SHOAL\| lines on marker apply (and stall/transport).
+5. **Historical sensor retention** and Grafana retention policy: still open, relevant to N7.
 
 ---
 
@@ -416,8 +429,11 @@ An operator can:
 
 ### 14.1 Start / cancel jobs from NetBox
 
-NetBox as a control surface for Deploy. Requires careful secrets UX, profile picker, and
-permission mapping. **After** read-only MVP (N5–N6).
+**Demo MVP (plugin v0.3):** Status tab **Start provision** / **Cancel** posts to
+Shoal `POST /v1/jobs` and `…/cancel`. Prefills BMC URL + ISO from plugin config;
+optional BMC user/pass fields (empty → Shoal `SHOAL_BMC_*`). Permission:
+`dcim.change_device`. Not a full profile wizard — that remains future work
+(profile picker UI, read-only token, multi-tenant permission mapping).
 
 ### 14.2 Live SOL / log stream in the browser
 

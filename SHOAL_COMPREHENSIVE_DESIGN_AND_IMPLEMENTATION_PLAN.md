@@ -1026,6 +1026,8 @@ type DeviceIdentity struct {
     ID             string         `json:"id,omitempty"`
     Name           string         `json:"name,omitempty"`
     Serial         string         `json:"serial"`
+    Vendor         string         `json:"vendor,omitempty"` // Redfish Manufacturer; empty → lab virtual defaults
+    Model          string         `json:"model,omitempty"`  // Redfish Model → NetBox device type
     LifecycleState LifecycleState `json:"lifecycle_state"`
     CredentialRef  string         `json:"credential_ref"`
     BMCIP          string         `json:"bmc_ip"`
@@ -1346,6 +1348,8 @@ Default VM-hosted endpoints: NetBox `:8000`, sushy `:8001`, ISO HTTP `:8080`, Ol
 | `SHOAL_FEWSHOT_DIR` | no | Append-only learned few-shot JSONL (Phase 3b confirm). Lab default via Ansible `shoal_fewshot_dir` → `/var/lib/shoal/fewshot` in `env.j2` + mkdir. Empty disables confirm |
 | `SHOAL_PROFILE_DIR` | no | JSON provisioning profiles + approval records (Phase 5b). Lab default via Ansible `shoal_profile_dir` → `/var/lib/shoal/profiles` in `env.j2` + mkdir. Empty disables non-spike profile load; `spike` profile ref always allowed without a store |
 | `SHOAL_API_TOKEN` | no | Phase 6d: Bearer token for `/v1/*` when set; empty = open API (lab default). Never log. Lab Ansible: `shoal_api_token` (vault optional) |
+| `SHOAL_POLL_IDLE_INTERVAL` | no | Background SEL/sensor poll when no SOL watch. Go `time.ParseDuration` (default `5m`) |
+| `SHOAL_POLL_WATCH_INTERVAL` | no | Elevated poll while a SOL watch is active. Go duration (default `30s`) |
 | `shoal_compose_app` (Ansible) | — | Phase 6d: when true (lab default), stage binary + Dockerfile and run Compose service `shoal` (`network_mode: host`, port `shoal_app_http_port` / 8088) |
 
 **Ansible extensions (when packaging app service):**

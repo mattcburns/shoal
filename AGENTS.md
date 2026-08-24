@@ -288,15 +288,24 @@ go run ./cmd/shoal deploy run \
 | `SHOAL_PROFILE_DIR` | JSON provisioning profiles + approval records (Phase 5b). Lab Ansible default: `/var/lib/shoal/profiles` via `shoal_profile_dir` + `env.j2`. Empty disables non-spike profile load |
 | `SHOAL_API_TOKEN` | Phase 6d: if non-empty, require `Authorization: Bearer …` for `/v1/*`. Empty = open (lab default). Never log. |
 | `SHOAL_SERIAL_TRANSPORT` | `libvirt` (default, unchanged lab behavior) \| `redfish_sol`. Orchestrator-wide default; `StartJobRequest.serial_transport` overrides per job. Real-hardware only; see `docs/real-hardware-sol-runbook.md`. |
+| `SHOAL_POLL_IDLE_INTERVAL` | Background SEL/sensor poll when no SOL watch. Go duration (default `5m`). |
+| `SHOAL_POLL_WATCH_INTERVAL` | Elevated poll while a SOL watch is active. Go duration (default `30s`). |
 
 
 Full table and Ansible extension points: design doc §8.1.
 
-**Phase 4 Observe:** `shoal observe status|poll`, `GET /v1/devices/{id}/status` and
-`…/events`. Poll uses Redfish `ListSEL`/`ListSensors` → durable `telemetry.Store`
-only (no silent memory fallback). Empty SEL/sensors with exit 0 is valid when the
-BMC has no logs; write failures and Redfish errors fail the poll. Observe never
-imports Deploy (job reads via `jobport.JobQuery`).
+**Phase 4 Observe:** `shoal observe status|poll|power`, `GET /v1/devices/{id}/status` and
+`…/events`, `POST /v1/devices/{id}/power` (On / ForceOff / ForceRestart; not a job),
+`POST /v1/devices/{id}/poll` (on-demand SEL + sensors + firmware inventory +
+power state), `GET /v1/devices/{id}/firmware`. Background poller is
+`SHOAL_POLL_IDLE_INTERVAL` (default 5m) / `SHOAL_POLL_WATCH_INTERVAL` (default
+30s while a SOL watch is active), and only auto-seeds devices that have a
+job; on-demand poll also `SetTarget`s the device. Poll uses Redfish
+`ListSEL`/`ListSensors`/`ListFirmware`/`GetSystem` → durable `telemetry.Store`
+only (no silent memory fallback). Empty SEL/sensors/firmware with exit 0 is
+valid when the BMC has no logs;
+write failures and Redfish errors fail the poll. Observe never imports Deploy
+(job reads via `jobport.JobQuery`).
 
 **Phase 5–6a Deploy:** Orchestrator best-effort syncs NetBox `lifecycle_state`.
 Profiles under `SHOAL_PROFILE_DIR`; destruct needs approve or `-approve-destruct`.

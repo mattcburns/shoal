@@ -51,6 +51,14 @@ type LifecycleWriter interface {
 	SetLifecycle(ctx context.Context, deviceKey string, state models.LifecycleState) error
 }
 
+// DeviceResolver maps operator-facing device keys (name, serial, or NetBox
+// numeric id) to the NetBox primary key string Shoal uses as device_id.
+// Optional on Deploy; when present, Start remaps hostname-style lab keys
+// (e.g. shoal-node-1) so NetBox plugin tabs (keyed by device.pk) see jobs.
+type DeviceResolver interface {
+	ResolveDeviceID(ctx context.Context, key string) (string, error)
+}
+
 // UpsertDevice finds a device by serial or creates one; sets lifecycle custom field when possible.
 func (c *Client) UpsertDevice(ctx context.Context, id models.DeviceIdentity) (string, error) {
 	if c.BaseURL == "" || c.Token == "" {
@@ -88,20 +96,113 @@ func (c *Client) findBySerial(ctx context.Context, serial string) (string, error
 	return fmt.Sprintf("%d", out.Results[0].ID), nil
 }
 
+func (c *Client) findByName(ctx context.Context, name string) (string, error) {
+	q := url.Values{"name": {name}}
+	var out struct {
+		Results []struct {
+			ID int `json:"id"`
+		} `json:"results"`
+	}
+	if err := c.doJSON(ctx, http.MethodGet, "/api/dcim/devices/?"+q.Encode(), nil, &out); err != nil {
+		return "", err
+	}
+	if len(out.Results) == 0 {
+		return "", nil
+	}
+	return fmt.Sprintf("%d", out.Results[0].ID), nil
+}
+
+// ResolveDeviceID implements DeviceResolver.
+// Order: serial match, name match, then return key unchanged (numeric id or
+// free-form lab key when NetBox has no row yet).
+func (c *Client) ResolveDeviceID(ctx context.Context, key string) (string, error) {
+	if c.BaseURL == "" || c.Token == "" {
+		return "", fmt.Errorf("netbox: missing url or token")
+	}
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return "", fmt.Errorf("netbox: device key required")
+	}
+	if id, err := c.findBySerial(ctx, key); err != nil {
+		return "", err
+	} else if id != "" {
+		return id, nil
+	}
+	if id, err := c.findByName(ctx, key); err != nil {
+		return "", err
+	} else if id != "" {
+		return id, nil
+	}
+	return key, nil
+}
+
+func looksLikeNetBoxID(key string) bool {
+	if key == "" {
+		return false
+	}
+	for i := 0; i < len(key); i++ {
+		if key[i] < '0' || key[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// GetDevice loads identity by serial, name, or NetBox id. Password is never included.
+func (c *Client) GetDevice(ctx context.Context, key string) (models.DeviceIdentity, error) {
+	if c.BaseURL == "" || c.Token == "" {
+		return models.DeviceIdentity{}, fmt.Errorf("netbox: missing url or token")
+	}
+	key = strings.TrimSpace(key)
+	id := key
+	if !looksLikeNetBoxID(key) {
+		resolved, err := c.ResolveDeviceID(ctx, key)
+		if err != nil {
+			return models.DeviceIdentity{}, err
+		}
+		id = resolved
+	}
+	var raw struct {
+		ID     int    `json:"id"`
+		Name   string `json:"name"`
+		Serial string `json:"serial"`
+		CF     struct {
+			LifecycleState string `json:"lifecycle_state"`
+			CredentialRef  string `json:"credential_ref"`
+			BMCIP          string `json:"bmc_ip"`
+		} `json:"custom_fields"`
+		DeviceType struct {
+			Model        string `json:"model"`
+			Manufacturer struct {
+				Name string `json:"name"`
+			} `json:"manufacturer"`
+		} `json:"device_type"`
+	}
+	if err := c.doJSON(ctx, http.MethodGet, "/api/dcim/devices/"+id+"/", nil, &raw); err != nil {
+		return models.DeviceIdentity{}, err
+	}
+	out := models.DeviceIdentity{
+		ID:             fmt.Sprintf("%d", raw.ID),
+		Name:           raw.Name,
+		Serial:         raw.Serial,
+		Vendor:         raw.DeviceType.Manufacturer.Name,
+		Model:          raw.DeviceType.Model,
+		LifecycleState: models.LifecycleState(raw.CF.LifecycleState),
+		CredentialRef:  raw.CF.CredentialRef,
+		BMCIP:          raw.CF.BMCIP,
+	}
+	if out.ID == "0" && id != "" {
+		out.ID = id
+	}
+	return out, nil
+}
+
 func (c *Client) createDevice(ctx context.Context, id models.DeviceIdentity) (string, error) {
 	siteID, err := c.lookupID(ctx, "/api/dcim/sites/", "slug", c.SiteSlug)
 	if err != nil {
 		return "", fmt.Errorf("netbox: site: %w", err)
 	}
-	roleID, err := c.lookupID(ctx, "/api/dcim/device-roles/", "slug", c.DeviceRoleSlug)
-	if err != nil {
-		return "", fmt.Errorf("netbox: role: %w", err)
-	}
-	mfgID, err := c.ensureManufacturer(ctx)
-	if err != nil {
-		return "", err
-	}
-	typeID, err := c.ensureDeviceType(ctx, mfgID, id)
+	roleID, _, typeID, err := c.ensureClassification(ctx, id)
 	if err != nil {
 		return "", err
 	}
@@ -153,6 +254,10 @@ func (c *Client) patchDevice(ctx context.Context, netboxID string, id models.Dev
 	if id.Name != "" {
 		body["name"] = id.Name
 	}
+	if roleID, _, typeID, err := c.ensureClassification(ctx, id); err == nil {
+		body["role"] = roleID
+		body["device_type"] = typeID
+	}
 	err := c.doJSON(ctx, http.MethodPatch, "/api/dcim/devices/"+netboxID+"/", body, nil)
 	if err != nil {
 		// fallback comments only
@@ -200,6 +305,32 @@ func (c *Client) SetLifecycle(ctx context.Context, deviceKey string, state model
 	return nil
 }
 
+// SetCredentialRef writes credential_ref (and optional bmc_ip) custom fields only.
+// It never creates a device and never changes role, type, or lifecycle_state.
+func (c *Client) SetCredentialRef(ctx context.Context, deviceKey, ref, bmcIP string) error {
+	if c.BaseURL == "" || c.Token == "" {
+		return fmt.Errorf("netbox: missing url or token")
+	}
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return fmt.Errorf("netbox: credential_ref required")
+	}
+	id, err := c.GetDevice(ctx, deviceKey)
+	if err != nil {
+		return err
+	}
+	netboxID := strings.TrimSpace(id.ID)
+	if netboxID == "" || netboxID == "0" {
+		return fmt.Errorf("netbox: device %q not found", deviceKey)
+	}
+	cf := map[string]any{"credential_ref": ref}
+	if ip := strings.TrimSpace(bmcIP); ip != "" {
+		cf["bmc_ip"] = ip
+	}
+	body := map[string]any{"custom_fields": cf}
+	return c.doJSON(ctx, http.MethodPatch, "/api/dcim/devices/"+netboxID+"/", body, nil)
+}
+
 func (c *Client) lookupID(ctx context.Context, path, filterKey, filterVal string) (int, error) {
 	q := url.Values{filterKey: {filterVal}}
 	var out struct {
@@ -216,25 +347,25 @@ func (c *Client) lookupID(ctx context.Context, path, filterKey, filterVal string
 	return out.Results[0].ID, nil
 }
 
-func (c *Client) ensureManufacturer(ctx context.Context) (int, error) {
-	id, err := c.lookupID(ctx, "/api/dcim/manufacturers/", "name", c.ManufacturerName)
-	if err == nil {
-		return id, nil
+const physicalServerRoleSlug = "server"
+
+func labVirtualIdentity(id models.DeviceIdentity) bool {
+	v := strings.TrimSpace(id.Vendor)
+	m := strings.TrimSpace(id.Model)
+	if v == "" && m == "" {
+		return true
 	}
-	var created struct {
-		ID int `json:"id"`
+	if strings.EqualFold(v, "Shoal Virtual") {
+		return true
 	}
-	slug := strings.ToLower(strings.ReplaceAll(c.ManufacturerName, " ", "-"))
-	body := map[string]any{"name": c.ManufacturerName, "slug": slug}
-	if err := c.doJSON(ctx, http.MethodPost, "/api/dcim/manufacturers/", body, &created); err != nil {
-		// race: re-get
-		return c.lookupID(ctx, "/api/dcim/manufacturers/", "name", c.ManufacturerName)
-	}
-	return created.ID, nil
+	ml := strings.ToLower(m)
+	return strings.Contains(ml, "sushy") || strings.HasPrefix(ml, "shoal-")
 }
 
-func (c *Client) ensureDeviceType(ctx context.Context, mfgID int, id models.DeviceIdentity) (int, error) {
-	// DeviceIdentity is identity-only; use a stable lab device-type model name.
+func (c *Client) ensureClassification(ctx context.Context, id models.DeviceIdentity) (roleID, mfgID, typeID int, err error) {
+	roleSlug := c.DeviceRoleSlug
+	roleName := "Virtual BMC Node"
+	mfgName := c.ManufacturerName
 	model := "shoal-node"
 	if id.Name != "" {
 		model = "shoal-" + id.Name
@@ -242,7 +373,76 @@ func (c *Client) ensureDeviceType(ctx context.Context, mfgID int, id models.Devi
 			model = model[:40]
 		}
 	}
-	// search by model
+	if !labVirtualIdentity(id) {
+		roleSlug = physicalServerRoleSlug
+		roleName = "Server"
+		if v := strings.TrimSpace(id.Vendor); v != "" {
+			mfgName = v
+		}
+		if m := strings.TrimSpace(id.Model); m != "" {
+			model = m
+			if len(model) > 64 {
+				model = model[:64]
+			}
+		}
+	}
+	roleID, err = c.ensureDeviceRole(ctx, roleSlug, roleName)
+	if err != nil {
+		return 0, 0, 0, fmt.Errorf("netbox: role: %w", err)
+	}
+	mfgID, err = c.ensureManufacturer(ctx, mfgName)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	typeID, err = c.ensureDeviceType(ctx, mfgID, model)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	return roleID, mfgID, typeID, nil
+}
+
+func (c *Client) ensureDeviceRole(ctx context.Context, slug, name string) (int, error) {
+	id, err := c.lookupID(ctx, "/api/dcim/device-roles/", "slug", slug)
+	if err == nil {
+		return id, nil
+	}
+	var created struct {
+		ID int `json:"id"`
+	}
+	body := map[string]any{
+		"name":    name,
+		"slug":    slug,
+		"color":   "2196f3",
+		"vm_role": false,
+	}
+	if err := c.doJSON(ctx, http.MethodPost, "/api/dcim/device-roles/", body, &created); err != nil {
+		return c.lookupID(ctx, "/api/dcim/device-roles/", "slug", slug)
+	}
+	return created.ID, nil
+}
+
+func (c *Client) ensureManufacturer(ctx context.Context, name string) (int, error) {
+	if strings.TrimSpace(name) == "" {
+		name = c.ManufacturerName
+	}
+	id, err := c.lookupID(ctx, "/api/dcim/manufacturers/", "name", name)
+	if err == nil {
+		return id, nil
+	}
+	var created struct {
+		ID int `json:"id"`
+	}
+	body := map[string]any{"name": name, "slug": netboxSlug(name)}
+	if err := c.doJSON(ctx, http.MethodPost, "/api/dcim/manufacturers/", body, &created); err != nil {
+		return c.lookupID(ctx, "/api/dcim/manufacturers/", "name", name)
+	}
+	return created.ID, nil
+}
+
+func (c *Client) ensureDeviceType(ctx context.Context, mfgID int, model string) (int, error) {
+	if strings.TrimSpace(model) == "" {
+		model = "shoal-node"
+	}
 	q := url.Values{"model": {model}}
 	var out struct {
 		Results []struct {
@@ -252,23 +452,47 @@ func (c *Client) ensureDeviceType(ctx context.Context, mfgID int, id models.Devi
 	if err := c.doJSON(ctx, http.MethodGet, "/api/dcim/device-types/?"+q.Encode(), nil, &out); err == nil && len(out.Results) > 0 {
 		return out.Results[0].ID, nil
 	}
-	slug := strings.ToLower(strings.ReplaceAll(model, " ", "-"))
 	body := map[string]any{
 		"manufacturer": mfgID,
 		"model":        model,
-		"slug":         slug,
+		"slug":         netboxSlug(model),
 	}
 	var created struct {
 		ID int `json:"id"`
 	}
 	if err := c.doJSON(ctx, http.MethodPost, "/api/dcim/device-types/", body, &created); err != nil {
-		// try get again
 		if err2 := c.doJSON(ctx, http.MethodGet, "/api/dcim/device-types/?"+q.Encode(), nil, &out); err2 == nil && len(out.Results) > 0 {
 			return out.Results[0].ID, nil
 		}
 		return 0, err
 	}
 	return created.ID, nil
+}
+
+func netboxSlug(s string) string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	var b strings.Builder
+	hyphen := false
+	for _, r := range s {
+		ok := (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')
+		if ok {
+			b.WriteRune(r)
+			hyphen = false
+			continue
+		}
+		if !hyphen {
+			b.WriteByte('-')
+			hyphen = true
+		}
+	}
+	out := strings.Trim(b.String(), "-")
+	if out == "" {
+		return "unknown"
+	}
+	if len(out) > 50 {
+		out = out[:50]
+	}
+	return out
 }
 
 func (c *Client) doJSON(ctx context.Context, method, path string, body any, out any) error {
@@ -379,7 +603,77 @@ func (m *Memory) SetLifecycle(_ context.Context, deviceKey string, state models.
 	return fmt.Errorf("netbox/memory: device %q not found", deviceKey)
 }
 
+// GetDevice implements lookup for credentials/power.
+func (m *Memory) GetDevice(_ context.Context, key string) (models.DeviceIdentity, error) {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return models.DeviceIdentity{}, fmt.Errorf("netbox/memory: device key required")
+	}
+	if id, ok := m.ByID[key]; ok {
+		return id, nil
+	}
+	if id, ok := m.BySerial[key]; ok {
+		return id, nil
+	}
+	for _, id := range m.ByID {
+		if id.Name == key {
+			return id, nil
+		}
+	}
+	return models.DeviceIdentity{}, fmt.Errorf("netbox/memory: device %q not found", key)
+}
+
+// SetCredentialRef implements credential_ref (+ optional bmc_ip) update for tests.
+func (m *Memory) SetCredentialRef(ctx context.Context, deviceKey, ref, bmcIP string) error {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return fmt.Errorf("netbox/memory: credential_ref required")
+	}
+	id, err := m.GetDevice(ctx, deviceKey)
+	if err != nil {
+		return err
+	}
+	id.CredentialRef = ref
+	if ip := strings.TrimSpace(bmcIP); ip != "" {
+		id.BMCIP = ip
+	}
+	if id.Serial != "" {
+		m.BySerial[id.Serial] = id
+	}
+	if id.ID != "" {
+		m.ByID[id.ID] = id
+	}
+	return nil
+}
+
+// ResolveDeviceID implements DeviceResolver for tests/lab fakes.
+func (m *Memory) ResolveDeviceID(_ context.Context, key string) (string, error) {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return "", fmt.Errorf("netbox/memory: device key required")
+	}
+	if id, ok := m.BySerial[key]; ok && id.ID != "" {
+		return id.ID, nil
+	}
+	// Name match: Memory stores Name on DeviceIdentity when set.
+	for _, id := range m.ByID {
+		if id.Name == key && id.ID != "" {
+			return id.ID, nil
+		}
+		// Common lab case: name == serial.
+		if id.Serial == key && id.ID != "" {
+			return id.ID, nil
+		}
+	}
+	if id, ok := m.ByID[key]; ok && id.ID != "" {
+		return id.ID, nil
+	}
+	return key, nil
+}
+
 var _ API = (*Client)(nil)
 var _ API = (*Memory)(nil)
 var _ LifecycleWriter = (*Client)(nil)
 var _ LifecycleWriter = (*Memory)(nil)
+var _ DeviceResolver = (*Client)(nil)
+var _ DeviceResolver = (*Memory)(nil)

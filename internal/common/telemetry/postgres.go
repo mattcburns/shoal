@@ -62,14 +62,117 @@ func (p *Postgres) WriteSensor(ctx context.Context, r SensorReading) error {
 		r.TS = r.TS.UTC()
 	}
 	_, err := p.db.ExecContext(ctx, `
-INSERT INTO sensor_readings (device_id, ts, sensor, value, unit)
-VALUES ($1,$2,$3,$4,$5)`,
-		r.DeviceID, r.TS, r.Sensor, r.Value, nullStr(r.Unit),
+INSERT INTO sensor_readings (device_id, ts, sensor, value, unit, note)
+VALUES ($1,$2,$3,$4,$5,$6)`,
+		r.DeviceID, r.TS, r.Sensor, nullFloat(r.Value), nullStr(r.Unit), nullStr(r.Note),
 	)
 	if err != nil {
 		return fmt.Errorf("telemetry: write sensor: %w", err)
 	}
 	return nil
+}
+
+// WritePower upserts the latest power state for a device.
+func (p *Postgres) WritePower(ctx context.Context, r PowerReading) error {
+	if r.DeviceID == "" {
+		return fmt.Errorf("telemetry: power device_id required")
+	}
+	if r.PowerState == "" {
+		return fmt.Errorf("telemetry: power_state required")
+	}
+	if r.TS.IsZero() {
+		r.TS = time.Now().UTC()
+	} else {
+		r.TS = r.TS.UTC()
+	}
+	_, err := p.db.ExecContext(ctx, `
+INSERT INTO device_power (device_id, ts, power_state)
+VALUES ($1,$2,$3)
+ON CONFLICT (device_id) DO UPDATE SET ts = EXCLUDED.ts, power_state = EXCLUDED.power_state`,
+		r.DeviceID, r.TS, r.PowerState)
+	if err != nil {
+		return fmt.Errorf("telemetry: write power: %w", err)
+	}
+	return nil
+}
+
+// WriteFirmware inserts one firmware_inventory row.
+func (p *Postgres) WriteFirmware(ctx context.Context, c FirmwareComponent) error {
+	if c.DeviceID == "" {
+		return fmt.Errorf("telemetry: firmware device_id required")
+	}
+	if c.ID == "" && c.Name == "" {
+		return fmt.Errorf("telemetry: firmware id or name required")
+	}
+	if c.TS.IsZero() {
+		c.TS = time.Now().UTC()
+	} else {
+		c.TS = c.TS.UTC()
+	}
+	_, err := p.db.ExecContext(ctx, `
+INSERT INTO firmware_inventory (device_id, ts, component_id, name, version, manufacturer, software_id, health, updateable, release_date)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+		c.DeviceID, c.TS, c.ID, nullStr(c.Name), nullStr(c.Version), nullStr(c.Manufacturer),
+		nullStr(c.SoftwareID), nullStr(c.Health), c.Updateable, nullStr(c.ReleaseDate))
+	if err != nil {
+		return fmt.Errorf("telemetry: write firmware: %w", err)
+	}
+	return nil
+}
+
+// LatestPower returns the last polled power state (zero value if none).
+func (p *Postgres) LatestPower(ctx context.Context, deviceID string) (PowerReading, error) {
+	if deviceID == "" {
+		return PowerReading{}, fmt.Errorf("telemetry: device_id required")
+	}
+	var r PowerReading
+	err := p.db.QueryRowContext(ctx, `
+SELECT device_id, ts, power_state FROM device_power WHERE device_id = $1`, deviceID).
+		Scan(&r.DeviceID, &r.TS, &r.PowerState)
+	if err == sql.ErrNoRows {
+		return PowerReading{}, nil
+	}
+	if err != nil {
+		return PowerReading{}, fmt.Errorf("telemetry: latest power: %w", err)
+	}
+	return r, nil
+}
+
+// ListFirmware returns the latest firmware snapshot for a device.
+func (p *Postgres) ListFirmware(ctx context.Context, deviceID string, limit int) ([]FirmwareComponent, error) {
+	if deviceID == "" {
+		return nil, fmt.Errorf("telemetry: device_id required")
+	}
+	if limit <= 0 {
+		limit = 200
+	}
+	rows, err := p.db.QueryContext(ctx, `
+SELECT device_id, ts, component_id, name, version, manufacturer, software_id, health, updateable, release_date
+FROM firmware_inventory
+WHERE device_id = $1
+  AND ts = (SELECT MAX(ts) FROM firmware_inventory WHERE device_id = $1)
+ORDER BY name, component_id
+LIMIT $2`, deviceID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("telemetry: list firmware: %w", err)
+	}
+	defer rows.Close()
+	var out []FirmwareComponent
+	for rows.Next() {
+		var c FirmwareComponent
+		var name, ver, mfg, sid, health, rel sql.NullString
+		if err := rows.Scan(&c.DeviceID, &c.TS, &c.ID, &name, &ver, &mfg, &sid, &health, &c.Updateable, &rel); err != nil {
+			return nil, fmt.Errorf("telemetry: scan firmware: %w", err)
+		}
+		c.Name = name.String
+		c.Version = ver.String
+		c.Manufacturer = mfg.String
+		c.SoftwareID = sid.String
+		c.Health = health.String
+		c.ReleaseDate = rel.String
+		out = append(out, c)
+	}
+	return out, rows.Err()
 }
 
 // WriteJobLog inserts one job_log row.
@@ -152,12 +255,15 @@ func (p *Postgres) ListSensors(ctx context.Context, deviceID string, since time.
 	)
 	if since.IsZero() {
 		rows, err = p.db.QueryContext(ctx, `
-SELECT device_id, ts, sensor, value, unit
-FROM sensor_readings WHERE device_id = $1
-ORDER BY ts DESC LIMIT $2`, deviceID, limit)
+SELECT device_id, ts, sensor, value, unit, note
+FROM sensor_readings
+WHERE device_id = $1
+  AND ts = (SELECT MAX(ts) FROM sensor_readings WHERE device_id = $1)
+ORDER BY sensor
+LIMIT $2`, deviceID, limit)
 	} else {
 		rows, err = p.db.QueryContext(ctx, `
-SELECT device_id, ts, sensor, value, unit
+SELECT device_id, ts, sensor, value, unit, note
 FROM sensor_readings WHERE device_id = $1 AND ts >= $2
 ORDER BY ts DESC LIMIT $3`, deviceID, since.UTC(), limit)
 	}
@@ -169,15 +275,17 @@ ORDER BY ts DESC LIMIT $3`, deviceID, since.UTC(), limit)
 	var out []SensorReading
 	for rows.Next() {
 		var r SensorReading
-		var unit sql.NullString
+		var unit, note sql.NullString
 		var val sql.NullFloat64
-		if err := rows.Scan(&r.DeviceID, &r.TS, &r.Sensor, &val, &unit); err != nil {
+		if err := rows.Scan(&r.DeviceID, &r.TS, &r.Sensor, &val, &unit, &note); err != nil {
 			return nil, fmt.Errorf("telemetry: scan sensor: %w", err)
 		}
 		if val.Valid {
-			r.Value = val.Float64
+			v := val.Float64
+			r.Value = &v
 		}
 		r.Unit = unit.String
+		r.Note = note.String
 		out = append(out, r)
 	}
 	return out, rows.Err()
@@ -227,6 +335,13 @@ func nullStr(s string) any {
 		return nil
 	}
 	return s
+}
+
+func nullFloat(v *float64) any {
+	if v == nil {
+		return nil
+	}
+	return *v
 }
 
 func newEventID() string {
