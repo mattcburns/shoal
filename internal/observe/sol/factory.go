@@ -20,8 +20,9 @@ type RedfishSOLConfig struct {
 }
 
 // NewCombinedTransportFactory dispatches on session.Transport:
-//   - "redfish_sol": native Redfish SOL (WebSocket, or SSH iff Redfish's own
-//     capability metadata advertised it). Never IPMI.
+//   - "redfish_sol": BMC.OpenSOL (line-oriented WS, then SSH attach). IPMI SOL
+//     last-resort is not implemented yet; OpenSOL returns unsupported for
+//     IPMI-only BMCs. Never a watch transport named ipmi_sol.
 //   - "libvirt", "": existing SSH/local libvirt tailing (delegates to
 //     NewTransportFactory(sshCfg)).
 //   - anything else (including the legacy "ipmi_sol"): a transport whose

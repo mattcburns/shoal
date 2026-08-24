@@ -1,19 +1,18 @@
 package redfish
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/url"
-	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	gofishredfish "github.com/stmcginnis/gofish/redfish"
-	"golang.org/x/crypto/ssh"
 
 	"github.com/coder/websocket"
 )
@@ -22,12 +21,11 @@ import (
 //
 // Discovery order: classify the BMC vendor (reused from screenshot.go), try
 // native Redfish/OEM WebSocket SOL candidates for recognized vendors (Dell,
-// Supermicro — unverified placeholder endpoints; see docs/real-hardware-sol-runbook.md),
-// then — only if Redfish's own capability metadata
-// (ComputerSystem.SerialConsole.SSH / Manager.SerialConsole) advertises SSH —
-// fall back to an SSH session using the ComputerSystem-provided
-// ConsoleEntryCommand when present. Raw IPMI is never attempted, and a
-// Telnet-only BMC is treated as unsupported (deferred, not implemented).
+// Supermicro) but only keep a socket that sniffs as line-oriented SOL text,
+// then SSH when eligible (Redfish SerialConsole.SSH, manager SSH connect type,
+// or Dell NetworkProtocol/OEM serial-redirection even if SerialConsole is
+// empty). IPMI 2.0 SOL last resort is specified, not implemented. Telnet-only
+// BMCs are unsupported (deferred).
 func (c *client) OpenSOL(ctx context.Context, systemID string) (SOLStream, error) {
 	var dbg []CaptureDebugStep
 	add := func(step CaptureDebugStep) {
@@ -82,8 +80,16 @@ func (c *client) OpenSOL(ctx context.Context, systemID string) (SOLStream, error
 		}
 	}
 
-	if sys.SerialConsole.SSH.ServiceEnabled {
-		if stream, sshErr := c.trySSHSOL(ctx, sys, vendor, add); sshErr == nil {
+	hint := c.sshEligible(sys, managers, vendor, add)
+	if hint.eligible {
+		ps := strings.TrimSpace(string(sys.PowerState))
+		if ps == "" || strings.EqualFold(ps, "Off") {
+			add(CaptureDebugStep{
+				Phase: "probe", Vendor: string(vendor), OK: true,
+				Message: fmt.Sprintf("PowerState=%s; SOL attach expected silent until power-on", ps),
+			})
+		}
+		if stream, sshErr := c.trySSHSOL(ctx, vendor, hint, add); sshErr == nil {
 			stream.Debug = dbg
 			return stream, nil
 		} else {
@@ -93,7 +99,7 @@ func (c *client) OpenSOL(ctx context.Context, systemID string) (SOLStream, error
 
 	add(CaptureDebugStep{
 		Phase: "probe", Vendor: string(vendor), OK: false,
-		Message: fmt.Sprintf("no supported SOL path (native WS unsupported/failed, Redfish did not advertise SSH); observed connect types: %v", observed),
+		Message: fmt.Sprintf("no supported SOL path (native WS unsupported/failed, SSH ineligible or failed); observed connect types: %v", observed),
 	})
 	return SOLStream{}, &SOLUnsupportedError{Vendor: vendor, ConnectTypes: observed, Debug: dbg}
 }
@@ -155,10 +161,12 @@ func (c *client) tryWebSocketSOL(ctx context.Context, vendor VendorID, managers 
 	for _, candURL := range candidates {
 		start := time.Now()
 		add(CaptureDebugStep{Phase: "request", Vendor: string(vendor), Method: http.MethodGet, URL: candURL, Message: "websocket SOL dial (unverified candidate)"})
-		conn, resp, dialErr := websocket.Dial(ctx, candURL, &websocket.DialOptions{
+		dialCtx, cancelDial := context.WithTimeout(ctx, 3*time.Second)
+		conn, resp, dialErr := websocket.Dial(dialCtx, candURL, &websocket.DialOptions{
 			HTTPClient: httpClient,
 			HTTPHeader: header,
 		})
+		cancelDial()
 		elapsed := time.Since(start).Milliseconds()
 		if dialErr != nil {
 			status := 0
@@ -172,9 +180,29 @@ func (c *client) tryWebSocketSOL(ctx context.Context, vendor VendorID, managers 
 			lastErr = dialErr
 			continue
 		}
-		add(CaptureDebugStep{Phase: "request", Vendor: string(vendor), Method: http.MethodGet, URL: candURL, OK: true, Message: "websocket connected", ElapsedMS: elapsed})
+		sniffCtx, cancelSniff := context.WithTimeout(ctx, 500*time.Millisecond)
+		msgType, frame, sniffErr := conn.Read(sniffCtx)
+		cancelSniff()
+		if sniffErr != nil || msgType != websocket.MessageText || !looksLikeSOLText(frame) {
+			why := "sniff timeout/silence"
+			if sniffErr == nil && msgType != websocket.MessageText {
+				why = "binary websocket frame"
+			} else if sniffErr == nil {
+				why = "html or non-SOL text"
+			}
+			add(CaptureDebugStep{
+				Phase: "parse", Vendor: string(vendor), URL: candURL, OK: false,
+				Message:   "websocket not line-oriented SOL (" + why + "); falling through",
+				ElapsedMS: time.Since(start).Milliseconds(),
+			})
+			_ = conn.Close(websocket.StatusNormalClosure, "")
+			lastErr = fmt.Errorf("websocket sol sniff: %s", why)
+			continue
+		}
+		add(CaptureDebugStep{Phase: "request", Vendor: string(vendor), Method: http.MethodGet, URL: candURL, OK: true, Message: "websocket connected (SOL text)", ElapsedMS: elapsed})
+		rest := websocket.NetConn(context.Background(), conn, websocket.MessageText)
 		return SOLStream{
-			ReadCloser: websocket.NetConn(context.Background(), conn, websocket.MessageText),
+			ReadCloser: &wsSOLCloser{r: io.MultiReader(bytes.NewReader(frame), rest), c: rest},
 			Vendor:     vendor,
 			Kind:       SOLConnectWebSocket,
 		}, nil
@@ -228,111 +256,39 @@ func solWSCandidates(vendor VendorID, base string, managers []*gofishredfish.Man
 	return out
 }
 
-// --- SSH fallback (Redfish-advertised only; never raw IPMI, never guessed) ---
-
-func (c *client) trySSHSOL(ctx context.Context, sys *gofishredfish.ComputerSystem, vendor VendorID, add func(CaptureDebugStep)) (SOLStream, error) {
-	proto := sys.SerialConsole.SSH
-	host, err := sshHost(c.cfg.BaseURL)
-	if err != nil {
-		add(CaptureDebugStep{Phase: "probe", Vendor: string(vendor), OK: false, Message: "resolve BMC host: " + err.Error()})
-		return SOLStream{}, err
-	}
-	port := proto.Port
-	if port <= 0 {
-		port = 22
-	}
-	addr := net.JoinHostPort(host, strconv.Itoa(port))
-
-	add(CaptureDebugStep{
-		Phase: "request", Vendor: string(vendor), Method: "SSH", URL: addr,
-		Message: fmt.Sprintf("dial SSH SOL (Redfish-advertised; console_entry_command=%q)", proto.ConsoleEntryCommand),
-	})
-
-	sshCfg := &ssh.ClientConfig{
-		User: c.cfg.Username,
-		Auth: []ssh.AuthMethod{ssh.Password(c.cfg.Password)},
-		// BMC SSH host keys are not pinned by operators today; this is a
-		// documented limitation (see docs/real-hardware-sol-runbook.md), not an
-		// oversight — Redfish itself is what authorized using SSH here.
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(), //nolint:gosec
-		Timeout:         10 * time.Second,
-	}
-
-	dialer := &net.Dialer{Timeout: sshCfg.Timeout}
-	conn, err := dialer.DialContext(ctx, "tcp", addr)
-	if err != nil {
-		add(CaptureDebugStep{Phase: "request", Vendor: string(vendor), Method: "SSH", URL: addr, OK: false, Message: err.Error()})
-		return SOLStream{}, fmt.Errorf("redfish: ssh sol dial: %w", err)
-	}
-	sshConn, chans, reqs, err := ssh.NewClientConn(conn, addr, sshCfg)
-	if err != nil {
-		_ = conn.Close()
-		add(CaptureDebugStep{Phase: "request", Vendor: string(vendor), Method: "SSH", URL: addr, OK: false, Message: err.Error()})
-		return SOLStream{}, fmt.Errorf("redfish: ssh sol handshake: %w", err)
-	}
-	cl := ssh.NewClient(sshConn, chans, reqs)
-	session, err := cl.NewSession()
-	if err != nil {
-		_ = cl.Close()
-		add(CaptureDebugStep{Phase: "request", Vendor: string(vendor), Method: "SSH", URL: addr, OK: false, Message: err.Error()})
-		return SOLStream{}, fmt.Errorf("redfish: ssh sol session: %w", err)
-	}
-	if err := session.RequestPty("vt100", 24, 80, ssh.TerminalModes{}); err != nil {
-		_ = session.Close()
-		_ = cl.Close()
-		add(CaptureDebugStep{Phase: "request", Vendor: string(vendor), Method: "SSH", URL: addr, OK: false, Message: "request pty: " + err.Error()})
-		return SOLStream{}, fmt.Errorf("redfish: ssh sol pty: %w", err)
-	}
-	stdout, err := session.StdoutPipe()
-	if err != nil {
-		_ = session.Close()
-		_ = cl.Close()
-		return SOLStream{}, fmt.Errorf("redfish: ssh sol stdout: %w", err)
-	}
-
-	if cmd := strings.TrimSpace(proto.ConsoleEntryCommand); cmd != "" {
-		err = session.Start(cmd)
-	} else {
-		err = session.Shell()
-	}
-	if err != nil {
-		_ = session.Close()
-		_ = cl.Close()
-		add(CaptureDebugStep{Phase: "request", Vendor: string(vendor), Method: "SSH", URL: addr, OK: false, Message: "start console: " + err.Error()})
-		return SOLStream{}, fmt.Errorf("redfish: ssh sol start: %w", err)
-	}
-	add(CaptureDebugStep{Phase: "request", Vendor: string(vendor), Method: "SSH", URL: addr, OK: true, Message: "ssh sol session started"})
-
-	return SOLStream{
-		ReadCloser: &sshSOLReadCloser{stdout: stdout, session: session, client: cl},
-		Vendor:     vendor,
-		Kind:       SOLConnectSSH,
-	}, nil
+type wsSOLCloser struct {
+	r io.Reader
+	c io.Closer
 }
 
-func sshHost(base string) (string, error) {
-	u, err := url.Parse(base)
-	if err != nil {
-		return "", fmt.Errorf("parse BaseURL: %w", err)
+func (w *wsSOLCloser) Read(p []byte) (int, error) { return w.r.Read(p) }
+func (w *wsSOLCloser) Close() error               { return w.c.Close() }
+
+func looksLikeSOLText(b []byte) bool {
+	if len(b) == 0 {
+		return false
 	}
-	host := u.Hostname()
-	if host == "" {
-		return "", fmt.Errorf("BaseURL %q has no host", base)
+	s := strings.ToLower(string(b))
+	if strings.Contains(s, "<!doctype") || strings.Contains(s, "<html") {
+		return false
 	}
-	return host, nil
-}
-
-// sshSOLReadCloser adapts an ssh.Session's stdout + owning session/client into
-// a single io.ReadCloser so Close() releases the whole SSH connection.
-type sshSOLReadCloser struct {
-	stdout  io.Reader
-	session *ssh.Session
-	client  *ssh.Client
-}
-
-func (r *sshSOLReadCloser) Read(p []byte) (int, error) { return r.stdout.Read(p) }
-
-func (r *sshSOLReadCloser) Close() error {
-	_ = r.session.Close()
-	return r.client.Close()
+	if bytes.Contains(b, []byte("SHOAL|")) {
+		return true
+	}
+	printable := 0
+	for i := 0; i < len(b); {
+		r, size := utf8.DecodeRune(b[i:])
+		i += size
+		if r == utf8.RuneError && size == 1 {
+			continue
+		}
+		if r == '\n' || r == '\r' || r == '\t' || (r >= 32 && r < 127) {
+			printable++
+		}
+	}
+	runes := utf8.RuneCount(b)
+	if runes == 0 {
+		return false
+	}
+	return printable*10 >= runes*8
 }
