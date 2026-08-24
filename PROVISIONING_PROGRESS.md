@@ -411,7 +411,91 @@ job's own active SOL session).
 
 **Net for today:** the specific ask ("make the stall-detection change
 solid") is done and live-verified — it behaves correctly in both
-directions. Overall end-to-end reliability on this specific R750 is still
+directions.
+
+## UPDATE 2026-08-24 (evening): failure mechanism found — the boot override never wins; boot order fall-through was carrying every success
+
+Added `SHOAL_SOL_DEBUG_DIR` (raw per-session SOL byte capture inside the
+transports themselves — `activityReader` tees every byte to a file; wired
+into all real transports, compose template exposes it via
+`shoal_sol_debug_dir`, mounted at `/var/lib/shoal/sol-debug`). This lets a
+*real job* record its own console, which an operator cannot otherwise do —
+the job holds the SOL session.
+
+**First-ever full NetBox-button end-to-end success on real hardware:** job
+`bf119676` → `provisioned`, 7 markers, ~6.9 min. And its capture exposed
+the true mechanics: the console shows `Booting from Ubuntu` → `Boot
+Failed: Ubuntu` → `PXE Device 1` → `PXE-E18: Server response timeout` →
+`Boot Failed: PXE` → `Booting from Virtual Network File 2` → markers.
+**The one-time CD override has never once won on this iDRAC** (`UsbCd`
+absent from AllowableValues; `Cd` PATCH reads back `Disabled/None`; the
+LC BIOS.Setup job it queues applies nothing effective for that boot).
+Every "success" was the host walking its normal boot order and reaching
+the virtual optical *third*, gated on PXE failing fast. Every mysterious
+"activity but no markers" stall was PXE retrying slowly. Mystery solved.
+
+**Fix implemented:** `dellOneTimeVirtualCD()` in
+`internal/common/redfish/client.go` — Dell OEM one-time boot via manager
+attributes `ServerBoot.1.FirstBootDevice=VCD-DVD` + `BootOnce=Enabled`
+(the racadm mechanism; iDRAC-native, no LC BIOS job, targets the virtual
+CD explicitly). Verified accepted live: PATCH → HTTP 200, instant
+readback. `SetBootOverrideOnceCD` uses it first for Dell, falling back to
+the standard PATCH. Bonus: no LC config job means no
+console-redirection-disabled USC screen during POST.
+
+**Next live run (job `e0e4ec24`) failed differently and revealed a second
+independent variable: cold vs warm start.** Tabulating all runs: every
+success began with `ForceRestart` from PowerState=On; both hard failures
+began from Off via the orchestrator's `Power On` fallback. This run:
+console silent right after `Loading Lifecycle Controller Drivers...Done`
+(395 bytes, ~2 min), then nothing for 13+ min → stall. Afterward the host
+was **powered Off with `BootOnce` consumed** — i.e. the VCD-DVD boot very
+likely *did* happen and the marker init *did* run and power off, later
+than the stall window, or its output never reached the SOL bridge. Cold
+POST on an R750 does memory training / LC init with long console-silent
+stretches; the leading hypothesis is cold boot simply takes longer than
+the stall budget (with a possible secondary question of whether SOL
+output survives the cold path at all).
+
+**In flight:** `TestLiveMarkerBootCapture` extended (`ForceRestart`→`On`
+fallback mirroring the orchestrator; `SHOAL_CAPTURE_MINUTES` env) and
+running a 25-minute cold-start capture with VCD-DVD staged to settle it.
+
+## UPDATE 2026-08-24 (night): SOLVED — cold-start proof passed, all failure modes explained
+
+The 25-minute cold capture settled everything:
+
+- **VCD-DVD boot override works**: console showed `Booting...` →
+  `Booting from Virtual Optical Drive` → full marker sequence. No
+  `Boot Failed: Ubuntu`, no PXE — first time the override ever won on
+  this box.
+- **Cold POST took ~25 minutes** in that capture — but that was the LC
+  *backlog draining*: the old Boot-PATCH path had queued one
+  `BIOS.Setup.1-1` LC job per attempt (11 that day), and cold POST
+  cycled through "Applying Updates or Setting System Configuration"
+  repeatedly to apply them. The VCD-DVD path queues none.
+
+Raised the plugin's physical-role stall budget 15m → 30m (safe: the
+activity-based watch only counts true console silence), redeployed, and
+ran the **final proof: NetBox Start button, cold start (host Off), VCD-DVD
+path** — the exact combination that had failed every prior time. Job
+`30d8c14e...`: **`provisioned` in 7.3 minutes**, 7/7 markers, capture
+confirms direct `Booting from Virtual Optical Drive`. With no LC backlog,
+cold boot is no slower than warm.
+
+**Failure-mode ledger, all closed:**
+| Symptom | Cause | Fix |
+|---|---|---|
+| Zero markers ever (early runs) | ISO BIOS-only on UEFI host; dynamic busybox panicking /init | UEFI El Torito + static busybox |
+| Boot override "worked" but boot went disk→PXE→media | Standard Boot PATCH never effective on iDRAC9 (UsbCd unsupported, Cd reads back Disabled); successes were boot-order fall-through gated on fast PXE failure | Dell OEM `ServerBoot.1.FirstBootDevice=VCD-DVD` + `BootOnce` (`dellOneTimeVirtualCD`) |
+| Intermittent "activity but no markers" stalls | Slow PXE retry cycles during fall-through | Same VCD-DVD fix (no fall-through anymore) |
+| Stall during LC config screen | Watch only reset on markers; LC repaints with no newlines | Activity-based stall reset (`ActivityReporter`) |
+| Cold-start jobs dying at 15m | LC job backlog made cold POST take ~25m | VCD-DVD queues no LC jobs + 30m physical stall budget |
+
+Remaining known-good state: warm NetBox run 6.9 min, cold NetBox run
+7.3 min, CLI run 6.5 min — three trigger paths, both power states.
+Phase 7 (real OS image write) is the next frontier; the transport and
+boot plumbing under it is now solid. Overall end-to-end reliability on this specific R750 is still
 not 100%: multiple clean successes today, multiple failures with
 increasingly well-understood (and now mostly fixed) causes, and this one
 remaining failure mode that's real but not yet diagnosed. The tool for
