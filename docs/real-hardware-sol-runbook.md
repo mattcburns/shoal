@@ -19,7 +19,8 @@ candidate URLs are **unverified guesses**, not documented vendor APIs.
   order: classify vendor → try native WebSocket SOL candidates, but **only keep
   the socket if the first frame is line-oriented SOL text** (HTML/binary/silence
   fall through; do not treat idle KVM as SOL) → SSH attach when eligible →
-  otherwise `*redfish.SOLUnsupportedError` with a debug trail.
+  IPMI 2.0 SOL last resort → otherwise `*redfish.SOLUnsupportedError` with a
+  debug trail.
 - **SSH eligibility:** any vendor if `ComputerSystem.SerialConsole.SSH` is
   enabled, or manager `SerialConsole` lists `SSH`; **Dell only** if
   `NetworkProtocol.SSH` is enabled or OEM serial-redirection attributes are
@@ -29,11 +30,10 @@ candidate URLs are **unverified guesses**, not documented vendor APIs.
   `ConsoleEntryCommand` does **not** guess `console com2`. SSH auth is
   password **and** keyboard-interactive (iDRAC advertises KI only, not
   `password`).
-- **IPMI 2.0 SOL** is specified in [`docs/sol-transports-design.md`](./sol-transports-design.md)
-  as last resort and **is not implemented yet**. IPMI-only BMCs still return
-  `*SOLUnsupportedError`. `WatchSession.Transport=ipmi_sol` remains an error.
-  On this workstation, UDP/TCP 623 to the lab iDRAC is filtered; a future IPMI
-  client must timeout, not hang.
+- **IPMI 2.0 SOL** is last resort inside `OpenSOL` (stdlib client, cipher suite
+  3 then 17). `WatchSession.Transport=ipmi_sol` remains an error. UDP timeout on
+  Get Channel Auth Caps is recorded in the debug trail and does **not** try
+  suite 17. On this workstation, UDP/TCP 623 to the lab iDRAC is filtered.
 - **Host Off:** SSH attach still returns a stream; silence until power-on is
   Observe’s stall timer, not an OpenSOL error. This runbook does not send
   power commands; the live probe below is attach-only.
@@ -129,8 +129,8 @@ graphics-only failure screens, never the primary progress channel).
   gap, not an oversight; revisit if this transport sees production use.
 - **Telnet is not implemented** — a Telnet-only BMC is reported as
   unsupported, not a crash.
-- **IPMI 2.0 SOL is specified, not implemented.** IPMI-only BMCs still return
-  `*SOLUnsupportedError`. `WatchSession.Transport=ipmi_sol` remains an error.
+- **IPMI 2.0 SOL is last-resort inside OpenSOL.** `ipmi_sol` is not a watch
+  transport. UDP/623 filtered from this workstation times out; do not hang.
 - **WebSocket candidate URLs are not SOL on the probed iDRAC** (`/console`
   HTTP 200, `/wsman/virtualconsole` 404). Do not expand the list until a real
   vendor SOL URL is proven.

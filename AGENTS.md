@@ -57,11 +57,10 @@ These encode the core design decisions. Violating one is a bug, even if tests pa
    (2) SSH to the BMC + vendor attach command when SSH is enabled — including when
    standard `ComputerSystem.SerialConsole` (gofish `HostSerialConsole`) is empty
    but `NetworkProtocol` / Dell OEM serial-redirection attributes show serial is
-   on. **IPMI 2.0 SOL as last resort is specified in
-   `docs/sol-transports-design.md`; it is not implemented in this change.** Until
-   that follow-on lands, an IPMI-only BMC still returns `*SOLUnsupportedError`.
-   IPMI, when implemented, is a SOL payload, not a second BMC API. Call sites
-   still only see `OpenSOL`.
+   on; (3) IPMI 2.0 SOL (LAN plus, stdlib client in
+   `internal/common/redfish/internal/ipmi`) as **last resort** when no SSH serial
+   path exists. IPMI is a SOL payload, not a second BMC API. Call sites still
+   only see `OpenSOL`. IPMI types must not leak into Deploy/Observe.
 7. **Artifact/ISO serving is plain HTTP on the management segment for MVP.** Do
    not add TLS to the ISO server (many BMCs reject self-signed certs); TLS is
    Phase 6. Phase 2 publishes ISOs to the lab ISO dir and serves them at
@@ -455,11 +454,10 @@ Live-server remaster (`SHOAL_UBUNTU_ISO`) is alternate/stretch. **7b/7c deferred
   `internal/common/redfish/sol.go`) behind `sol.Transport`. BMC **control** stays
   Redfish-only. `OpenSOL` may use line-oriented WebSocket or SSH attach (Dell
   `console com2` / `connect` when SerialConsole is empty but SSH/serial OEM is
-  on). **IPMI 2.0 SOL last-resort client is not yet in the tree** — IPMI-only
-  BMCs still return `*SOLUnsupportedError` with a debug trail.
+  on). IPMI 2.0 SOL is last-resort inside `OpenSOL` (cipher suite 3 then 17);
   `WatchSession.Transport=ipmi_sol` remains an error (IPMI is not a watch
-  transport). Fake-SSH unit tests always run; sushy-tools has no SOL. Live
-  iDRAC attach is operator-gated (`go test -tags=live_sol`); see
+  transport). Fake-SSH and fake-RMCP unit tests always run; sushy-tools has no
+  SOL. Live iDRAC attach is operator-gated (`go test -tags=live_sol`); see
   `docs/real-hardware-sol-runbook.md` and `docs/sol-transports-design.md`.
 - Capture real Redfish responses into the **record/replay corpus**
   (`testdata/redfish/`) when you hit a new vendor/firmware shape, and add a
