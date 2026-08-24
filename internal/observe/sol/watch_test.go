@@ -170,6 +170,73 @@ func TestWatchServiceStall(t *testing.T) {
 	t.Fatal("stall not reported")
 }
 
+// TestWatchServiceActivityWithoutMarkersPreventsStall proves the fix for a
+// live-hardware finding: some BIOS/Lifecycle-Controller screens (Dell's
+// Unified Server Configurator, confirmed via a raw SOL capture) repaint via
+// cursor-positioning escapes with no newline for minutes at a time. Before
+// this fix, the stall timer only reset on parsed SHOAL| markers, so a job
+// could report "stall" while the console was actively printing -- just not
+// anything that looked like a complete line, let alone a marker.
+func TestWatchServiceActivityWithoutMarkersPreventsStall(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	prog := &recordingProgress{}
+	w := sol.NewWatchService(log, prog)
+	pr, pw := io.Pipe()
+	w.NewTransport = func(models.WatchSession) sol.Transport {
+		return sol.NewReaderTransport(pr)
+	}
+	err := w.Register(context.Background(), models.WatchSession{
+		ID: "s1", JobID: "j1", DeviceID: "d1", Target: "x",
+		StallTimeout: 60 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// No newline, no SHOAL| marker -- just raw bytes, faster than the stall
+	// timeout, for several timeout-multiples.
+	stop := make(chan struct{})
+	writeDone := make(chan struct{})
+	go func() {
+		defer close(writeDone)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			_, _ = io.WriteString(pw, "\x1b[12;34Hnoise-no-newline")
+			time.Sleep(15 * time.Millisecond)
+		}
+	}()
+
+	time.Sleep(300 * time.Millisecond) // ~5x stall timeout of continuous noise
+	close(stop)
+	<-writeDone
+
+	prog.mu.Lock()
+	stalledDuringNoise := prog.stalls
+	prog.mu.Unlock()
+	if stalledDuringNoise != 0 {
+		t.Fatalf("stalled during continuous non-marker activity: stalls=%d", stalledDuringNoise)
+	}
+
+	// Now go silent: a real stall must still fire (this isn't "never stall").
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		prog.mu.Lock()
+		st := prog.stalls
+		prog.mu.Unlock()
+		if st > 0 {
+			_ = pw.Close()
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	_ = pw.Close()
+	t.Fatal("stall not reported after activity stopped")
+}
+
 // TestWatchServiceDefaultTransportRejectsUnknown proves the default
 // NewTransport factory (used when a caller never wires a combinator) fails
 // loudly for an unrecognized session.Transport instead of silently tailing a

@@ -203,14 +203,28 @@ func (w *WatchService) run(ctx context.Context, aw *activeWatch, lines <-chan st
 		timer.Reset(stall)
 	}
 
+	// Transports that can report raw connection activity (see
+	// ActivityReporter) let the stall timer reflect "the console is alive"
+	// rather than just "the console printed a parseable SHOAL| marker" --
+	// some BIOS/LC screens print for minutes with no complete lines at all.
+	// activityC stays nil for transports that don't implement it (e.g. in
+	// tests), which makes the select case below permanently non-ready --
+	// exactly the desired no-op.
+	var activityC <-chan struct{}
+	if ar, ok := aw.trans.(ActivityReporter); ok {
+		activityC = ar.Activity()
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-timerC:
 			w.log.Warn("sol stall detected", "job_id", aw.session.JobID, "timeout", stall.String())
-			_ = progress.ReportStall(context.Background(), aw.session.JobID, fmt.Sprintf("no SOL marker for %s", stall))
+			_ = progress.ReportStall(context.Background(), aw.session.JobID, fmt.Sprintf("no SOL activity for %s", stall))
 			return
+		case <-activityC:
+			resetStall()
 		case line, ok := <-lines:
 			if !ok {
 				// Stream ended without a terminal marker (or after watch cancel).
@@ -218,11 +232,13 @@ func (w *WatchService) run(ctx context.Context, aw *activeWatch, lines <-chan st
 				_ = progress.ReportTransportError(context.Background(), aw.session.JobID, fmt.Errorf("sol stream closed"))
 				return
 			}
+			// Any received line resets the stall timer too, not just parsed
+			// SHOAL| markers (belt-and-suspenders alongside activityC above).
+			resetStall()
 			m, ok := ParseLine(line)
 			if !ok {
 				continue
 			}
-			resetStall()
 			if err := progress.ApplyMarker(context.Background(), aw.session.JobID, m); err != nil {
 				w.log.Error("apply marker failed", "job_id", aw.session.JobID, "err", err.Error())
 			}
