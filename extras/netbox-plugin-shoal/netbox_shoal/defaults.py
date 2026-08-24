@@ -59,14 +59,17 @@ def stall_timeout_ns(role_slug=""):
     SHOAL| line. The orchestrator's built-in default (3 minutes --
     internal/deploy/job/orchestrator.go DefaultSOLStall) is tuned for the
     fast nested-lab sushy/libvirt boot and is routinely too short for
-    physical hardware -- confirmed live: a real spike job reached
-    WAITING_SOL and then stalled at exactly 3 minutes with zero markers,
-    on the same BMC/ISO combination that a 12-15 minute budget completed
-    successfully in ~6 minutes.
+    physical hardware. Measured live on a PowerEdge R750: warm restart
+    reaches markers in ~7-9 minutes, but a COLD power-on takes ~25 minutes
+    of POST (memory training + repeated Lifecycle Controller cycles, with
+    console-silent stretches longer than 15 minutes) before the boot
+    device is even selected. Since the watch resets its stall timer on any
+    SOL activity (not just markers), this bound only fires on true console
+    silence -- so a generous 30 minutes is safe and covers the cold path.
     """
     if is_lab_virtual(role_slug):
         return 0
-    return 15 * 60 * 1_000_000_000
+    return 30 * 60 * 1_000_000_000
 
 
 def serial_transport(role_slug=""):

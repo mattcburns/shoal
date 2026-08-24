@@ -108,13 +108,15 @@ class StallTimeoutTests(unittest.TestCase):
         # DefaultSOLStall (3m) applies, which is fine for fast lab boot.
         self.assertEqual(stall_timeout_ns("virtual-bmc-node"), 0)
 
-    def test_physical_server_gets_15_minute_budget_in_nanoseconds(self):
+    def test_physical_server_gets_30_minute_budget_in_nanoseconds(self):
         # StartJobRequest.StallTimeout is a raw Go time.Duration over JSON
-        # (nanoseconds), not a string like "15m".
-        self.assertEqual(stall_timeout_ns("server"), 15 * 60 * 1_000_000_000)
+        # (nanoseconds), not a string like "30m". 30 minutes because a cold
+        # R750 power-on measured ~25 minutes of POST before boot-device
+        # selection, with console-silent stretches over 15 minutes.
+        self.assertEqual(stall_timeout_ns("server"), 30 * 60 * 1_000_000_000)
 
     def test_empty(self):
-        self.assertEqual(stall_timeout_ns(), 15 * 60 * 1_000_000_000)
+        self.assertEqual(stall_timeout_ns(), 30 * 60 * 1_000_000_000)
 
 
 if __name__ == "__main__":
