@@ -44,14 +44,14 @@ type BMC interface {
 	// On failure, returned Screenshot.Debug (and error text) include probe steps without secrets.
 	CaptureScreenshot(ctx context.Context, systemID string, kind ScreenshotKind) (Screenshot, error)
 	// OpenSOL opens a serial-over-LAN byte stream for systemID. It tries native
-	// Redfish WebSocket SOL for recognized vendors (Dell, Supermicro) first, then
-	// falls back to SSH only when Redfish's own capability metadata
-	// (ComputerSystem.HostSerialConsole.SSH / Manager.SerialConsole) advertises SSH
-	// as enabled. Never uses raw IPMI, regardless of what a BMC advertises. If a BMC
-	// advertises only IPMI/Oem/Telnet connect types with no working native WS and no
-	// advertised SSH, OpenSOL returns *SOLUnsupportedError. ctx cancellation aborts
-	// discovery/dial; this is the first BMC method that owns a long-lived connection
-	// rather than one round trip, so callers must cancel ctx to release it.
+	// Redfish WebSocket SOL for recognized vendors (Dell, Supermicro) first, but
+	// only keeps a socket that sniffs as line-oriented SOL (not HTML5 KVM). Then
+	// SSH attach when eligible (Redfish SerialConsole.SSH, manager SSH connect
+	// type, or Dell NetworkProtocol/OEM serial-redirection even if SerialConsole
+	// is empty). IPMI 2.0 SOL last resort is specified, not implemented: IPMI-only
+	// BMCs return *SOLUnsupportedError. ctx cancellation aborts discovery/dial;
+	// this is the first BMC method that owns a long-lived connection rather than
+	// one round trip, so callers must cancel ctx to release it.
 	OpenSOL(ctx context.Context, systemID string) (SOLStream, error)
 }
 
@@ -64,8 +64,9 @@ type SOLConnectKind string
 const (
 	// SOLConnectWebSocket is a native Redfish/OEM WebSocket SOL stream.
 	SOLConnectWebSocket SOLConnectKind = "websocket"
-	// SOLConnectSSH is an SSH session opened only because Redfish's own
-	// capability metadata advertised SSH as the BMC's serial console transport.
+	// SOLConnectSSH is an SSH session opened because OpenSOL selected the SSH
+	// backend (Redfish SerialConsole.SSH, manager SSH connect type, or Dell
+	// NetworkProtocol/OEM serial-redirection).
 	SOLConnectSSH SOLConnectKind = "ssh"
 )
 

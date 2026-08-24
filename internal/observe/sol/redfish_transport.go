@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"log/slog"
 	"sync"
 
 	"github.com/mattcburns/shoal/internal/common/redfish"
@@ -81,6 +82,7 @@ func (t *RedfishTransport) Open(ctx context.Context, target string) (<-chan stri
 		_ = bmc.Close(context.Background())
 		return nil, fmt.Errorf("sol: redfish transport: open sol: %w", err)
 	}
+	slog.Info("sol watch attached", "sol_kind", string(stream.Kind), "vendor", string(stream.Vendor))
 
 	t.bmc = bmc
 	t.stream = stream

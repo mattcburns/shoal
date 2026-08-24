@@ -57,7 +57,10 @@ secrets backend (`credential_ref` only). Empty user/pass on **power/poll** uses
 stored secrets, then `SHOAL_BMC_*`. **Start provision** still fills empty
 user/pass from `SHOAL_BMC_*` only. Real servers (role ≠ `virtual-bmc-node`)
 prefill `https://<bmc_ip>`; lab virtual BMC nodes keep
-`SHOAL_DEFAULT_BMC_ENDPOINT` (shared sushy).
+`SHOAL_DEFAULT_BMC_ENDPOINT` (shared sushy). Lab Start provision completes
+over sushy + libvirt SOL. A real iDRAC needs `SHOAL_SERIAL_TRANSPORT=redfish_sol`
+on the Shoal process (SOL attach is proven; the BMC still must be able to
+fetch the ISO URL — see `docs/real-hardware-sol-runbook.md`).
 
 ## Development
 

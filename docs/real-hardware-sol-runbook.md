@@ -2,10 +2,10 @@
 
 `internal/common/redfish/sol.go` (`BMC.OpenSOL`) and the `redfish_sol` serial
 transport (`internal/observe/sol/redfish_transport.go`,
-`internal/observe/sol/factory.go`) are **unit-tested only** — sushy-tools
-(the lab BMC simulator) has no SOL support at all, so nothing in this repo's
-automated test suite proves this works against a real BMC. This doc is the
-checklist for the first time a human runs it against real hardware.
+`internal/observe/sol/factory.go`) are proven by fake-SSH unit tests; sushy-tools
+has no SOL, so lab CI cannot. A live attach against the lab iDRAC is recorded
+below (`-tags=live_sol`). Re-run that gated test when firmware or the attach
+path changes.
 
 Read this before pointing `redfish_sol` at a real BMC, and update it (or the
 candidate list in `sol.go`) with what you learn — the initial WebSocket
@@ -13,27 +13,37 @@ candidate URLs are **unverified guesses**, not documented vendor APIs.
 
 ## What's implemented, and how
 
-- **Redfish only.** No IPMI (`ipmitool`) is ever used, regardless of what a
-  BMC advertises. This is a hard project rule, not a v1 limitation.
-- **Discovery order** (`OpenSOL`): classify the BMC vendor from
-  `Manufacturer`/`Model`/manager hints (Dell, Supermicro recognized; same
-  `detectVendor` used by OEM screenshot capture) → try native WebSocket SOL
-  candidates for that vendor → if that's unsupported or fails, check whether
-  Redfish's own capability metadata
-  (`ComputerSystem.SerialConsole.SSH.ServiceEnabled` /
-  `Manager.SerialConsole`) advertises SSH, and if so, open an SSH session
-  (password auth, BMC credentials) using the `ConsoleEntryCommand` Redfish
-  itself provides when present → otherwise, `*redfish.SOLUnsupportedError`
-  with a full debug trail.
-- **Telnet is never attempted** (deferred; a Telnet-only BMC is reported as
-  unsupported, not implemented).
+- **BMC control is Redfish-only.** Power, Virtual Media, boot override, SEL,
+  sensors, inventory, and screenshots never use IPMI (`ipmitool chassis` etc.).
+- **SOL may leave HTTP** (`BMC.OpenSOL`, opt-in `redfish_sol`). Discovery
+  order: classify vendor → try native WebSocket SOL candidates, but **only keep
+  the socket if the first frame is line-oriented SOL text** (HTML/binary/silence
+  fall through; do not treat idle KVM as SOL) → SSH attach when eligible →
+  otherwise `*redfish.SOLUnsupportedError` with a debug trail.
+- **SSH eligibility:** any vendor if `ComputerSystem.SerialConsole.SSH` is
+  enabled, or manager `SerialConsole` lists `SSH`; **Dell only** if
+  `NetworkProtocol.SSH` is enabled or OEM serial-redirection attributes are
+  `Enabled` — even when standard SerialConsole is empty (live iDRAC 7.30 on a
+  PowerEdge R750, 2026-08-23). Attach commands: Redfish `ConsoleEntryCommand` if
+  set; else Dell `console com2`, then `connect`. Non-Dell without
+  `ConsoleEntryCommand` does **not** guess `console com2`. SSH auth is
+  password **and** keyboard-interactive (iDRAC advertises KI only, not
+  `password`).
+- **IPMI 2.0 SOL** is specified in [`docs/sol-transports-design.md`](./sol-transports-design.md)
+  as last resort and **is not implemented yet**. IPMI-only BMCs still return
+  `*SOLUnsupportedError`. `WatchSession.Transport=ipmi_sol` remains an error.
+  On this workstation, UDP/TCP 623 to the lab iDRAC is filtered; a future IPMI
+  client must timeout, not hang.
+- **Host Off:** SSH attach still returns a stream; silence until power-on is
+  Observe’s stall timer, not an OpenSOL error. This runbook does not send
+  power commands; the live probe below is attach-only.
+- **Telnet is never attempted** (deferred).
 - **WebSocket candidates are placeholders.** No vendor publishes a documented
   client-pull plain-text SOL-over-WebSocket endpoint. Real iDRAC/Supermicro
   console redirection is typically an HTML5/binary KVM protocol, not
   line-oriented SOL — the candidates in `solWSCandidates` (`sol.go`) are
-  best-effort guesses in the same spirit as the OEM screenshot-capture
-  candidate list, and are very likely to fail until someone finds the real
-  endpoint on real firmware (see "What to do when it fails" below).
+  best-effort guesses. Per-candidate dial ≤3s; 500ms sniff. Do not expand the
+  URL list until a real SOL URL is proven.
 
 ## Prerequisites
 
@@ -119,10 +129,11 @@ graphics-only failure screens, never the primary progress channel).
   gap, not an oversight; revisit if this transport sees production use.
 - **Telnet is not implemented** — a Telnet-only BMC is reported as
   unsupported, not a crash.
-- **Raw IPMI is never attempted**, even if a BMC only advertises IPMI SOL.
-  This is intentional and permanent (project rule: Redfish only).
-- **WebSocket candidate URLs are unverified** against any real vendor
-  firmware as of this PR — see "What to do when it fails" above.
+- **IPMI 2.0 SOL is specified, not implemented.** IPMI-only BMCs still return
+  `*SOLUnsupportedError`. `WatchSession.Transport=ipmi_sol` remains an error.
+- **WebSocket candidate URLs are not SOL on the probed iDRAC** (`/console`
+  HTTP 200, `/wsman/virtualconsole` 404). Do not expand the list until a real
+  vendor SOL URL is proven.
 - **BMC concurrent-session limits are not load-tested.** `OpenSOL` opens a
   short-lived discovery session (closed before returning) plus one
   long-lived WS/SSH connection per active watch — this is the minimum
@@ -143,3 +154,36 @@ unset SHOAL_SERIAL_TRANSPORT   # or export SHOAL_SERIAL_TRANSPORT=libvirt
 
 or omit `serial_transport` on the `StartJobRequest`. Nothing about the
 default `libvirt` path changes as part of this feature.
+
+## Field notes — Dell PowerEdge R750 / iDRAC 7.30.10.50 (2026-08-23)
+
+Live `OpenSOL` against `https://172.16.21.202` (`System.Embedded.1`),
+attach-only (no power/media/boot changes):
+
+| Probe | Result |
+|-------|--------|
+| Redfish `SerialConsole` | empty (`ConnectTypesSupported=[]`) |
+| `NetworkProtocol.SSH` | enabled, port 22 |
+| OEM `SerialRedirection.1.Enable` | Enabled |
+| `wss://…/console` | HTTP 200, not a WebSocket (101) — sniffed fail, fall through |
+| `wss://…/wsman/virtualconsole` | HTTP 404 |
+| SSH auth methods | `publickey,keyboard-interactive` (**not** `password`) |
+| Attach | `session.Start("console com2")` after KI auth → `Kind=ssh` `vendor=dell` |
+| First bytes (host already On) | ANSI reset/clear, then `Connected to Serial Device 2. To end type: ^\` |
+| After `Reset ForceRestart` (operator-authorized) | BIOS 1.15.2 POST on SOL: PCIe/USB/Video init, `PowerEdge R750`, F2/F10/F11/F12, Lifecycle Controller inventory, `Booting from Ubuntu` → `Boot Failed: Ubuntu` → PXE IPv4 on NIC Slot 5 Port 1 |
+
+`TestLiveOpenSOL_ResetAndRead` (`-tags=live_sol`) attaches first, then `On` or `ForceRestart`, and captures ~90s of console. It sends no Virtual Media / boot override. The host may be left in PXE if the disk boot option failed — that is BIOS policy, not Shoal media.
+
+Re-run (credentials from gitignored `.env`; never log the password):
+
+```bash
+set -a && . ./.env && set +a
+SHOAL_BMC_URL=https://172.16.21.202 \
+  go test ./internal/common/redfish -tags=live_sol -run TestLiveOpenSOL$ -v -count=1 -timeout 60s
+# ForceRestart + ~90s POST capture (changes host power):
+SHOAL_BMC_URL=https://172.16.21.202 \
+  go test ./internal/common/redfish -tags=live_sol -run TestLiveOpenSOL_ResetAndRead -v -count=1 -timeout 4m
+```
+
+CI must not use `-tags=live_sol`. IPMI UDP/623 remains filtered from this
+workstation; do not treat that as an attach failure.

@@ -877,7 +877,7 @@ list, job log lines from SOL markers, and NetBox `lifecycle_state` CF updates.
    |-------------|---------------------|
    | Device custom field `lifecycle_state` | `provisioning` → `provisioned` (or `failed`) |
    | **Shoal Status** | Lifecycle badge, last polled power, phase, animated progress while running; stages panel; job log (`SHOAL\|…` lines); **BMC credentials** (saved in Shoal secrets); **Host power** |
-   | **Shoal Status → Provision** | **Start provision** (demo write path): prefills lab BMC URL + marker ISO (real servers use `https://<bmc_ip>`). Empty user/pass uses `SHOAL_BMC_*` (not the stored per-device secret). Requires `dcim.change_device`. **Cancel** when a job is provisioning. Lab sushy + libvirt SOL is the path that completes; real BMC SOL + ISO reachability is still a gap. |
+   | **Shoal Status → Provision** | **Start provision** (demo write path): prefills lab BMC URL + marker ISO (real servers use `https://<bmc_ip>`). Empty user/pass uses `SHOAL_BMC_*` (not the stored per-device secret). Requires `dcim.change_device`. **Cancel** when a job is provisioning. Lab sushy + libvirt SOL completes today. Real BMC SOL attach works on the probed iDRAC with `SHOAL_SERIAL_TRANSPORT=redfish_sol` (see `docs/real-hardware-sol-runbook.md`); the remaining provision gap is an ISO URL the BMC can fetch. |
    | **Shoal Jobs** | Job row with state badge + progress + stages; log for active/latest job; cancel active |
    | **Shoal Events / Sensors / Firmware** | Often empty on nested sushy (valid). Real BMC: **Poll BMC** fills SEL, sensors (null readings keep a note), firmware inventory, and power. |
 

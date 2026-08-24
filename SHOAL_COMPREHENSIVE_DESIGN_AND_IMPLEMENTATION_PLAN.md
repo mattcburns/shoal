@@ -558,7 +558,7 @@ Fields/transitions **only Orchestrator commits**: `state` (`LifecycleState`), `a
 
 Explicit cancel: `PROVISIONING --cancel--> (cleanup) --> FAILED` (with `error=canceled`), then device may return to READY when re-enqueued. Do **not** invent a separate long-lived `CLEANUP` lifecycle enum for MVP; cleanup is a **mandatory finalizer** inside `HandleTerminal`, not a NetBox-facing state.
 
-**Transport**: real hardware uses Redfish `SerialConsole` / IPMI SOL; lab uses libvirt guest serial (Section 8).
+**Transport**: lab uses libvirt guest serial (Section 8). Real hardware uses `redfish_sol` → `BMC.OpenSOL` (line-oriented WS if actually SOL, else SSH attach — Dell `console com2` even when `SerialConsole` is empty). IPMI 2.0 SOL last-resort is specified (`docs/sol-transports-design.md`), not yet in tree.
 
 ```go
 // internal/observe/sol — parser returns models.SOLMarker (common), not deploy types
@@ -1015,7 +1015,7 @@ type WatchSession struct {
     ID           string    `json:"id"`
     JobID        string    `json:"job_id"`
     DeviceID     string    `json:"device_id"`
-    Transport    string    `json:"transport"` // "libvirt" | "redfish_sol" | "ipmi_sol"
+    Transport    string    `json:"transport"` // "libvirt" | "redfish_sol"
     Target       string    `json:"target"`    // console path or BMC URI
     StartedAt    time.Time `json:"started_at"`
     StallTimeout time.Duration `json:"stall_timeout"` // e.g. 90s
@@ -1154,7 +1154,7 @@ Implementation notes:
 | `github.com/jackc/pgx/v5` | runtime (default) | Postgres driver for lab telemetry/jobs DB on `:5433` |
 | `modernc.org/sqlite` | runtime (optional demo) | Pure-Go SQLite if someone runs without Compose; not required for lab ACs |
 | `github.com/coder/websocket` | runtime (required) | Real Redfish SOL transport: native WebSocket SOL dial for recognized BMC vendors (`internal/common/redfish/sol.go`); gofish has no client-side streaming/WebSocket support. Context-native `Read`/`Close` fits the cancellation-bounded `sol.Transport` contract. |
-| `golang.org/x/crypto` (`ssh` subpackage) | runtime (required) | Real Redfish SOL transport: SSH fallback for `OpenSOL` when — and only when — Redfish's own capability metadata (`ComputerSystem.SerialConsole.SSH`) advertises SSH, using password auth against BMC credentials. Was already an indirect transitive dependency (pulled in by gofish/pgx); promoted to direct use in `internal/common/redfish/sol.go`. Never used for raw IPMI. |
+| `golang.org/x/crypto` (`ssh` subpackage) | runtime (required) | Real-hardware SOL: SSH attach for `OpenSOL` when Redfish SerialConsole advertises SSH **or** (Dell) NetworkProtocol/OEM serial-redirection is enabled. Password and keyboard-interactive auth against BMC credentials (iDRAC offers KI only). Already an indirect transitive dep (gofish/pgx); used in `internal/common/redfish/sol.go`. Never used for IPMI or BMC control. |
 | `honnef.co/go/tools/cmd/staticcheck` | toolchain | Static analysis beyond `go vet`; not linked into binary |
 
 **Toolchain install (AGENTS / CI):**
@@ -1700,7 +1700,7 @@ Golden Rules:
 3. Secrets never to LLM/log; `credential_ref` only
 4. NetBox identity + lifecycle only
 5. SOL markers primary progress; OCR diagnostic
-6. Redfish only via `internal/common/redfish` (**gofish-backed**; no gofish types outside that package)
+6. BMC control Redfish-only via `internal/common/redfish` (**gofish-backed**; no gofish types outside that package). SOL may leave HTTP (WS / SSH attach); IPMI 2.0 SOL last-resort client is a specified follow-on, not yet in tree. Never IPMI for power/media/SEL/sensors/inventory.
 7. Plain HTTP ISO on mgmt segment for MVP
 8. Structs + validate/decode pipeline for AI I/O
 9. Component boundaries §3–4; **no observe↔deploy imports** (use `jobport`/`watchport`)
