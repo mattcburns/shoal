@@ -178,6 +178,59 @@ def _handle_control_post(request, instance):
         )
         return True
 
+    if action == "deprovision":
+        defaults = _start_defaults(instance)
+        body = {
+            "device_id": defaults["device_id"],
+            "kind": "deprovision",
+            "prep": "wipe_only",
+            "serial_target": (request.POST.get("serial_target") or defaults["serial_target"]).strip(),
+            "system_id": (request.POST.get("system_id") or defaults["system_id"]).strip(),
+            "bmc_endpoint": (request.POST.get("bmc_endpoint") or defaults["bmc_endpoint"]).strip(),
+            "wipe_level": (request.POST.get("wipe_level") or "").strip(),
+        }
+        if defaults.get("serial_transport"):
+            body["serial_transport"] = defaults["serial_transport"]
+        if defaults.get("credential_ref"):
+            body["credential_ref"] = defaults["credential_ref"]
+        user = (request.POST.get("bmc_username") or "").strip()
+        password = request.POST.get("bmc_password") or ""
+        if user:
+            body["bmc_username"] = user
+        if password:
+            body["bmc_password"] = password
+        if request.POST.get("approve_destruct") == "on":
+            body["approve_destruct"] = True
+
+        if not body["bmc_endpoint"]:
+            messages.error(request, "BMC endpoint is required (set SHOAL_DEFAULT_BMC_ENDPOINT in plugin config or the form).")
+            return True
+        if not body["wipe_level"]:
+            messages.error(request, "Wipe level (discard or zero) is required to deprovision.")
+            return True
+        if not body.get("approve_destruct"):
+            messages.error(request, "Confirmation is required: deprovision permanently wipes the boot disk.")
+            return True
+
+        # Mirrors start_job: same POST /v1/jobs, kind=deprovision on the wire.
+        data, err = client.start_job(body)
+        if err:
+            job_id = ""
+            if isinstance(data, dict) and isinstance(data.get("job"), dict):
+                job_id = data["job"].get("id") or ""
+            if job_id:
+                messages.warning(request, "Deprovision job %s started but reported an error: %s" % (job_id[:12], err))
+            else:
+                messages.error(request, "Deprovision failed: %s" % err)
+            return True
+        job_id = (data or {}).get("id") or "?"
+        messages.success(
+            request,
+            "Deprovision job %s started (state=%s). Status auto-refreshes while running."
+            % (job_id[:16], (data or {}).get("state", "?")),
+        )
+        return True
+
     if action == "credentials":
         body = {
             "username": (request.POST.get("bmc_username") or "").strip(),
