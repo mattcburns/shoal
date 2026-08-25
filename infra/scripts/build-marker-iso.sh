@@ -24,6 +24,15 @@
 
 set -euo pipefail
 
+# modinfo/modprobe (kmod) live in /usr/sbin, which a non-login or restricted
+# shell's PATH sometimes omits. pack_modules() below silently packs 0 files
+# when they're "not found" (stderr suppressed to tolerate builtin-only
+# kernels) -- harmless for simulate mode, which never mounts the CD from
+# inside Linux, but fatal and silent for write/autoinstall/prep, which do.
+# Confirmed live: an install fell through to the simulate demo sequence with
+# no error because ahci/isofs never got packed, purely from this PATH gap.
+export PATH="/usr/sbin:/sbin:/usr/local/sbin:$PATH"
+
 OUT="${1:-${SHOAL_ISO_OUT:-./shoal-marker.iso}}"
 # Optional basename override (Phase 5c Go builder sets SHOAL_ISO_NAME).
 if [[ -n "${SHOAL_ISO_NAME:-}" ]]; then
@@ -206,7 +215,26 @@ pack_modules() {
   # Resolve dependencies for modules we need (ignore builtins / missing).
   local needed=()
   local m dep line
-  for m in ahci libahci isofs virtio_blk virtio_pci virtio_ring virtio; do
+  # sr_mod/sd_mod are the SCSI upper-layer class drivers that actually create
+  # /dev/sr*/sd* -- ahci+libata only expose the SCSI *transport*; the SCSI
+  # core will happily log "scsi 0:0:0:0: CD-ROM ..." with no block device
+  # ever appearing if the class driver for that device type isn't loaded
+  # too. Neither is a dependency of ahci, so modprobe --show-depends ahci
+  # alone never pulls them in. Confirmed live via a local QEMU repro: kernel
+  # detected both the CD and disk over SCSI, module list all loaded
+  # correctly, and /sys/block stayed empty the entire time regardless.
+  # Dell iDRAC (and most real BMCs) present Virtual Media as a USB mass
+  # storage device, not SATA/AHCI -- confirmed live: on the real R750 the
+  # ahci/sr_mod/sd_mod chain above correctly found the two physical SATA
+  # disks (devs=sda sdb) but zero CD device, because the CD was never on
+  # that bus at all. QEMU's -cdrom (used for local validation) attaches
+  # via AHCI/IDE by default, which is why that local repro didn't catch
+  # this -- needs an explicit USB-attached scratch CD to match real BMC
+  # behavior. usb_storage covers classic bulk-only; uas covers USB
+  # Attached SCSI, which some BMCs use instead.
+  for m in ahci libahci sr_mod sd_mod isofs \
+    xhci_pci ehci_pci usb_storage uas \
+    virtio_blk virtio_pci virtio_ring virtio; do
     if [[ -n "$(modinfo -n "$m" 2>/dev/null || true)" ]]; then
       needed+=("$m")
     fi
@@ -226,21 +254,36 @@ pack_modules() {
       esac
     done < <(modprobe --show-depends "$m" 2>/dev/null || true)
   done
-  # Dedup and copy preserving relative path under /lib/modules/$kver
-  local f rel dest
+  # Dedup and copy preserving relative path under /lib/modules/$kver.
+  # /init's insmod calls hardcode bare .ko paths, and busybox's insmod
+  # applet cannot decompress modules itself -- most distro kernels (Debian
+  # included) ship modules as .ko.xz. Decompress into place under the bare
+  # .ko name so both the hardcoded paths and busybox insmod work.
+  local f rel dest destdir
   declare -A seen=()
   for f in "${files[@]}"; do
     [[ -n "${seen[$f]:-}" ]] && continue
     seen[$f]=1
     rel="${f#/lib/modules/${kver}/}"
-    if [[ "$rel" == "$f" ]]; then
+    rel="${rel%.xz}"
+    rel="${rel%.zst}"
+    rel="${rel%.gz}"
+    if [[ "$rel" == "${f#/lib/modules/${kver}/}" && "$rel" == "$f" ]]; then
       # unexpected path — copy by basename
-      dest="$ROOT/lib/modules/${kver}/$(basename "$f")"
+      dest="$ROOT/lib/modules/${kver}/$(basename "${f%.xz}")"
+      dest="${dest%.zst}"
+      dest="${dest%.gz}"
     else
       dest="$ROOT/lib/modules/${kver}/${rel}"
     fi
-    mkdir -p "$(dirname "$dest")"
-    cp -a "$f" "$dest"
+    destdir="$(dirname "$dest")"
+    mkdir -p "$destdir"
+    case "$f" in
+      *.ko.xz) xz -dc "$f" > "$dest" ;;
+      *.ko.zst) zstd -dc "$f" > "$dest" 2>/dev/null || { echo "error: zstd required to unpack $f" >&2; exit 1; } ;;
+      *.ko.gz) gzip -dc "$f" > "$dest" ;;
+      *) cp -a "$f" "$dest" ;;
+    esac
     echo "module: $rel"
   done
   if command -v depmod >/dev/null 2>&1; then
@@ -249,8 +292,24 @@ pack_modules() {
   # Marker for init
   printf '%s\n' "$kver" > "$ROOT/kver"
   echo "packed modules for kernel $kver (${#seen[@]} files)"
+  PACKED_MODULE_COUNT="${#seen[@]}"
 }
+PACKED_MODULE_COUNT=0
 pack_modules
+# write/autoinstall/prep mount the CD from inside Linux to reach the payload
+# (isofs + the CD's storage-controller driver); simulate never does. 0 packed
+# modules there means the target kernel almost certainly cannot mount the CD
+# at boot -- init then silently falls through to the simulate demo sequence
+# with no error, up through and including a real disk-write job reporting
+# success while never touching the disk. Fail the build loudly instead.
+if [[ "$INSTALL_MODE" != "simulate" && "$PACKED_MODULE_COUNT" -eq 0 ]]; then
+  echo "error: 0 kernel modules packed for mode=$INSTALL_MODE, which needs to" >&2
+  echo "       mount the CD from inside Linux. modinfo/modprobe (kmod) must be" >&2
+  echo "       on PATH and /lib/modules/\$(uname -r) must have ahci/isofs (or" >&2
+  echo "       equivalent) as loadable modules for the kernel this ISO carries." >&2
+  echo "       Check: modinfo -n isofs ; modinfo -n ahci" >&2
+  exit 1
+fi
 
 # Optional payload (Phase 5c text / Phase 6a binary image / Phase 7a OS raw|gz).
 # Prefer SHOAL_PAYLOAD_FILE (path); else SHOAL_EMBEDDED_PAYLOAD (inline text).
@@ -339,31 +398,28 @@ else
 fi
 
 # Load modules for SATA CD (ahci), ISO9660, and virtio disk (payload + /dev/vda).
+#
+# Use busybox's modprobe, not a hand-ordered insmod list: busybox insmod
+# does not resolve dependencies itself, and the real chain here is deep and
+# easy to get wrong by hand (scsi_common -> scsi_mod -> libata -> libahci
+# -> ahci, PLUS sr_mod/sd_mod as independent SCSI class drivers that create
+# /dev/sr*//dev/sd* -- neither is a dependency of ahci, so the SCSI core
+# can log a device as detected while no block device ever appears if
+# they're missing). depmod already generated a correct modules.dep for
+# exactly this modprobe to use. Confirmed live via a local QEMU repro that
+# an incomplete/misordered hand list silently produces zero block devices
+# with no error anywhere -- a real disk-write job would then fall through
+# to the simulate demo sequence and report success without ever touching
+# the disk.
 load_mods() {
   KVER=""
   if [ -f /kver ]; then KVER="$(cat /kver 2>/dev/null | tr -d '\n')"; fi
   if [ -z "$KVER" ]; then KVER="$(uname -r 2>/dev/null || true)"; fi
   BASE="/lib/modules/$KVER"
   if [ -n "$KVER" ] && [ -d "$BASE" ]; then
-    # Explicit paths (order matters). Suppress "File exists" if already loaded.
-    for ko in \
-      "$BASE/kernel/drivers/block/virtio_blk.ko" \
-      "$BASE/kernel/drivers/ata/libahci.ko" \
-      "$BASE/kernel/drivers/ata/ahci.ko" \
-      "$BASE/kernel/fs/isofs/isofs.ko"
-    do
-      if [ -f "$ko" ]; then
-        insmod "$ko" 2>/dev/null || true
-      fi
+    for m in ahci sr_mod sd_mod isofs xhci_pci ehci_pci usb_storage uas virtio_blk; do
+      modprobe "$m" 2>/dev/null || true
     done
-    # Catch any remaining .ko we packed
-    for ko in "$BASE"/kernel/*/*.ko "$BASE"/kernel/*/*/*.ko "$BASE"/kernel/*/*/*/*.ko; do
-      [ -f "$ko" ] || continue
-      insmod "$ko" 2>/dev/null || true
-    done
-    modprobe isofs 2>/dev/null || true
-    modprobe ahci 2>/dev/null || true
-    modprobe virtio_blk 2>/dev/null || true
   fi
   mdev -s 2>/dev/null || true
   sleep 2
@@ -422,14 +478,18 @@ mount_cd() {
   attempt=0
   while [ "$attempt" -lt 8 ]; do
     mdev -s 2>/dev/null || true
-    # Re-try isofs each round
-    if [ -f /kver ]; then
-      k="$(cat /kver 2>/dev/null | tr -d '\n')"
-      insmod "/lib/modules/$k/kernel/fs/isofs/isofs.ko" 2>/dev/null || true
-      insmod "/lib/modules/$k/kernel/drivers/ata/libahci.ko" 2>/dev/null || true
-      insmod "/lib/modules/$k/kernel/drivers/ata/ahci.ko" 2>/dev/null || true
-      insmod "/lib/modules/$k/kernel/drivers/block/virtio_blk.ko" 2>/dev/null || true
-    fi
+    # Re-try each round via modprobe (see load_mods for why: resolves the
+    # full scsi_common/scsi_mod/libata/libahci/ahci/sr_mod/sd_mod chain
+    # correctly from modules.dep, which a hand-ordered insmod list does not).
+    modprobe ahci 2>/dev/null || true
+    modprobe sr_mod 2>/dev/null || true
+    modprobe sd_mod 2>/dev/null || true
+    modprobe isofs 2>/dev/null || true
+    modprobe xhci_pci 2>/dev/null || true
+    modprobe ehci_pci 2>/dev/null || true
+    modprobe usb_storage 2>/dev/null || true
+    modprobe uas 2>/dev/null || true
+    modprobe virtio_blk 2>/dev/null || true
     for dev in /dev/sr0 /dev/sr1 /dev/cdrom /dev/hdc /dev/hdb /dev/hda /dev/scd0 /dev/sdb /dev/sdc /dev/sda; do
       if [ -b "$dev" ] || [ -e "$dev" ]; then
         if mount -t iso9660 -o ro "$dev" /mnt/cd 2>/dev/null; then
@@ -483,10 +543,9 @@ elif [ -f /payload_on_iso ]; then
     if [ -b /dev/sr0 ]; then
       merr="$(mount -t iso9660 -o ro /dev/sr0 /mnt/cd 2>&1 || true)"
     fi
-    k="$(cat /kver 2>/dev/null | tr -d '\n')"
-    imsg="$(insmod "/lib/modules/$k/kernel/fs/isofs/isofs.ko" 2>&1 || true)"
+    imsg="$(modprobe ahci 2>&1 || true)"
     # Keep detail short for SOL marker line length.
-    emit ERROR 0 ERROR "cd mount fail devs=${devs} merr=${merr} insmod=${imsg}"
+    emit ERROR 0 ERROR "cd mount fail devs=${devs} merr=${merr} modprobe=${imsg}"
   fi
 fi
 
