@@ -27,6 +27,64 @@ import (
 // TestLiveOpenSOL is attach-only (no power). TestLiveOpenSOL_ResetAndRead
 // attaches first, then On / ForceRestart, and records console text.
 
+// TestLiveConsoleTail is a passive, read-only diagnostic: attach to SOL and
+// dump whatever the console prints for a while, with no Reset and no
+// virtual-media change. Use this to check on an already-running host (e.g.
+// confirm an OS actually came up and is visible over SOL) without
+// disturbing it, unlike TestLiveMarkerBootCapture / TestLiveOpenSOL_ResetAndRead.
+//
+//	set -a && . ./.env && set +a
+//	SHOAL_BMC_URL=https://172.16.21.202 SHOAL_CAPTURE_SECONDS=30 \
+//	  go test ./internal/common/redfish -tags=live_sol -run TestLiveConsoleTail -v -count=1 -timeout 60s
+func TestLiveConsoleTail(t *testing.T) {
+	secs := 20
+	if v := os.Getenv("SHOAL_CAPTURE_SECONDS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			secs = n
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(secs+15)*time.Second)
+	defer cancel()
+	bmc, sys := liveBMC(t, ctx)
+	defer func() { _ = bmc.Close(context.Background()) }()
+	stream := liveOpenSOL(t, ctx, bmc, sys.ID)
+
+	// readSOLFor does a single Read() and returns on the first burst,
+	// however small -- fine for TestLiveOpenSOL's 3s liveness probe, wrong
+	// here where the whole point is accumulating over the full window.
+	var (
+		mu  sync.Mutex
+		got bytes.Buffer
+	)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		buf := make([]byte, 4096)
+		for {
+			n, err := stream.Read(buf)
+			if n > 0 {
+				mu.Lock()
+				got.Write(buf[:n])
+				mu.Unlock()
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+	time.Sleep(time.Duration(secs) * time.Second)
+	closeStream(t, stream)
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Log("reader still blocked after Close")
+	}
+	mu.Lock()
+	buf := got.Bytes()
+	mu.Unlock()
+	t.Logf("read n=%d\n%s", len(buf), sanitizeConsole(buf, 1<<20))
+}
+
 func TestLiveOpenSOL(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
