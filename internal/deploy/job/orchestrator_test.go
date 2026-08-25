@@ -88,7 +88,7 @@ func TestOrchestratorHappyPathDone(t *testing.T) {
 	_ = pw.Close()
 
 	deadline := time.Now().Add(3 * time.Second)
-	var final models.ProvisioningJob
+	var final models.Job
 	for time.Now().Before(deadline) {
 		final, err = store.Get(ctx, j.ID)
 		if err != nil {
@@ -254,7 +254,7 @@ func TestOrchestratorCancelWithoutRunStateUsesDurableRuntime(t *testing.T) {
 	_ = fakeBMC.SetBootOverrideOnceCD(ctx, "1")
 	_ = sec.Put(ctx, "job-orphan", secrets.Credential{Username: "admin", Password: "secret"})
 	now := time.Now().UTC()
-	pj := models.ProvisioningJob{
+	pj := models.Job{
 		ID: "orphan-1", DeviceID: "d1", State: models.StateProvisioning,
 		BMCEndpoint: "http://bmc.test", SystemID: "1", CredentialRef: "job-orphan",
 		SOLSessionID: "sol-orphan-1", StartedAt: &now, UpdatedAt: &now,
@@ -276,7 +276,7 @@ func TestOrchestratorCancelWithoutRunStateUsesDurableRuntime(t *testing.T) {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(2 * time.Second)
-	var final models.ProvisioningJob
+	var final models.Job
 	for time.Now().Before(deadline) {
 		final, _ = store.Get(ctx, "orphan-1")
 		if final.State == models.StateFailed {
@@ -454,7 +454,7 @@ func TestOrchestratorDoneDespiteStuckSOLClose(t *testing.T) {
 
 	// Unregister should attempt Close (which hangs); HandleTerminal must still provision.
 	deadline := time.Now().Add(15 * time.Second)
-	var final models.ProvisioningJob
+	var final models.Job
 	for time.Now().Before(deadline) {
 		final, err = store.Get(ctx, j.ID)
 		if err != nil {
@@ -478,7 +478,7 @@ func TestOrchestratorOrphanReconcile(t *testing.T) {
 	store := jobstore.NewMemory()
 	// Pre-seed orphan PROVISIONING job as if process restarted mid-install.
 	now := time.Now().UTC()
-	_ = store.Insert(ctx, models.ProvisioningJob{
+	_ = store.Insert(ctx, models.Job{
 		ID: "orphan-1", DeviceID: "d", State: models.StateProvisioning,
 		Phase: "WAITING_SOL", BMCEndpoint: "http://bmc",
 		StartedAt: &now, UpdatedAt: &now,
@@ -516,7 +516,7 @@ func TestOrchestratorOrphanReconcileDoneOK(t *testing.T) {
 	store := jobstore.NewMemory()
 	now := time.Now().UTC()
 	pct := 100
-	_ = store.Insert(ctx, models.ProvisioningJob{
+	_ = store.Insert(ctx, models.Job{
 		ID: "orphan-done", DeviceID: "d", State: models.StateProvisioning,
 		Phase: "DONE", Percent: &pct, LastMarkerSeq: 7,
 		BMCEndpoint: "http://bmc", SystemID: "1",
@@ -600,7 +600,7 @@ func TestOrchestratorScriptedISOFlatcarDualMediaCoarse(t *testing.T) {
 	}
 
 	deadline := time.Now().Add(3 * time.Second)
-	var final models.ProvisioningJob
+	var final models.Job
 	for time.Now().Before(deadline) {
 		final, _ = store.Get(ctx, j.ID)
 		if final.State == models.StateProvisioned {
@@ -656,7 +656,7 @@ func TestOrchestratorOperatorISOCoarseDeadline(t *testing.T) {
 	}
 
 	deadline := time.Now().Add(3 * time.Second)
-	var final models.ProvisioningJob
+	var final models.Job
 	for time.Now().Before(deadline) {
 		final, _ = store.Get(ctx, j.ID)
 		if final.State == models.StateProvisioned {

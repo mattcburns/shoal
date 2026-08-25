@@ -128,8 +128,8 @@ type JobStage struct {
 	Error        string `json:"error,omitempty"`
 }
 
-// ProvisioningJob is durable job state (JobStore / Postgres jobs table).
-type ProvisioningJob struct {
+// Job is durable job state (JobStore / Postgres jobs table).
+type Job struct {
 	ID            string         `json:"id"`
 	DeviceID      string         `json:"device_id"`
 	ProfileRef    string         `json:"profile_ref"`

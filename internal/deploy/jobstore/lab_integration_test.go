@@ -30,7 +30,7 @@ func TestLabPostgresJobStore(t *testing.T) {
 	s := jobstore.NewPostgres(db)
 	id := "lab-test-" + time.Now().UTC().Format("20060102T150405")
 	now := time.Now().UTC()
-	job := models.ProvisioningJob{
+	job := models.Job{
 		ID: id, DeviceID: "lab-node-1", State: models.StateProvisioning,
 		ProfileRef: "spike", Attempt: 1, StartedAt: &now, UpdatedAt: &now,
 		BMCEndpoint: "http://192.168.122.100:8001",

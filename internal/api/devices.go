@@ -107,7 +107,7 @@ func (s *Server) handleDeviceJobs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if jobs == nil {
-		jobs = []models.ProvisioningJob{}
+		jobs = []models.Job{}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"device_id": id,

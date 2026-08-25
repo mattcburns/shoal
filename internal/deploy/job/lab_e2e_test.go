@@ -74,11 +74,11 @@ func labOrch(t *testing.T, e labE2EEnv, store jobstore.Store, watch *sol.WatchSe
 	return orch
 }
 
-func waitJobState(t *testing.T, store jobstore.Store, id string, want models.LifecycleState, d time.Duration) models.ProvisioningJob {
+func waitJobState(t *testing.T, store jobstore.Store, id string, want models.LifecycleState, d time.Duration) models.Job {
 	t.Helper()
 	ctx := context.Background()
 	deadline := time.Now().Add(d)
-	var final models.ProvisioningJob
+	var final models.Job
 	var err error
 	for time.Now().Before(deadline) {
 		final, err = store.Get(ctx, id)

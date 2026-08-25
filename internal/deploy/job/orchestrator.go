@@ -258,7 +258,7 @@ func (o *Orchestrator) SetWatchRegistrar(w watchport.WatchRegistrar) {
 }
 
 // Get returns a job from the store.
-func (o *Orchestrator) Get(ctx context.Context, jobID string) (models.ProvisioningJob, error) {
+func (o *Orchestrator) Get(ctx context.Context, jobID string) (models.Job, error) {
 	return o.store.Get(ctx, jobID)
 }
 
@@ -271,9 +271,9 @@ func (o *Orchestrator) Get(ctx context.Context, jobID string) (models.Provisioni
 // Optional BuildISO / SHOAL_ISO_DYNAMIC builds and publishes a live image first (Phase 6a).
 // When a DeviceResolver is available (NetBox), device_id is remapped from name/serial
 // to the NetBox numeric primary key so plugin tabs and telemetry share one key.
-func (o *Orchestrator) Start(ctx context.Context, req models.StartJobRequest) (models.ProvisioningJob, error) {
+func (o *Orchestrator) Start(ctx context.Context, req models.StartJobRequest) (models.Job, error) {
 	if o.watches == nil {
-		return models.ProvisioningJob{}, fmt.Errorf("job: watch registrar not configured")
+		return models.Job{}, fmt.Errorf("job: watch registrar not configured")
 	}
 
 	profileRef := req.ProfileRef
@@ -283,7 +283,7 @@ func (o *Orchestrator) Start(ctx context.Context, req models.StartJobRequest) (m
 	req.ProfileRef = profileRef
 
 	if err := o.resolveDeviceID(ctx, &req); err != nil {
-		return models.ProvisioningJob{}, err
+		return models.Job{}, err
 	}
 	o.applyStartBindings(ctx, &req)
 	o.applyDefaultCredentials(&req)
@@ -292,34 +292,34 @@ func (o *Orchestrator) Start(ctx context.Context, req models.StartJobRequest) (m
 	var prof models.ProvisioningProfile
 	if profileRef != "" && profileRef != "spike" {
 		if o.profiles == nil {
-			return models.ProvisioningJob{}, fmt.Errorf("job: profile %q requires SHOAL_PROFILE_DIR (profile store not configured)", profileRef)
+			return models.Job{}, fmt.Errorf("job: profile %q requires SHOAL_PROFILE_DIR (profile store not configured)", profileRef)
 		}
 		rec, err := o.profiles.Get(ctx, profileRef)
 		if err != nil {
-			return models.ProvisioningJob{}, fmt.Errorf("job: load profile %q: %w", profileRef, err)
+			return models.Job{}, fmt.Errorf("job: load profile %q: %w", profileRef, err)
 		}
 		prof = rec.Profile
 		applyProfileDefaults(&req, prof)
 		if err := resolveProfileURLs(&req, prof, o.isoBaseURL); err != nil {
-			return models.ProvisioningJob{}, err
+			return models.Job{}, err
 		}
 	}
 
 	if err := validate.StartJobRequest(req); err != nil {
-		return models.ProvisioningJob{}, err
+		return models.Job{}, err
 	}
 	if err := o.checkProfileApproval(ctx, profileRef, req.ApproveDestruct); err != nil {
-		return models.ProvisioningJob{}, err
+		return models.Job{}, err
 	}
 	if err := o.maybeBuildISO(ctx, &req, profileRef); err != nil {
-		return models.ProvisioningJob{}, err
+		return models.Job{}, err
 	}
 	// Legacy resolve if still empty (iso_base only path when media_url not used).
 	if err := o.resolveISOURL(ctx, &req, profileRef); err != nil {
-		return models.ProvisioningJob{}, err
+		return models.Job{}, err
 	}
 	if req.ISOURL == "" {
-		return models.ProvisioningJob{}, fmt.Errorf("job: iso_url is required")
+		return models.Job{}, fmt.Errorf("job: iso_url is required")
 	}
 
 	jobID := newID()
@@ -330,26 +330,26 @@ func (o *Orchestrator) Start(ctx context.Context, req models.StartJobRequest) (m
 			Username: req.BMCUsername,
 			Password: req.BMCPassword,
 		}); err != nil {
-			return models.ProvisioningJob{}, fmt.Errorf("job: store credentials: %w", err)
+			return models.Job{}, fmt.Errorf("job: store credentials: %w", err)
 		}
 	}
 	cred, err := o.secrets.Get(ctx, credRef)
 	if err != nil {
-		return models.ProvisioningJob{}, fmt.Errorf("job: resolve credentials: %w", err)
+		return models.Job{}, fmt.Errorf("job: resolve credentials: %w", err)
 	}
 
 	// Probe CD count early so seed_delivery=auto can choose second_media vs config_drive.
 	nCD := o.probeCDCount(ctx, req, cred)
 	stages, err := expandStages(req, nCD)
 	if err != nil {
-		return models.ProvisioningJob{}, err
+		return models.Job{}, err
 	}
 	strategy := installStrategyFromStages(stages)
 
 	profile := profileRef
 	now := time.Now().UTC()
 	sessionID := "sol-" + jobID
-	job := models.ProvisioningJob{
+	job := models.Job{
 		ID:              jobID,
 		DeviceID:        req.DeviceID,
 		ProfileRef:      profile,
@@ -367,7 +367,7 @@ func (o *Orchestrator) Start(ctx context.Context, req models.StartJobRequest) (m
 		Stages:          stages,
 	}
 	if err := o.store.Insert(ctx, job); err != nil {
-		return models.ProvisioningJob{}, err
+		return models.Job{}, err
 	}
 	o.syncNetBoxLifecycle(ctx, req.DeviceID, models.StateProvisioning)
 
@@ -410,7 +410,7 @@ func (o *Orchestrator) Start(ctx context.Context, req models.StartJobRequest) (m
 
 // provision expands stages and starts only the first stage. Later stages start
 // when ApplyMarker sees PREP_DONE (M2 event-driven advance).
-func (o *Orchestrator) provision(ctx context.Context, job models.ProvisioningJob, req models.StartJobRequest, cred secrets.Credential, rs *runState) error {
+func (o *Orchestrator) provision(ctx context.Context, job models.Job, req models.StartJobRequest, cred secrets.Credential, rs *runState) error {
 	stages := job.Stages
 	if len(stages) == 0 {
 		var err error
@@ -433,7 +433,7 @@ func (o *Orchestrator) provision(ctx context.Context, job models.ProvisioningJob
 }
 
 // startStage attaches stage media, boots CD once, and registers SOL watch.
-func (o *Orchestrator) startStage(ctx context.Context, job models.ProvisioningJob, req models.StartJobRequest, cred secrets.Credential, rs *runState, idx int) error {
+func (o *Orchestrator) startStage(ctx context.Context, job models.Job, req models.StartJobRequest, cred secrets.Credential, rs *runState, idx int) error {
 	if idx < 0 || idx >= len(job.Stages) {
 		return fmt.Errorf("job: invalid stage index %d", idx)
 	}
@@ -1497,7 +1497,7 @@ func (o *Orchestrator) ReconcileOrphans(ctx context.Context) error {
 // orphanLooksSuccessfullyComplete reports whether a still-PROVISIONING job row
 // already reflects a successful install (DONE marker applied) so restart should
 // not fail the job.
-func orphanLooksSuccessfullyComplete(j models.ProvisioningJob) bool {
+func orphanLooksSuccessfullyComplete(j models.Job) bool {
 	if strings.EqualFold(strings.TrimSpace(j.Phase), "DONE") {
 		return true
 	}

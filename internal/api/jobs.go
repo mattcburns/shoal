@@ -16,7 +16,7 @@ import (
 
 // JobReader loads jobs for status polling.
 type JobReader interface {
-	Get(ctx context.Context, id string) (models.ProvisioningJob, error)
+	Get(ctx context.Context, id string) (models.Job, error)
 }
 
 // JobCanceler cancels an in-flight job (Orchestrator).
@@ -26,7 +26,7 @@ type JobCanceler interface {
 
 // JobStarter starts a provisioning job (Orchestrator).
 type JobStarter interface {
-	Start(ctx context.Context, req models.StartJobRequest) (models.ProvisioningJob, error)
+	Start(ctx context.Context, req models.StartJobRequest) (models.Job, error)
 }
 
 // WithJobStore attaches a job store for GET /v1/jobs/{id}.

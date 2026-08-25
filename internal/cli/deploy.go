@@ -377,7 +377,7 @@ func cmdDeployCancel(args []string) int {
 		return 1
 	}
 	// Poll until terminal (HandleTerminal is async; cleanup may take tens of seconds).
-	var j models.ProvisioningJob
+	var j models.Job
 	deadline := time.Now().Add(60 * time.Second)
 	for time.Now().Before(deadline) {
 		var err error

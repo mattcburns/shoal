@@ -13,16 +13,16 @@ import (
 // Memory is an in-process Store for unit tests and DSN-less lab spikes.
 type Memory struct {
 	mu   sync.RWMutex
-	jobs map[string]models.ProvisioningJob
+	jobs map[string]models.Job
 }
 
 // NewMemory returns an empty memory job store.
 func NewMemory() *Memory {
-	return &Memory{jobs: make(map[string]models.ProvisioningJob)}
+	return &Memory{jobs: make(map[string]models.Job)}
 }
 
 // Insert stores a new job. Fails if id already exists.
-func (m *Memory) Insert(_ context.Context, job models.ProvisioningJob) error {
+func (m *Memory) Insert(_ context.Context, job models.Job) error {
 	if job.ID == "" {
 		return fmt.Errorf("jobstore: empty job id")
 	}
@@ -40,21 +40,21 @@ func (m *Memory) Insert(_ context.Context, job models.ProvisioningJob) error {
 }
 
 // Get returns a job by id.
-func (m *Memory) Get(_ context.Context, id string) (models.ProvisioningJob, error) {
+func (m *Memory) Get(_ context.Context, id string) (models.Job, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	j, ok := m.jobs[id]
 	if !ok {
-		return models.ProvisioningJob{}, ErrNotFound
+		return models.Job{}, ErrNotFound
 	}
 	return cloneJob(j), nil
 }
 
 // ListByState returns all jobs in state.
-func (m *Memory) ListByState(_ context.Context, state models.LifecycleState) ([]models.ProvisioningJob, error) {
+func (m *Memory) ListByState(_ context.Context, state models.LifecycleState) ([]models.Job, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	var out []models.ProvisioningJob
+	var out []models.Job
 	for _, j := range m.jobs {
 		if j.State == state {
 			out = append(out, cloneJob(j))
@@ -65,13 +65,13 @@ func (m *Memory) ListByState(_ context.Context, state models.LifecycleState) ([]
 
 // ListByDevice returns jobs for deviceID, newest-updated first, optionally
 // filtered by state, capped at limit.
-func (m *Memory) ListByDevice(_ context.Context, deviceID string, state models.LifecycleState, limit int) ([]models.ProvisioningJob, error) {
+func (m *Memory) ListByDevice(_ context.Context, deviceID string, state models.LifecycleState, limit int) ([]models.Job, error) {
 	if limit <= 0 {
 		limit = 50
 	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	var out []models.ProvisioningJob
+	var out []models.Job
 	for _, j := range m.jobs {
 		if j.DeviceID != deviceID {
 			continue
@@ -182,7 +182,7 @@ func (m *Memory) Transition(_ context.Context, jobID string, to models.Lifecycle
 	return nil
 }
 
-func cloneJob(j models.ProvisioningJob) models.ProvisioningJob {
+func cloneJob(j models.Job) models.Job {
 	out := j
 	if j.Percent != nil {
 		p := *j.Percent

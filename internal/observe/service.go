@@ -152,9 +152,9 @@ func (s *Service) Watching(deviceID string) bool {
 	return s.Watches != nil && s.Watches.HasWatch(deviceID)
 }
 
-func (s *Service) latestJob(ctx context.Context, deviceID string) (models.ProvisioningJob, bool) {
+func (s *Service) latestJob(ctx context.Context, deviceID string) (models.Job, bool) {
 	if s.Jobs == nil {
-		return models.ProvisioningJob{}, false
+		return models.Job{}, false
 	}
 	states := []models.LifecycleState{
 		models.StateProvisioning,
@@ -163,7 +163,7 @@ func (s *Service) latestJob(ctx context.Context, deviceID string) (models.Provis
 		models.StateReady,
 		models.StateDiscovered,
 	}
-	var best models.ProvisioningJob
+	var best models.Job
 	var found bool
 	for _, st := range states {
 		list, err := s.Jobs.ListByState(ctx, st)

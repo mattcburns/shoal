@@ -20,7 +20,7 @@ import (
 func TestGetJob(t *testing.T) {
 	store := jobstore.NewMemory()
 	now := time.Now().UTC()
-	_ = store.Insert(context.Background(), models.ProvisioningJob{
+	_ = store.Insert(context.Background(), models.Job{
 		ID: "j1", DeviceID: "d1", State: models.StateProvisioning,
 		UpdatedAt: &now, CurrentStage: models.JobStageKindOSInstall,
 		InstallStrategy: models.InstallStrategyImageWrite,
@@ -36,7 +36,7 @@ func TestGetJob(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status %d body=%s", rr.Code, rr.Body.String())
 	}
-	var j models.ProvisioningJob
+	var j models.Job
 	if err := json.Unmarshal(rr.Body.Bytes(), &j); err != nil {
 		t.Fatal(err)
 	}
@@ -124,7 +124,7 @@ func (f *fakeCanceler) Cancel(_ context.Context, jobID string) error {
 func TestCancelJob(t *testing.T) {
 	store := jobstore.NewMemory()
 	now := time.Now().UTC()
-	_ = store.Insert(context.Background(), models.ProvisioningJob{
+	_ = store.Insert(context.Background(), models.Job{
 		ID: "j1", DeviceID: "d1", State: models.StateProvisioning, UpdatedAt: &now,
 	})
 	fc := &fakeCanceler{}
@@ -165,7 +165,7 @@ func TestCancelJobConflict(t *testing.T) {
 	fc := &fakeCanceler{err: errors.New("job: cannot cancel job in state provisioned")}
 	store := jobstore.NewMemory()
 	now := time.Now().UTC()
-	_ = store.Insert(context.Background(), models.ProvisioningJob{
+	_ = store.Insert(context.Background(), models.Job{
 		ID: "j1", DeviceID: "d1", State: models.StateProvisioned, UpdatedAt: &now,
 	})
 	s := api.New(config.Config{}, nil).WithJobStore(store).WithJobCanceler(fc)
