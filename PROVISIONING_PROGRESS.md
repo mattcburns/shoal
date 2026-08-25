@@ -495,7 +495,185 @@ cold boot is no slower than warm.
 Remaining known-good state: warm NetBox run 6.9 min, cold NetBox run
 7.3 min, CLI run 6.5 min — three trigger paths, both power states.
 Phase 7 (real OS image write) is the next frontier; the transport and
-boot plumbing under it is now solid. Overall end-to-end reliability on this specific R750 is still
+boot plumbing under it is now solid.
+
+## UPDATE 2026-08-24 (night, Phase 7): real Ubuntu install — three more bugs found and fixed, all via local QEMU repro first
+
+Went after Phase 7a (real OS write, not just `simulate` markers) against the
+real R750: downloaded Ubuntu 24.04 cloud image, built the customized
+payload (`prepare-ubuntu-cloud-payload.sh`: hostname `shoal-r750`, user
+`ubuntu`, dual-UART GRUB console), built the autoinstall marker ISO
+(`SHOAL_INSTALL_MODE=autoinstall`, target `/dev/sda` -- the R750's BOSS-S2
+SATA boot module, confirmed via Redfish `Storage` before touching anything:
+`CPU.1` is 2x1.92TB NVMe data drives, `AHCI.SL.6-1`/BOSS-S2 is 2x480GB SATA,
+non-RAID pass-through -- BOSS is Dell's dedicated OS-boot device, matching
+the disk with the existing `Boot Failed: Ubuntu` entry). User confirmed OK
+to wipe that disk before any of this started.
+
+**Every simulate-mode run all day never actually exercised the
+mount-the-CD-from-inside-Linux path** -- markers print without ever
+touching `/payload`. First real write-mode attempt exposed that the whole
+module-loading path was silently broken, in three layers, none surfaced
+by four weeks of simulate-only testing:
+
+1. **`modinfo`/`modprobe` (kmod) not on `PATH`.** They live in `/usr/sbin`,
+   which this environment's shell doesn't have. `pack_modules()` calls them
+   with `2>/dev/null || true`, tolerating a builtin-only kernel -- so it
+   silently packed **0 modules**, every single build, all day. Harmless for
+   simulate (never mounts the CD from Linux); would have silently no-op'd a
+   real disk write. Fixed: `build-marker-iso.sh` now prepends
+   `/usr/sbin:/sbin:/usr/local/sbin` to its own `PATH`, and hard-fails the
+   build for any non-simulate mode if 0 modules got packed (previously
+   silent).
+2. **Modules are `.ko.xz`, but `/init`'s hardcoded `insmod` paths were bare
+   `.ko`.** Once (1) was fixed, `pack_modules()` correctly found and copied
+   the `.ko.xz` files -- but busybox's `insmod` applet can't decompress
+   `.xz`, and the copies kept their compressed name, so `/init` failed with
+   "No such file". Fixed: decompress at pack time (`xz -dc`, `zstd -dc`, or
+   `gzip -dc` as needed) so the initramfs carries plain `.ko` files matching
+   what `/init` expects.
+3. **The real one: `ahci`/`libata` need a much deeper dependency chain than
+   the hand-written `insmod` list assumed, and two of the modules needed
+   aren't dependencies of `ahci` at all.** Confirmed via a from-scratch
+   local repro (extracted the built kernel+initrd, booted directly under
+   QEMU with a custom diagnostic `/init` -- no real hardware touched):
+   `insmod libata.ko` alone failed "unknown symbol" because it needs
+   `scsi_mod`+`scsi_common` first, and even with the *entire* transport
+   chain loaded correctly (confirmed via `lsmod`) and the kernel logging
+   `scsi 0:0:0:0: CD-ROM ...` / `scsi 1:0:0:0: Direct-Access ...`, **no
+   block device ever appeared** -- `sr_mod` and `sd_mod`, the SCSI class
+   drivers that actually create `/dev/sr*`/`/dev/sd*`, were never requested
+   anywhere; they aren't dependencies of `ahci`, they bind to what `ahci`+
+   `libata` expose. Fixed properly rather than patched around: replaced the
+   hand-ordered `insmod` lists in `load_mods()`/`mount_cd()` with
+   `modprobe` (busybox's applet, which correctly walks the `modules.dep`
+   `depmod` already generates) for `ahci sr_mod sd_mod isofs virtio_blk`,
+   and added `sr_mod`/`sd_mod` to `pack_modules()`'s requested-module list
+   so their dependency chains get packed too (10 modules packed now, up
+   from 0).
+
+**Validated the actual write mechanism end-to-end locally before any of
+this reached the BMC**: QEMU with an AHCI-attached scratch disk as
+`/dev/sda` (matching the real R750's controller type), first with an 80MB
+synthetic payload (`md5sum` of what landed on the emulated disk == `md5sum`
+of the source raw image, byte-for-byte), then with the **actual 4.5GB
+Ubuntu payload** -- `IMAGE_WRITE` progressed via heartbeats to 100%,
+`VERIFY`/`POSTINSTALL`/`DONE`, ~4 minutes total. Mounted the resulting disk
+image afterward and confirmed: valid ext4 rootfs, correct hostname, `ubuntu`
+user present.
+
+**Fourth bug, found by that same disk inspection:** `/boot/grub/grub.cfg`
+was completely unmodified -- our `console=ttyS1` addition never took
+effect, because Ubuntu 24.04 cloud images ship `/boot` as its own partition
+(`LABEL=BOOT`, separate from rootfs and the ESP), and the script's
+`chroot ... update-grub` call had nothing bind-mounted at `/boot` inside
+that chroot (nor `/proc`/`/sys`/`/dev`, which `grub-probe` needs) -- it
+silently no-op'd. The ESP's `grub.cfg` (`LABEL=UEFI`) is confirmed to be
+just a two-line `configfile` chainload to the real one; no separate edit
+needed there. Fixed: `prepare-ubuntu-cloud-payload.sh` now mounts the
+`BOOT`-labeled partition directly and `sed`-edits its `grub.cfg` in place
+(both the normal and recovery menu entries) instead of trying to regenerate
+it via a broken chroot. Rebuilt the payload and reran the full QEMU
+validation: `console=ttyS1,115200n8` confirmed present on both `linux`
+lines in the written disk's actual `grub.cfg`.
+
+All four fixes went through the same discipline as the earlier SOL work:
+reproduce locally (QEMU, in this case a from-scratch kernel+initrd boot
+with a custom diagnostic init, since the failure was silent with no error
+anywhere) before spending a live BMC cycle. `build-marker-iso.sh` synced to
+`infra/ansible/roles/marker_iso/files/`; `prepare-ubuntu-cloud-payload.sh`
+has no ansible-role copy to sync.
+
+**First live run failed -- a fifth bug, this one only visible on real
+hardware:** `cd mount fail devs=sda sdb sda sdb merr= modprobe=`. The two
+BOSS-S2 SATA disks were found correctly (`sda sdb`) but **no CD device at
+all**. Root cause: Dell iDRAC (like most real BMCs) presents Virtual Media
+as a **USB mass-storage device**, not SATA/AHCI -- QEMU's `-cdrom` (used
+for every local validation so far) attaches via AHCI/IDE by default, which
+is why local QEMU testing never caught this even though it exercised the
+same module-loading code path successfully. BMC checked clean after the
+failure: powered on, no boot override, media ejected -- safe, no cleanup
+needed.
+
+Fixed: added `xhci_pci`/`ehci_pci` (USB host controllers) and
+`usb_storage`/`uas` (USB mass-storage class drivers, bulk-only and USB
+Attached SCSI respectively -- covers either mode a BMC might use) to
+`pack_modules()`'s requested list and to the `modprobe` calls in
+`load_mods()`/`mount_cd()` (18 modules packed now, up from 10). This time
+validated locally with a QEMU rig that actually matches the real
+topology -- CD attached via `usb-storage` on a `qemu-xhci` controller,
+scratch disk via AHCI, exactly like the real R750 -- using `-kernel`/
+`-initrd` to boot the built image's own kernel+initrd directly (bypassing
+SeaBIOS's USB-boot-order limitations, which are a QEMU firmware quirk
+unrelated to the actual bug: on real hardware the firmware already
+proved capable of booting the virtual USB CD, since markers reached
+`BOOT` in every failed run today -- the failure was always in the
+in-Linux mount step, after boot, which is what this rig actually tests).
+Both the small synthetic payload (byte-exact checksum) and the full
+4.5GB Ubuntu payload passed clean through this corrected rig before
+retrying real hardware.
+
+**Second live run: SUCCESS.** `state=provisioned`, `last_marker_seq=9`,
+full `IMAGE_WRITE → VERIFY → POSTINSTALL → DONE → reboot`, ~11.5 minutes
+total. Real Ubuntu 24.04, customized (hostname `shoal-r750`, user `ubuntu`),
+written to the R750's BOSS-S2 boot disk (`/dev/sda`) and rebooted.
+
+**Post-install boot took one extra wrinkle to confirm, but resolved
+cleanly.** The very first post-install boot hit `Booting from AHCI
+Controller in SL 6: EFI Fixed Disk Boot Device 1` -> `Reset System` --
+the *generic* UEFI boot entry (no specific file path) rather than the
+disk's own named `Boot0002 "Unavailable: Ubuntu"` entry, which Dell's
+firmware had cached as unavailable from *before* today's wipe (stale GPT
+partition UUID). Confirmed the ESP itself was fine the whole time --
+`\EFI\BOOT\BOOTX64.EFI` (the standard fallback), `\EFI\ubuntu\shimx64.efi`,
+and `grubx64.efi` all present and correct on the written disk, checked by
+mounting the payload image directly. Issued one more clean `ForceRestart`
+via Redfish and captured the full cycle from a known start: firmware
+re-enumerated boot options (`Enumerating Boot options... Done`), this time
+correctly resolved `Boot0002` and booted `AHCI Controller in SL 6: Ubuntu`
+(the *named* entry) straight through -- GRUB, then the kernel's own EFI
+stub (`Measured initrd data into PCR 9`, confirming TPM measured boot is
+active on this box). One quiet SOL attach later showed nothing new (a
+live SOL feed shows no scrollback, so an idle login prompt looks silent to
+a fresh attach) -- confirmed definitively instead via Redfish's own
+`BootProgress.LastState`, which the iDRAC only ever reports once the OS
+itself has signaled it's up:
+
+```
+"BootProgress": { "LastState": "OSRunning", "LastStateTime": "2026-08-25T00:36:49-05:00" }
+```
+
+**Real Ubuntu 24.04, installed by Shoal's own write pipeline against a
+real Dell PowerEdge R750, is running.** The one-time stale-boot-option
+hiccup self-corrected on the very next POST cycle with no code change
+needed -- a plain Redfish `ForceRestart`, nothing special -- and is most
+likely specific to a *first* install onto a disk that previously held a
+different OS (stale NVRAM cache of that old install's boot health). Worth
+knowing about for the next fresh-wipe install on real hardware, not
+necessarily worth engineering around given it corrected itself immediately.
+
+Added `TestLiveConsoleTail` (`live_sol`-gated,
+`internal/common/redfish/sol_live_test.go`) alongside
+`TestLiveMarkerBootCapture` during this diagnosis: a passive, read-only,
+continuously-accumulating SOL watch (no Reset, no virtual-media change) for
+checking on an already-running host without disturbing it -- useful beyond
+today, e.g. confirming an install actually came up before handing a box
+back to an operator.
+
+## Phase 7 summary
+
+Five real bugs found and fixed, all reproduced locally before spending a
+live BMC cycle where that was possible (four of five; the fifth --
+USB vs. AHCI virtual-media attachment -- only diverges from local QEMU
+testing on real hardware, discovered live and then re-validated locally
+with a corrected QEMU rig before the successful retry): PATH-starved
+module packing, compressed vs. bare `.ko` module names, an incomplete
+hand-ordered `insmod` dependency chain (missing `libata`/`sr_mod`/`sd_mod`),
+a `chroot update-grub` that silently no-op'd against a separate `/boot`
+partition, and USB (not AHCI) virtual-media attachment on real Dell BMCs.
+Phase 7a (real OS install to real hardware, not just the nested lab) is
+now proven end-to-end: written, booted, and confirmed running via the
+BMC's own authoritative status. Overall end-to-end reliability on this specific R750 is still
 not 100%: multiple clean successes today, multiple failures with
 increasingly well-understood (and now mostly fixed) causes, and this one
 remaining failure mode that's real but not yet diagnosed. The tool for
