@@ -2,6 +2,7 @@ package job_test
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"strings"
@@ -116,6 +117,173 @@ func TestOrchestratorHappyPathDone(t *testing.T) {
 	if j.DeviceID != "1" {
 		t.Fatalf("want device_id remapped to NetBox pk, got %q", j.DeviceID)
 	}
+}
+
+// TestOrchestratorDeletesEphemeralCredentialOnDone proves the "job-"+ID
+// credential Start mints when the caller supplies raw username/password
+// (no persistent credential_ref) is deleted once the job reaches a
+// terminal state -- it's never referenced again after that, and nothing
+// else cleaned these up before this change (docs/deprovision-design.md
+// Key Decision 6).
+func TestOrchestratorDeletesEphemeralCredentialOnDone(t *testing.T) {
+	ctx := context.Background()
+	store := jobstore.NewMemory()
+	sec := secrets.NewMemory()
+	fakeBMC := redfish.NewFake()
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	pr, pw := io.Pipe()
+	watch := sol.NewWatchService(log, nil)
+	watch.NewTransport = func(session models.WatchSession) sol.Transport {
+		return sol.NewReaderTransport(pr)
+	}
+
+	orch := job.NewOrchestrator(job.Options{
+		Log: log, Store: store, Secrets: sec,
+		NewBMC:              func(cfg redfish.Config) (redfish.BMC, error) { return fakeBMC, nil },
+		Watches:             watch,
+		ReconcileFailOrphan: true,
+	})
+	defer orch.Stop()
+	watch.SetProgress(orch.ProgressPort())
+
+	j, err := orch.Start(ctx, models.StartJobRequest{
+		DeviceID: "n1", BMCEndpoint: "http://bmc.test", BMCUsername: "admin", BMCPassword: "secret",
+		SerialTarget: "n1", ISOURL: "http://iso/shoal-marker.iso",
+	})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	loaded, err := store.Get(ctx, j.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.CredentialRef != "job-"+j.ID {
+		t.Fatalf("expected ephemeral ref job-%s, got %q", j.ID, loaded.CredentialRef)
+	}
+	// Sanity: the ref actually resolves before the job ends.
+	if _, err := sec.Get(ctx, loaded.CredentialRef); err != nil {
+		t.Fatalf("credential should resolve mid-job: %v", err)
+	}
+
+	writeMarker(t, pw, "SHOAL|1|1|2026-06-19T04:10:00Z|BOOT|5|OK|booting")
+	writeMarker(t, pw, "SHOAL|1|2|2026-06-19T04:10:20Z|DONE|100|OK|reboot pending")
+	_ = pw.Close()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		got, _ := store.Get(ctx, j.ID)
+		if got.State == models.StateProvisioned {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if _, err := sec.Get(ctx, loaded.CredentialRef); !errors.Is(err, secrets.ErrNotFound) {
+		t.Fatalf("expected ephemeral credential deleted after terminal, got err=%v", err)
+	}
+}
+
+// TestOrchestratorPreservesExplicitCredentialRefOnDone proves a
+// caller-supplied (persistent, device-scoped in practice) credential_ref
+// is left alone on job completion -- only the "job-"+ID minting
+// convention is eligible for cleanup, never an explicit ref (Key
+// Decision 6's exact-match safety property).
+func TestOrchestratorPreservesExplicitCredentialRefOnDone(t *testing.T) {
+	ctx := context.Background()
+	store := jobstore.NewMemory()
+	sec := secrets.NewMemory()
+	fakeBMC := redfish.NewFake()
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	if err := sec.Put(ctx, "bmc-n1", secrets.Credential{Username: "admin", Password: "secret"}); err != nil {
+		t.Fatal(err)
+	}
+
+	pr, pw := io.Pipe()
+	watch := sol.NewWatchService(log, nil)
+	watch.NewTransport = func(session models.WatchSession) sol.Transport {
+		return sol.NewReaderTransport(pr)
+	}
+
+	orch := job.NewOrchestrator(job.Options{
+		Log: log, Store: store, Secrets: sec,
+		NewBMC:              func(cfg redfish.Config) (redfish.BMC, error) { return fakeBMC, nil },
+		Watches:             watch,
+		ReconcileFailOrphan: true,
+	})
+	defer orch.Stop()
+	watch.SetProgress(orch.ProgressPort())
+
+	j, err := orch.Start(ctx, models.StartJobRequest{
+		DeviceID: "n1", BMCEndpoint: "http://bmc.test", CredentialRef: "bmc-n1",
+		SerialTarget: "n1", ISOURL: "http://iso/shoal-marker.iso",
+	})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+
+	writeMarker(t, pw, "SHOAL|1|1|2026-06-19T04:10:00Z|DONE|100|OK|reboot pending")
+	_ = pw.Close()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		got, _ := store.Get(ctx, j.ID)
+		if got.State == models.StateProvisioned {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if _, err := sec.Get(ctx, "bmc-n1"); err != nil {
+		t.Fatalf("explicit credential_ref must survive job completion, got err=%v", err)
+	}
+}
+
+// TestOrchestratorDeletesEphemeralCredentialOnFailure proves cleanup is
+// unconditional on terminal reason, not gated on success.
+func TestOrchestratorDeletesEphemeralCredentialOnFailure(t *testing.T) {
+	ctx := context.Background()
+	store := jobstore.NewMemory()
+	sec := secrets.NewMemory()
+	fakeBMC := redfish.NewFake()
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	pr, pw := io.Pipe()
+	defer pw.Close()
+	watch := sol.NewWatchService(log, nil)
+	watch.NewTransport = func(session models.WatchSession) sol.Transport {
+		return sol.NewReaderTransport(pr)
+	}
+
+	orch := job.NewOrchestrator(job.Options{
+		Log: log, Store: store, Secrets: sec,
+		NewBMC:              func(cfg redfish.Config) (redfish.BMC, error) { return fakeBMC, nil },
+		Watches:             watch,
+		ReconcileFailOrphan: true,
+	})
+	defer orch.Stop()
+	watch.SetProgress(orch.ProgressPort())
+
+	j, err := orch.Start(ctx, models.StartJobRequest{
+		DeviceID: "n1", BMCEndpoint: "http://bmc", BMCUsername: "u", BMCPassword: "p",
+		SerialTarget: "n1", ISOURL: "http://iso/x.iso",
+		StallTimeout: 80 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := "job-" + j.ID
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		got, _ := store.Get(ctx, j.ID)
+		if got.State == models.StateFailed {
+			if _, err := sec.Get(ctx, ref); !errors.Is(err, secrets.ErrNotFound) {
+				t.Fatalf("expected ephemeral credential deleted after failure, got err=%v", err)
+			}
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("stall did not fail job in time")
 }
 
 func TestStartFillsDefaultBMCCredentials(t *testing.T) {

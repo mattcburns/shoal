@@ -1083,6 +1083,20 @@ func (o *Orchestrator) handleTerminalOnce(ctx context.Context, jobID string, rea
 		errMsg = string(reason)
 	}
 
+	// Ephemeral job-scoped credentials (minted by Start when no persistent
+	// credential_ref was resolved -- see the "job-"+jobID mint in Start) are
+	// never referenced again once this job ends. Delete here, after
+	// cleanupBMC/postCheckClean above have finished using credRef, gated on
+	// an exact match against that minting convention so a persistent
+	// device-scoped ref (e.g. "bmc-C784MH3", sourced from NetBox) can never
+	// be deleted even by a future bug in this check. Runs unconditionally on
+	// every terminal reason, not just success.
+	if credRef == "job-"+jobID && o.secrets != nil {
+		if err := o.secrets.Delete(context.Background(), credRef); err != nil {
+			o.log.Warn("ephemeral credential cleanup failed", "job_id", jobID, "err", err.Error())
+		}
+	}
+
 	// Mark current stage terminal for accurate job status (M1+).
 	if len(job.Stages) > 0 {
 		stageID := job.CurrentStage
