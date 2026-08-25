@@ -862,6 +862,10 @@ func (o *Orchestrator) advanceAfterPrepDone(jobID string) {
 	stages := setStageState(job.Stages, models.JobStageKindPrep, models.JobStageStateDone, "PREP_DONE", "")
 	osIdx := stageIndex(stages, models.JobStageKindOSInstall)
 	if osIdx < 0 {
+		if job.Kind == models.JobKindDeprovision {
+			o.finishDeprovision(ctx, jobID, job, rs, stages)
+			return
+		}
 		o.enqueueTerminal(jobID, ReasonMarkerError)
 		return
 	}
@@ -884,6 +888,67 @@ func (o *Orchestrator) advanceAfterPrepDone(jobID string) {
 		_ = o.store.UpdateStages(ctx, jobID, models.JobStageKindOSInstall, job.InstallStrategy, stages)
 		o.enqueueTerminal(jobID, ReasonBMC)
 	}
+}
+
+// finishDeprovision completes a Kind=deprovision job after PREP_DONE. There is
+// no os_install stage to advance to (docs/deprovision-design.md Key Decision
+// 5) -- but the marker ISO's /init deliberately stays on and heartbeats after
+// PREP_DONE, waiting for a media swap into the next stage that will never
+// come here (see build-marker-iso.sh's prep-mode loop). Key Decision 2:
+// the orchestrator, not the guest, issues the power-off. handleTerminalOnce
+// reads job.Kind to write lifecycle_state=ready instead of provisioned.
+func (o *Orchestrator) finishDeprovision(ctx context.Context, jobID string, job models.Job, rs *runState, stages []models.JobStage) {
+	_ = o.store.UpdateStages(ctx, jobID, models.JobStageKindPrep, job.InstallStrategy, stages)
+	_ = o.store.UpdateProgress(ctx, jobID, "PREP_DONE", intPtr(100), 0, "")
+
+	bmcURL := rs.bmcURL
+	if bmcURL == "" {
+		bmcURL = job.BMCEndpoint
+	}
+	credRef := rs.credential
+	if credRef == "" {
+		credRef = job.CredentialRef
+	}
+	systemID := rs.systemID
+	if systemID == "" {
+		systemID = job.SystemID
+	}
+	if bmcURL != "" {
+		if err := o.powerOffBMC(ctx, bmcURL, credRef, systemID); err != nil {
+			o.log.Warn("deprovision power-off failed", "job_id", jobID, "err", err.Error())
+		}
+	}
+	o.enqueueTerminal(jobID, ReasonDoneOK)
+}
+
+// powerOffBMC issues a hard power-off (ForceOff) via the BMC, mirroring
+// cleanupBMC's connect pattern. Best-effort: handleTerminalOnce's own
+// cleanupBMC/postCheckClean run afterward regardless of this error.
+func (o *Orchestrator) powerOffBMC(ctx context.Context, bmcURL, credRef, systemID string) error {
+	user, pass := "", ""
+	if credRef != "" && o.secrets != nil {
+		if c, err := o.secrets.Get(ctx, credRef); err == nil {
+			user, pass = c.Username, c.Password
+		}
+	}
+	bmc, err := o.newBMC(redfish.Config{
+		BaseURL:        bmcURL,
+		Username:       user,
+		Password:       pass,
+		AuthMode:       o.authMode,
+		TLSMode:        o.tlsMode,
+		CAFile:         o.caFile,
+		RequestTimeout: 20 * time.Second,
+		MaxConcurrent:  1,
+	})
+	if err != nil {
+		return err
+	}
+	if err := bmc.Open(ctx); err != nil {
+		return err
+	}
+	defer func() { _ = bmc.Close(context.Background()) }()
+	return bmc.Power(ctx, systemID, "ForceOff")
 }
 
 // pickCDMediaPair returns primary (boot) and secondary CD-capable media URIs.
@@ -1045,10 +1110,15 @@ func (o *Orchestrator) handleTerminalOnce(ctx context.Context, jobID string, rea
 	var errMsg string
 	switch reason {
 	case ReasonDoneOK:
-		// SOL DONE means the install path succeeded. Cleanup remains mandatory
-		// best-effort, but must not reverse success: process crash, sushy tray
-		// removal, or post-restart secret loss must not mark a finished install failed.
-		to = models.StateProvisioned
+		// SOL DONE means the install (or, for Kind=deprovision, the wipe) path
+		// succeeded. Cleanup remains mandatory best-effort, but must not
+		// reverse success: process crash, sushy tray removal, or post-restart
+		// secret loss must not mark a finished job failed.
+		if job.Kind == models.JobKindDeprovision {
+			to = models.StateReady
+		} else {
+			to = models.StateProvisioned
+		}
 		errMsg = ""
 		if cleanupErr != nil {
 			if cleanupAlreadyClean(cleanupErr) {
@@ -1112,7 +1182,7 @@ func (o *Orchestrator) handleTerminalOnce(ctx context.Context, jobID string, rea
 		}
 		stageState := models.JobStageStateFailed
 		stagePhase := job.Phase
-		if to == models.StateProvisioned {
+		if reason == ReasonDoneOK {
 			stageState = models.JobStageStateDone
 			if stagePhase == "" {
 				stagePhase = "DONE"

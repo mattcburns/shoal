@@ -119,6 +119,103 @@ func TestOrchestratorHappyPathDone(t *testing.T) {
 	}
 }
 
+// TestOrchestratorDeprovisionPowersOffAndWritesReady proves the Kind=deprovision
+// path (docs/deprovision-design.md Key Decisions 2 and 5): a single prep
+// stage runs, PREP_DONE (the same marker prep-then-install jobs use to
+// advance to os_install) finds no next stage and instead triggers an
+// orchestrator-issued ForceOff and a lifecycle_state=ready write-back --
+// never provisioned, and never left running the marker ISO's heartbeat loop
+// waiting for a media swap that was never coming.
+func TestOrchestratorDeprovisionPowersOffAndWritesReady(t *testing.T) {
+	ctx := context.Background()
+	store := jobstore.NewMemory()
+	sec := secrets.NewMemory()
+	fakeBMC := redfish.NewFake()
+	nb := netbox.NewMemory()
+	_, _ = nb.UpsertDevice(ctx, models.DeviceIdentity{
+		Serial: "lab-node-1", LifecycleState: models.StateProvisioned,
+	})
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	pr, pw := io.Pipe()
+	watch := sol.NewWatchService(log, nil)
+	watch.NewTransport = func(session models.WatchSession) sol.Transport {
+		return sol.NewReaderTransport(pr)
+	}
+
+	orch := job.NewOrchestrator(job.Options{
+		Log:     log,
+		Store:   store,
+		Secrets: sec,
+		NewBMC: func(cfg redfish.Config) (redfish.BMC, error) {
+			return fakeBMC, nil
+		},
+		Watches:             watch,
+		NetBox:              nb,
+		AuthMode:            "basic",
+		TLSMode:             "off",
+		ReconcileFailOrphan: true,
+	})
+	defer orch.Stop()
+	watch.SetProgress(orch.ProgressPort())
+
+	j, err := orch.Start(ctx, models.StartJobRequest{
+		DeviceID:        "lab-node-1",
+		BMCEndpoint:     "http://bmc.test",
+		BMCUsername:     "admin",
+		BMCPassword:     "secret",
+		SerialTarget:    "lab-node-1",
+		Kind:            models.JobKindDeprovision,
+		Prep:            "wipe_only",
+		PrepISOURL:      "http://iso/shoal-prep.iso",
+		WipeLevel:       "zero",
+		ApproveDestruct: true,
+	})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if j.Kind != models.JobKindDeprovision {
+		t.Fatalf("kind not persisted: %q", j.Kind)
+	}
+	if len(j.Stages) != 1 || j.Stages[0].Kind != models.JobStageKindPrep {
+		t.Fatalf("want single prep stage, got %+v", j.Stages)
+	}
+
+	writeMarker(t, pw, "SHOAL|1|1|2026-06-19T04:10:00Z|BOOT|5|OK|booting")
+	writeMarker(t, pw, "SHOAL|1|2|2026-06-19T04:10:10Z|WIPE|50|OK|wiping")
+	writeMarker(t, pw, "SHOAL|1|3|2026-06-19T04:10:20Z|PREP_DONE|100|OK|prep complete ready for os install")
+
+	deadline := time.Now().Add(3 * time.Second)
+	var final models.Job
+	for time.Now().Before(deadline) {
+		final, err = store.Get(ctx, j.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if final.State == models.StateReady || final.State == models.StateFailed {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	_ = pw.Close()
+	if final.State != models.StateReady {
+		t.Fatalf("want ready, got %s err=%s phase=%s", final.State, final.Error, final.Phase)
+	}
+	sys, err := fakeBMC.GetSystem(ctx, "1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.EqualFold(sys.PowerState, "Off") {
+		t.Fatalf("want orchestrator-issued power-off, power state=%s", sys.PowerState)
+	}
+	if !fakeBMC.BootCleared() || fakeBMC.MediaInserted() {
+		t.Fatal("cleanup incomplete: media/boot still set")
+	}
+	if nb.BySerial["lab-node-1"].LifecycleState != models.StateReady {
+		t.Fatalf("netbox want ready, got %s", nb.BySerial["lab-node-1"].LifecycleState)
+	}
+}
+
 // TestOrchestratorDeletesEphemeralCredentialOnDone proves the "job-"+ID
 // credential Start mints when the caller supplies raw username/password
 // (no persistent credential_ref) is deleted once the job reaches a
