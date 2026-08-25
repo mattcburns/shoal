@@ -113,6 +113,11 @@ def _post(path, body=None, timeout=None):
         return None, str(exc)
 
 
+def get_profiles():
+    """GET /v1/profiles -> ({"profiles": [{"profile": {...}, ...}]}, error)."""
+    return _get("/v1/profiles")
+
+
 def get_status(device_id):
     """GET /v1/devices/{id}/status -> (models.DeviceStatus dict, error)."""
     return _get("/v1/devices/%s/status" % device_id)

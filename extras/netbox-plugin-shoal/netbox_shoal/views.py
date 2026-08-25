@@ -351,6 +351,10 @@ def _status_context(instance, request=None):
     creds, creds_err = client.get_credentials(
         device_id, credential_ref=(cf.get("credential_ref") or "")
     )
+    profiles_data, profiles_err = client.get_profiles()
+    # profiles_err (SHOAL_PROFILE_DIR unset, or Shoal unreachable) just means
+    # the dropdown falls back to "spike" only -- not worth failing the page.
+    profiles = (profiles_data or {}).get("profiles", []) if not profiles_err else []
     if isinstance(creds, dict):
         if not creds.get("bmc_ip") and cf.get("bmc_ip"):
             creds = dict(creds)
@@ -372,6 +376,7 @@ def _status_context(instance, request=None):
         "shoal_credentials": creds or {},
         "shoal_credentials_error": creds_err,
         "shoal_actions_enabled": bool(_cfg().get("SHOAL_ENABLE_ACTIONS", True)),
+        "shoal_profiles": profiles,
     }
 
 

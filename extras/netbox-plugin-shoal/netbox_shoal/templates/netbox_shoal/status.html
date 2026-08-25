@@ -66,8 +66,14 @@
               </div>
               <div class="col-md-2">
                 <label class="form-label small mb-0" for="id_profile_ref">Profile</label>
-                <input class="form-control form-control-sm" id="id_profile_ref" name="profile_ref"
-                       value="{{ d.profile_ref }}">
+                <select class="form-select form-select-sm" id="id_profile_ref" name="profile_ref">
+                  <option value="spike" {% if d.profile_ref == "spike" or not d.profile_ref %}selected{% endif %}>spike (default)</option>
+                  {% for p in shoal_profiles %}
+                    <option value="{{ p.profile.ref }}" {% if p.profile.ref == d.profile_ref %}selected{% endif %}>
+                      {{ p.profile.ref }}{% if p.profile.os_family %} ({{ p.profile.os_family }}{% if p.profile.install_strategy %}, {{ p.profile.install_strategy }}{% endif %}){% endif %}
+                    </option>
+                  {% endfor %}
+                </select>
               </div>
               <div class="col-md-2">
                 <label class="form-label small mb-0" for="id_serial_target">Serial / system</label>
