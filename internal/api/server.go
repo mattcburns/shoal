@@ -10,6 +10,7 @@ import (
 
 	"github.com/mattcburns/shoal/internal/common/config"
 	"github.com/mattcburns/shoal/internal/common/telemetry"
+	"github.com/mattcburns/shoal/internal/core/profile"
 	"github.com/mattcburns/shoal/internal/deploy/jobstore"
 	"github.com/mattcburns/shoal/internal/discover"
 	"github.com/mattcburns/shoal/internal/observe"
@@ -34,6 +35,7 @@ type Server struct {
 	power    DevicePower
 	creds    DeviceCredentials
 	poll     DevicePoll
+	profiles profile.Store
 }
 
 // New constructs a Server with routes registered.
@@ -75,6 +77,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /v1/devices/{id}/poll", s.handleDevicePoll)
 	s.mux.HandleFunc("GET /v1/devices/{id}/credentials", s.handleDeviceCredentialsGet)
 	s.mux.HandleFunc("PUT /v1/devices/{id}/credentials", s.handleDeviceCredentialsPut)
+	s.mux.HandleFunc("GET /v1/profiles", s.handleListProfiles)
 }
 
 func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {

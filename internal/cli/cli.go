@@ -222,6 +222,7 @@ func cmdServe(args []string) int {
 				log.Info("profile store enabled", "dir", cfg.ProfileDir)
 			}
 		}
+		srvAPI.WithProfiles(profStore)
 		// Phase 4: Telemetry is Postgres-only — no silent memory fallback.
 		// Open before Orchestrator so SOL markers can append job_log for the NetBox UI.
 		var telemStore telemetry.Store
