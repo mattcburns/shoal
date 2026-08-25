@@ -38,14 +38,15 @@ func (p *Postgres) Insert(ctx context.Context, job models.Job) error {
 INSERT INTO jobs (
   id, device_id, profile_ref, state, attempt, phase, percent, last_marker_seq,
   started_at, updated_at, error, sol_session_id, iso_url, bmc_endpoint,
-  system_id, credential_ref, current_stage, install_strategy, stages_json
-) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)`,
+  system_id, credential_ref, current_stage, install_strategy, stages_json, kind
+) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)`,
 		job.ID, job.DeviceID, job.ProfileRef, string(job.State), job.Attempt,
 		nullString(job.Phase), nullInt(job.Percent), job.LastMarkerSeq,
 		job.StartedAt, job.UpdatedAt, nullString(job.Error), nullString(job.SOLSessionID),
 		nullString(job.ISOURL), nullString(job.BMCEndpoint),
 		nullString(job.SystemID), nullString(job.CredentialRef),
 		nullString(job.CurrentStage), nullString(job.InstallStrategy), nullString(stagesJSON),
+		nullString(job.Kind),
 	)
 	if err != nil {
 		return fmt.Errorf("jobstore: insert: %w", err)
@@ -58,7 +59,7 @@ func (p *Postgres) Get(ctx context.Context, id string) (models.Job, error) {
 	row := p.db.QueryRowContext(ctx, `
 SELECT id, device_id, profile_ref, state, attempt, phase, percent, last_marker_seq,
        started_at, updated_at, error, sol_session_id, iso_url, bmc_endpoint,
-       system_id, credential_ref, current_stage, install_strategy, stages_json
+       system_id, credential_ref, current_stage, install_strategy, stages_json, kind
 FROM jobs WHERE id = $1`, id)
 	j, err := scanJob(row)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -75,7 +76,7 @@ func (p *Postgres) ListByState(ctx context.Context, state models.LifecycleState)
 	rows, err := p.db.QueryContext(ctx, `
 SELECT id, device_id, profile_ref, state, attempt, phase, percent, last_marker_seq,
        started_at, updated_at, error, sol_session_id, iso_url, bmc_endpoint,
-       system_id, credential_ref, current_stage, install_strategy, stages_json
+       system_id, credential_ref, current_stage, install_strategy, stages_json, kind
 FROM jobs WHERE state = $1`, string(state))
 	if err != nil {
 		return nil, fmt.Errorf("jobstore: list: %w", err)
@@ -101,7 +102,7 @@ func (p *Postgres) ListByDevice(ctx context.Context, deviceID string, state mode
 	query := `
 SELECT id, device_id, profile_ref, state, attempt, phase, percent, last_marker_seq,
        started_at, updated_at, error, sol_session_id, iso_url, bmc_endpoint,
-       system_id, credential_ref, current_stage, install_strategy, stages_json
+       system_id, credential_ref, current_stage, install_strategy, stages_json, kind
 FROM jobs WHERE device_id = $1`
 	args := []any{deviceID}
 	if state != "" {
@@ -219,14 +220,14 @@ func scanJob(row scannable) (models.Job, error) {
 	var j models.Job
 	var state string
 	var phase, errMsg, solSess, iso, bmc, sysID, credRef sql.NullString
-	var curStage, instStrat, stagesJSON sql.NullString
+	var curStage, instStrat, stagesJSON, kind sql.NullString
 	var percent sql.NullInt64
 	var started, updated sql.NullTime
 	err := row.Scan(
 		&j.ID, &j.DeviceID, &j.ProfileRef, &state, &j.Attempt,
 		&phase, &percent, &j.LastMarkerSeq,
 		&started, &updated, &errMsg, &solSess, &iso, &bmc,
-		&sysID, &credRef, &curStage, &instStrat, &stagesJSON,
+		&sysID, &credRef, &curStage, &instStrat, &stagesJSON, &kind,
 	)
 	if err != nil {
 		return models.Job{}, err
@@ -270,6 +271,9 @@ func scanJob(row scannable) (models.Job, error) {
 	}
 	if instStrat.Valid {
 		j.InstallStrategy = instStrat.String
+	}
+	if kind.Valid {
+		j.Kind = kind.String
 	}
 	if stagesJSON.Valid && stagesJSON.String != "" {
 		if err := json.Unmarshal([]byte(stagesJSON.String), &j.Stages); err != nil {

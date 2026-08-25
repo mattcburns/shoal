@@ -13,6 +13,9 @@ import (
 // nCD is the BMC CD-capable Virtual Media count used to resolve seed_delivery=auto.
 // Pass 0 to treat as unknown (defaults to 1 for conservative auto resolution).
 func expandStages(req models.StartJobRequest, nCD int) ([]models.JobStage, error) {
+	if strings.TrimSpace(strings.ToLower(req.Kind)) == models.JobKindDeprovision {
+		return expandDeprovisionStages(req)
+	}
 	strategy, err := resolveInstallStrategy(req)
 	if err != nil {
 		return nil, err
@@ -95,6 +98,34 @@ func expandStages(req models.StartJobRequest, nCD int) ([]models.JobStage, error
 	default:
 		return nil, fmt.Errorf("job: unknown prep %q", req.Prep)
 	}
+}
+
+// expandDeprovisionStages builds the single-stage wipe-only job for
+// Kind=deprovision (docs/deprovision-design.md Key Decisions 1 and 5).
+// Unlike the install path above, no os_install stage follows -- there is no
+// InstallStrategy/ISOURL/OsFamily to resolve, and none of the seed-delivery
+// logic applies. This is the whole reason Kind exists as an explicit
+// discriminator rather than inferring "no install stage" from which fields
+// the caller left empty.
+func expandDeprovisionStages(req models.StartJobRequest) ([]models.JobStage, error) {
+	prep := strings.TrimSpace(strings.ToLower(req.Prep))
+	if prep != "wipe_only" {
+		return nil, fmt.Errorf("job: kind=deprovision requires prep=wipe_only (got %q)", req.Prep)
+	}
+	prepURL := strings.TrimSpace(req.PrepISOURL)
+	if prepURL == "" {
+		prepURL = strings.TrimSpace(os.Getenv("SHOAL_PREP_ISO_URL"))
+	}
+	if prepURL == "" {
+		return nil, fmt.Errorf("job: prep wipe_only requires prep_iso_url or SHOAL_PREP_ISO_URL")
+	}
+	prepStage := models.JobStage{
+		ID:       models.JobStageKindPrep,
+		Kind:     models.JobStageKindPrep,
+		MediaURL: prepURL,
+		State:    models.JobStageStatePending,
+	}
+	return []models.JobStage{prepStage}, nil
 }
 
 // normalizeSeedRequest applies defaults for seed fields before stage expansion.

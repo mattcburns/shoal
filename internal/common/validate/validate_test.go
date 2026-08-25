@@ -225,6 +225,32 @@ func TestStartJobRequest(t *testing.T) {
 	if err := validate.StartJobRequest(ub); err != nil {
 		t.Fatal(err)
 	}
+	// Kind=deprovision: no iso_url needed, but prep=wipe_only + wipe_level required.
+	dep := models.StartJobRequest{
+		Kind:            models.JobKindDeprovision,
+		DeviceID:        "n1",
+		BMCEndpoint:     "http://lab:8001",
+		SerialTarget:    "lab-node-1",
+		BMCUsername:     "a",
+		BMCPassword:     "b",
+		Prep:            "wipe_only",
+		PrepISOURL:      "http://lab:8080/shoal-prep.iso",
+		WipeLevel:       "zero",
+		ApproveDestruct: true,
+	}
+	if err := validate.StartJobRequest(dep); err != nil {
+		t.Fatal(err)
+	}
+	noWipeLevel := dep
+	noWipeLevel.WipeLevel = ""
+	if err := validate.StartJobRequest(noWipeLevel); err == nil {
+		t.Fatal("expected deprovision without wipe_level to fail")
+	}
+	noPrep := dep
+	noPrep.Prep = "skip"
+	if err := validate.StartJobRequest(noPrep); err == nil {
+		t.Fatal("expected deprovision without prep=wipe_only to fail")
+	}
 }
 
 func TestDeviceCredentials(t *testing.T) {

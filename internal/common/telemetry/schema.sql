@@ -29,6 +29,9 @@ ALTER TABLE jobs ADD COLUMN IF NOT EXISTS current_stage TEXT;
 ALTER TABLE jobs ADD COLUMN IF NOT EXISTS install_strategy TEXT;
 ALTER TABLE jobs ADD COLUMN IF NOT EXISTS stages_json TEXT;
 
+-- Deprovision (docs/deprovision-design.md Key Decision 5): job kind discriminator.
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS kind TEXT;
+
 CREATE TABLE IF NOT EXISTS events (
   id TEXT PRIMARY KEY,
   device_id TEXT NOT NULL,

@@ -311,15 +311,21 @@ func (o *Orchestrator) Start(ctx context.Context, req models.StartJobRequest) (m
 	if err := o.checkProfileApproval(ctx, profileRef, req.ApproveDestruct); err != nil {
 		return models.Job{}, err
 	}
-	if err := o.maybeBuildISO(ctx, &req, profileRef); err != nil {
-		return models.Job{}, err
-	}
-	// Legacy resolve if still empty (iso_base only path when media_url not used).
-	if err := o.resolveISOURL(ctx, &req, profileRef); err != nil {
-		return models.Job{}, err
-	}
-	if req.ISOURL == "" {
-		return models.Job{}, fmt.Errorf("job: iso_url is required")
+	// Kind=deprovision has no os_install stage (see expandStages /
+	// expandDeprovisionStages): no ISO to build or resolve, and iso_url
+	// empty is expected, not an error. resolveISOURL in particular would
+	// otherwise reject the default spike profile with iso_url empty.
+	if req.Kind != models.JobKindDeprovision {
+		if err := o.maybeBuildISO(ctx, &req, profileRef); err != nil {
+			return models.Job{}, err
+		}
+		// Legacy resolve if still empty (iso_base only path when media_url not used).
+		if err := o.resolveISOURL(ctx, &req, profileRef); err != nil {
+			return models.Job{}, err
+		}
+		if req.ISOURL == "" {
+			return models.Job{}, fmt.Errorf("job: iso_url is required")
+		}
 	}
 
 	jobID := newID()
@@ -365,6 +371,7 @@ func (o *Orchestrator) Start(ctx context.Context, req models.StartJobRequest) (m
 		SOLSessionID:    sessionID,
 		InstallStrategy: strategy,
 		Stages:          stages,
+		Kind:            req.Kind,
 	}
 	if err := o.store.Insert(ctx, job); err != nil {
 		return models.Job{}, err

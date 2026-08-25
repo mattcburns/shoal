@@ -106,6 +106,17 @@ const (
 	JobStageKindVerify    = "verify"
 )
 
+// Job kinds (docs/deprovision-design.md Key Decision 5). Empty/JobKindInstall
+// is every job before this field existed and is the default when omitted --
+// existing callers are unaffected. JobKindDeprovision selects a single-stage
+// prep=wipe_only job (see expandStages) that writes lifecycle_state=ready
+// instead of provisioned on success, rather than inferring that from which
+// install fields happen to be empty.
+const (
+	JobKindInstall     = "install"
+	JobKindDeprovision = "deprovision"
+)
+
 // Job stage runtime states.
 const (
 	JobStageStatePending = "pending"
@@ -155,6 +166,9 @@ type Job struct {
 	InstallStrategy string `json:"install_strategy,omitempty"`
 	// Stages is the expanded stage list (derived at Start; durable snapshot).
 	Stages []JobStage `json:"stages,omitempty"`
+	// Kind is install (default, empty for every job before this field existed)
+	// or deprovision. See JobKindInstall/JobKindDeprovision.
+	Kind string `json:"kind,omitempty"`
 }
 
 // RawAssetInput is Discover ingest (API/CLI).
@@ -319,6 +333,9 @@ type StartJobRequest struct {
 	SeedISOURL string `json:"seed_iso_url,omitempty"`
 	// OsFamily is ubuntu | esxi | windows (flatcar later). Required for operator_iso.
 	OsFamily string `json:"os_family,omitempty"`
+	// Kind is install (default, omitted preserves every existing caller) or
+	// deprovision (docs/deprovision-design.md). See JobKindInstall/JobKindDeprovision.
+	Kind string `json:"kind,omitempty"`
 }
 
 // CancelJobRequest cancels an in-flight provisioning job.

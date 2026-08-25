@@ -206,7 +206,10 @@ func StartJobRequest(r models.StartJobRequest) error {
 	if strings.TrimSpace(r.BMCEndpoint) == "" {
 		return fmt.Errorf("validate: bmc_endpoint is required")
 	}
-	if strings.TrimSpace(r.ISOURL) == "" {
+	deprovision := strings.TrimSpace(strings.ToLower(r.Kind)) == models.JobKindDeprovision
+	// Kind=deprovision has no os_install stage (see expandDeprovisionStages): no
+	// iso_url to require. Mirrors the same guard in orchestrator.Start.
+	if !deprovision && strings.TrimSpace(r.ISOURL) == "" {
 		ref := strings.TrimSpace(r.ProfileRef)
 		// Phase 5c: non-spike profile may resolve; Phase 6a: BuildISO may produce URL.
 		if (ref == "" || ref == "spike") && !r.BuildISO {
@@ -317,6 +320,9 @@ func StartJobRequest(r models.StartJobRequest) error {
 		return fmt.Errorf("validate: os_family flatcar with image_write is not supported (use scripted_iso + offline Ignition seed)")
 	}
 	prep := strings.TrimSpace(strings.ToLower(r.Prep))
+	if deprovision && prep != "wipe_only" {
+		return fmt.Errorf("validate: kind=deprovision requires prep=wipe_only (got %q)", r.Prep)
+	}
 	switch prep {
 	case "", "skip":
 		// ok
@@ -336,8 +342,15 @@ func StartJobRequest(r models.StartJobRequest) error {
 	default:
 		return fmt.Errorf("validate: unknown prep %q", r.Prep)
 	}
-	if w := strings.TrimSpace(strings.ToLower(r.WipeLevel)); w != "" && w != "discard" && w != "zero" {
+	w := strings.TrimSpace(strings.ToLower(r.WipeLevel))
+	if w != "" && w != "discard" && w != "zero" {
 		return fmt.Errorf("validate: wipe_level must be discard or zero")
+	}
+	// Key Decision 3 (docs/deprovision-design.md): unlike install jobs, where
+	// wipe_level is optional and the prep script has its own default,
+	// deprovision requires the caller to choose explicitly.
+	if deprovision && w == "" {
+		return fmt.Errorf("validate: kind=deprovision requires wipe_level (discard or zero)")
 	}
 
 	// Multi-stage M3: offline seed delivery (no guest HTTP).
