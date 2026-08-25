@@ -490,6 +490,16 @@ func cmdDeployDeprovision(args []string) int {
 	if cfg.NetBoxURL != "" && cfg.NetBoxToken != "" {
 		nb = netbox.New(cfg.NetBoxURL, cfg.NetBoxToken)
 	}
+	// Optional job_log writer for NetBox Jobs tab (same DSN as JobStore).
+	var telemStore telemetry.Store
+	if cfg.TelemetryDatabaseURL != "" {
+		if db, err := telemetry.OpenAndMigrate(context.Background(), cfg.TelemetryDatabaseURL); err != nil {
+			log.Warn("telemetry for job_log unavailable", "err", err.Error())
+		} else {
+			defer db.Close()
+			telemStore = telemetry.NewPostgres(db)
+		}
+	}
 	orch := job.NewOrchestrator(job.Options{
 		Log:                    log,
 		Store:                  store,
@@ -497,6 +507,7 @@ func cmdDeployDeprovision(args []string) int {
 		NewBMC:                 redfish.NewBMC,
 		Watches:                watchSvc,
 		NetBox:                 nb,
+		Telemetry:              telemStore,
 		AuthMode:               cfg.RedfishAuthMode,
 		TLSMode:                cfg.RedfishTLSMode,
 		CAFile:                 cfg.RedfishCAFile,
