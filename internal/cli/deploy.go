@@ -25,7 +25,7 @@ import (
 
 func cmdDeploy(args []string) int {
 	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "usage: shoal deploy <run|status|cancel|iso> [flags]")
+		fmt.Fprintln(os.Stderr, "usage: shoal deploy <run|status|cancel|deprovision|iso> [flags]")
 		return 2
 	}
 	switch args[0] {
@@ -35,6 +35,8 @@ func cmdDeploy(args []string) int {
 		return cmdDeployStatus(args[1:])
 	case "cancel":
 		return cmdDeployCancel(args[1:])
+	case "deprovision":
+		return cmdDeployDeprovision(args[1:])
 	case "iso":
 		return cmdDeployISO(args[1:])
 	default:
@@ -397,6 +399,164 @@ func cmdDeployCancel(args []string) int {
 		return 1
 	}
 	return 0
+}
+
+// cmdDeployDeprovision wipes a device's boot disk and returns it to
+// lifecycle_state=ready (docs/deprovision-design.md). Sugar over
+// POST-equivalent orch.Start with Kind=deprovision, prep=wipe_only, and no
+// install fields -- same orchestrator wiring as cmdDeployRun, same
+// wait-for-terminal shape as cmdDeployCancel's poll loop.
+func cmdDeployDeprovision(args []string) int {
+	cfg, err := config.Load()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "config: %v\n", err)
+		return 1
+	}
+	log := newLogger(cfg.LogLevel)
+
+	fs := flag.NewFlagSet("deploy deprovision", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	device := fs.String("device", "", "device id (alias for -device-id)")
+	deviceID := fs.String("device-id", "", "device id for correlation")
+	bmcURL := fs.String("bmc-url", "", "Redfish base URL")
+	bmcUser := fs.String("bmc-user", cfg.BMCUsername, "BMC username (or rely on the device's stored credential_ref)")
+	bmcPass := fs.String("bmc-pass", cfg.BMCPassword, "BMC password (never logged)")
+	serial := fs.String("serial-target", "", "libvirt domain or console path")
+	systemID := fs.String("system-id", "", "optional Redfish system id or name")
+	wipeLevel := fs.String("wipe-level", "", "discard|zero (required, no default)")
+	approveDestruct := fs.Bool("approve-destruct", false, "required operator consent (this permanently wipes the boot disk)")
+	prepISO := fs.String("prep-iso-url", os.Getenv("SHOAL_PREP_ISO_URL"), "BMC-reachable prep live ISO")
+	serialTransport := fs.String("serial-transport", cfg.SerialTransport, "libvirt|redfish_sol serial transport")
+	sshHost := fs.String("serial-ssh-host", cfg.SerialSSHHost, "SSH host for nested libvirt serial (VM mode)")
+	sshUser := fs.String("serial-ssh-user", cfg.SerialSSHUser, "SSH user for serial delegate")
+	sshKey := fs.String("serial-ssh-key", cfg.SerialSSHKey, "SSH private key for serial delegate")
+	wait := fs.Bool("wait", true, "wait for terminal job state")
+	waitTimeout := fs.Duration("wait-timeout", 30*time.Minute, "max wait when -wait")
+	stallTimeout := fs.Duration("stall-timeout", 3*time.Minute, "SOL silence before stall failure")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	cfg.SerialSSHHost = *sshHost
+	cfg.SerialSSHUser = *sshUser
+	cfg.SerialSSHKey = *sshKey
+
+	dev := *deviceID
+	if dev == "" {
+		dev = *device
+	}
+	req := models.StartJobRequest{
+		DeviceID:        dev,
+		BMCEndpoint:     *bmcURL,
+		BMCUsername:     *bmcUser,
+		BMCPassword:     *bmcPass,
+		SerialTarget:    *serial,
+		SerialTransport: *serialTransport,
+		SystemID:        *systemID,
+		StallTimeout:    *stallTimeout,
+		Kind:            models.JobKindDeprovision,
+		Prep:            "wipe_only",
+		PrepISOURL:      *prepISO,
+		WipeLevel:       *wipeLevel,
+		ApproveDestruct: *approveDestruct,
+	}
+
+	store, dbCloser, err := openJobStore(cfg)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "jobstore: %v\n", err)
+		return 1
+	}
+	if dbCloser != nil {
+		defer dbCloser()
+	}
+
+	secretBackend := openSecrets(cfg)
+	watchSvc := sol.NewWatchService(log, nil)
+	watchSvc.NewTransport = sol.NewCombinedTransportFactory(
+		sol.RedfishSOLConfig{
+			NewBMC:   redfish.NewBMC,
+			Secrets:  secretBackend,
+			AuthMode: cfg.RedfishAuthMode,
+			TLSMode:  cfg.RedfishTLSMode,
+			CAFile:   cfg.RedfishCAFile,
+		},
+		sol.SSHSerialConfig{
+			Host:    cfg.SerialSSHHost,
+			User:    cfg.SerialSSHUser,
+			KeyPath: cfg.SerialSSHKey,
+			UseSudo: cfg.SerialSSHSudo,
+		},
+	)
+	var nb netbox.LifecycleWriter
+	if cfg.NetBoxURL != "" && cfg.NetBoxToken != "" {
+		nb = netbox.New(cfg.NetBoxURL, cfg.NetBoxToken)
+	}
+	orch := job.NewOrchestrator(job.Options{
+		Log:                    log,
+		Store:                  store,
+		Secrets:                secretBackend,
+		NewBMC:                 redfish.NewBMC,
+		Watches:                watchSvc,
+		NetBox:                 nb,
+		AuthMode:               cfg.RedfishAuthMode,
+		TLSMode:                cfg.RedfishTLSMode,
+		CAFile:                 cfg.RedfishCAFile,
+		ReconcileFailOrphan:    cfg.ReconcileFailOrphans,
+		DefaultSerialTransport: cfg.SerialTransport,
+	})
+	defer orch.Stop()
+	watchSvc.SetProgress(orch.ProgressPort())
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	if err := orch.ReconcileOrphans(ctx); err != nil {
+		log.Warn("orphan reconcile", "err", err.Error())
+	}
+
+	j, err := orch.Start(ctx, req)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "deploy deprovision failed: %v\n", err)
+		if j.ID != "" {
+			_ = json.NewEncoder(os.Stdout).Encode(j)
+		}
+		return 1
+	}
+	fmt.Fprintf(os.Stderr, "job %s started (state=%s)\n", j.ID, j.State)
+	_ = json.NewEncoder(os.Stdout).Encode(j)
+
+	if !*wait {
+		return 0
+	}
+
+	deadline := time.Now().Add(*waitTimeout)
+	for {
+		if ctx.Err() != nil {
+			fmt.Fprintln(os.Stderr, "interrupted; job continues until process exit cleanup")
+			_ = orch.Cancel(context.Background(), j.ID)
+			time.Sleep(500 * time.Millisecond)
+			return 130
+		}
+		cur, err := orch.Get(ctx, j.ID)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "status: %v\n", err)
+			return 1
+		}
+		if cur.State == models.StateReady {
+			_ = json.NewEncoder(os.Stdout).Encode(cur)
+			fmt.Fprintln(os.Stderr, "deprovisioned OK")
+			return 0
+		}
+		if cur.State == models.StateFailed {
+			_ = json.NewEncoder(os.Stdout).Encode(cur)
+			fmt.Fprintf(os.Stderr, "failed: %s\n", cur.Error)
+			return 1
+		}
+		if time.Now().After(deadline) {
+			fmt.Fprintln(os.Stderr, "wait timeout")
+			return 1
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
 }
 
 func openJobStore(cfg config.Config) (jobstore.Store, func(), error) {

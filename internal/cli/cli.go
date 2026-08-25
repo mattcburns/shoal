@@ -75,7 +75,7 @@ Usage:
 Commands:
   version    Print version and exit
   serve      Run the HTTP API server
-  deploy     Provisioning: run | status | cancel | iso
+  deploy     Provisioning: run | status | cancel | deprovision | iso
   discover   Assets: ingest | confirm
   observe    Status / poll / ocr / power (host On, ForceOff, ForceRestart)
 
