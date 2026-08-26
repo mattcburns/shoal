@@ -154,7 +154,11 @@ func (s *Server) handleJobLog(w http.ResponseWriter, r *http.Request) {
 	}
 	lines, err := s.observe.ListJobLog(r.Context(), id, since, limit)
 	if err != nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": err.Error()})
+		if isNotConfiguredErr(err) {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "observe not configured"})
+			return
+		}
+		writeUpstreamError(w, s.log, "job log", err, "job_id", id)
 		return
 	}
 	if lines == nil {

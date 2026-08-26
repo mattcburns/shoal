@@ -81,8 +81,7 @@ func (s *Server) handleDevicePower(w http.ResponseWriter, r *http.Request) {
 	}
 	out, err := s.power.Power(r.Context(), id, req)
 	if err != nil {
-		s.log.Warn("device power", "device_id", id, "reset_type", req.ResetType, "err", err.Error())
-		writeJSON(w, http.StatusBadGateway, map[string]any{"error": err.Error()})
+		writeUpstreamError(w, s.log, "device power", err, "device_id", id, "reset_type", req.ResetType)
 		return
 	}
 	writeJSON(w, http.StatusOK, out)

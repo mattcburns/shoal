@@ -30,8 +30,7 @@ func (s *Server) handleDeviceStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	st, err := s.observe.Status(r.Context(), id)
 	if err != nil {
-		s.log.Error("device status", "err", err.Error())
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "internal error"})
+		writeUpstreamError(w, s.log, "device status", err, "device_id", id)
 		return
 	}
 	writeJSON(w, http.StatusOK, st)
@@ -63,7 +62,11 @@ func (s *Server) handleDeviceEvents(w http.ResponseWriter, r *http.Request) {
 	}
 	evs, err := s.observe.ListEvents(r.Context(), id, since, limit)
 	if err != nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": err.Error()})
+		if isNotConfiguredErr(err) {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "observe not configured"})
+			return
+		}
+		writeUpstreamError(w, s.log, "device events", err, "device_id", id)
 		return
 	}
 	if evs == nil {
@@ -102,8 +105,7 @@ func (s *Server) handleDeviceJobs(w http.ResponseWriter, r *http.Request) {
 	state := models.LifecycleState(r.URL.Query().Get("state"))
 	jobs, err := s.jobs.ListByDevice(r.Context(), id, state, limit)
 	if err != nil {
-		s.log.Error("list device jobs", "err", err.Error())
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "internal error"})
+		writeUpstreamError(w, s.log, "list device jobs", err, "device_id", id)
 		return
 	}
 	if jobs == nil {
@@ -144,7 +146,11 @@ func (s *Server) handleDeviceSensors(w http.ResponseWriter, r *http.Request) {
 	}
 	readings, err := s.observe.ListSensors(r.Context(), id, since, limit)
 	if err != nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": err.Error()})
+		if isNotConfiguredErr(err) {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "observe not configured"})
+			return
+		}
+		writeUpstreamError(w, s.log, "device sensors", err, "device_id", id)
 		return
 	}
 	if readings == nil {
@@ -179,7 +185,11 @@ func (s *Server) handleDeviceFirmware(w http.ResponseWriter, r *http.Request) {
 	}
 	comps, err := s.observe.ListFirmware(r.Context(), id, limit)
 	if err != nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": err.Error()})
+		if isNotConfiguredErr(err) {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "observe not configured"})
+			return
+		}
+		writeUpstreamError(w, s.log, "device firmware", err, "device_id", id)
 		return
 	}
 	if comps == nil {

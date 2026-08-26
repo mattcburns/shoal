@@ -84,15 +84,13 @@ func (s *Server) handleDevicePoll(w http.ResponseWriter, r *http.Request) {
 	}
 	out, err := s.poll.Poll(r.Context(), id, req)
 	if err != nil {
-		s.log.Warn("device poll", "device_id", id, "err", err.Error())
-		writeJSON(w, http.StatusBadGateway, map[string]any{
-			"error":            err.Error(),
+		writeUpstreamErrorBody(w, s.log, "device poll", err, map[string]any{
 			"device_id":        id,
 			"sel_new":          out.SELNew,
 			"sensors_written":  out.SensorsWritten,
 			"firmware_written": out.FirmwareWritten,
 			"power_state":      out.PowerState,
-		})
+		}, "device_id", id)
 		return
 	}
 	writeJSON(w, http.StatusOK, out)
