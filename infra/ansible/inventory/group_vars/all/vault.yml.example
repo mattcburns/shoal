@@ -27,3 +27,9 @@ shoal_cloud_ai_api_key: ""
 
 # Phase 6d: HTTP API Bearer token for Shoal /v1/* (empty disables auth).
 # shoal_api_token: ""
+
+# Real-hardware lab session overrides (BMC-reachable URLs, workstation/session
+# specific -- not appropriate for shared defaults.yml). Leave empty for
+# nested-lab-only work.
+# shoal_netbox_plugin_real_bmc_iso_url: "http://<wg0-ip>:8080/shoal-marker.iso"
+# shoal_prep_iso_url: "http://<wg0-ip>:8080/shoal-prep.iso"

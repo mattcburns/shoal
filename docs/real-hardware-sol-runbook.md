@@ -113,6 +113,27 @@ and inserted media, then **stalled**: Observe only resets the stall timer on
 debug is whether the host actually booted the virtual CD (one-time `UsbCd`)
 versus disk/PXE.
 
+### Deprovision needs its own prep ISO URL, persisted
+
+`kind=deprovision` (`prep=wipe_only`) requires a BMC-reachable prep (wipe) live
+ISO, same pattern as `SHOAL_REAL_BMC_ISO_URL` above but a separate variable —
+`SHOAL_PREP_ISO_URL` (Ansible `shoal_prep_iso_url`) — since the NetBox
+plugin's Deprovision button never sends `prep_iso_url` in the request body.
+Set it in gitignored `vault.yml` (workstation/session-specific BMC-reachable
+URL, e.g. `http://172.16.20.138:8080/shoal-prep.iso`), **not** via `-e` on the
+ansible-playbook command line: an `-e`-only value evaporates on the next
+redeploy and reintroduces the same failure that motivated this note
+(2026-08-25, `PROVISIONING_PROGRESS.md`). Same durability rule applies to
+`shoal_netbox_plugin_request_timeout` (bump past 30s default; Start no longer
+needs the headroom now that `POST /v1/jobs` returns before BMC bring-up
+finishes, but power/credentials calls still do) and `shoal_sol_debug_dir`
+(raw SOL capture — the diagnostic that root-caused the boot-override and
+cold-start bugs below; worth leaving on by default, not just for one debug
+session). All three now have real defaults in
+`infra/ansible/inventory/group_vars/all/defaults.yml` — if you find yourself
+reaching for `-e` to fix a real-hardware failure, that's a sign the fix
+belongs in group_vars, not the command line.
+
 ## Step-by-step per-vendor checklist
 
 1. Start a job against the real BMC with `redfish_sol` selected (see above).

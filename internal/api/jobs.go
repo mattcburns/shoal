@@ -25,8 +25,12 @@ type JobCanceler interface {
 }
 
 // JobStarter starts a provisioning job (Orchestrator).
+//
+// StartAsync returns once the job row is durable, leaving BMC bring-up running
+// in the background; bring-up failures surface as a terminal job state via
+// GET /v1/jobs/{id} rather than as an error here. Callers poll for progress.
 type JobStarter interface {
-	Start(ctx context.Context, req models.StartJobRequest) (models.Job, error)
+	StartAsync(ctx context.Context, req models.StartJobRequest) (models.Job, error)
 }
 
 // WithJobStore attaches a job store for GET /v1/jobs/{id}.
@@ -65,7 +69,17 @@ func (s *Server) handleStartJob(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "validate: device_id is required"})
 		return
 	}
-	j, err := s.start.Start(r.Context(), req)
+	// Returns as soon as the job row is durable; BMC bring-up (SOL attach, media
+	// insert, boot override, power cycle -- ~40s on a Dell R750/iDRAC9) continues
+	// in the background and is observed via GET /v1/jobs/{id}. Blocking here
+	// instead made clients time out on jobs that were starting fine.
+	//
+	// Cancellation is still detached (not r.Context()) because the request-scoped
+	// work that remains -- resolveDeviceID, secrets, probeCDCount, store.Insert,
+	// syncNetBoxLifecycle -- must not be abortable by a client that gives up
+	// mid-flight: that is how a real deprovision died with "jobstore: insert:
+	// context canceled" after the BMC had already been touched.
+	j, err := s.start.StartAsync(context.WithoutCancel(r.Context()), req)
 	if err != nil {
 		s.log.Warn("start job", "err", err.Error())
 		// May still have a job row after partial start.

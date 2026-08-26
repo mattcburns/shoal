@@ -301,7 +301,9 @@ go run ./cmd/shoal deploy run \
 | `SHOAL_API_TOKEN` | Phase 6d: if non-empty, require `Authorization: Bearer …` for `/v1/*`. Empty = open (lab default). Never log. |
 | `SHOAL_SERIAL_TRANSPORT` | `libvirt` (default, unchanged lab behavior) \| `redfish_sol`. Orchestrator-wide default; `StartJobRequest.serial_transport` overrides per job. HTTPS BMC endpoints infer `redfish_sol` when the field is empty. See `docs/real-hardware-sol-runbook.md`. |
 | `SHOAL_POLL_IDLE_INTERVAL` | Background SEL/sensor poll when no SOL watch. Go duration (default `5m`). |
-| `SHOAL_POLL_WATCH_INTERVAL` | Elevated poll while a SOL watch is active. Go duration (default `30s`). |
+| `SHOAL_POLL_WATCH_INTERVAL` | Elevated poll while a SOL watch is active. Go duration (default `30s`; lab Ansible default `2m` via `shoal_poll_watch_interval` — a real BMC gets hit by this poll *and* the job's own SOL/media traffic at once, and 30s contributed to real-hardware TLS/auth flakiness). |
+| `SHOAL_PREP_ISO_URL` | BMC-reachable prep (wipe) live ISO, fallback when `StartJobRequest.prep_iso_url` is empty. Required for any `kind=deprovision` job (`prep=wipe_only`) — including every NetBox Deprovision click, since the plugin never sends `prep_iso_url` itself. Lab Ansible: `shoal_prep_iso_url` in gitignored `vault.yml` (workstation/session-specific BMC-reachable URL, not shared `defaults.yml`). |
+| `SHOAL_SOL_DEBUG_DIR` | Raw per-session SOL byte capture (every byte the transports read, teed to a file) — the diagnostic that root-caused the real-hardware boot-override and cold-start bugs (`PROVISIONING_PROGRESS.md`). Empty disables. Lab Ansible default: `/var/lib/shoal/sol-debug` via `shoal_sol_debug_dir` + `env.j2`/compose template. |
 
 
 Full table and Ansible extension points: design doc §8.1.
@@ -311,7 +313,8 @@ Full table and Ansible extension points: design doc §8.1.
 `POST /v1/devices/{id}/poll` (on-demand SEL + sensors + firmware inventory +
 power state), `GET /v1/devices/{id}/firmware`. Background poller is
 `SHOAL_POLL_IDLE_INTERVAL` (default 5m) / `SHOAL_POLL_WATCH_INTERVAL` (default
-30s while a SOL watch is active), and only auto-seeds devices that have a
+30s while a SOL watch is active; lab Ansible default 2m, see table above),
+and only auto-seeds devices that have a
 job; on-demand poll also `SetTarget`s the device. Poll uses Redfish
 `ListSEL`/`ListSensors`/`ListFirmware`/`GetSystem` → durable `telemetry.Store`
 only (no silent memory fallback). Empty SEL/sensors/firmware with exit 0 is

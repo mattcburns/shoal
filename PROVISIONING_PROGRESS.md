@@ -8,6 +8,199 @@ This is a field log, not a design rewrite. Design remains
 `docs/sol-transports-design.md` and
 `docs/real-hardware-sol-runbook.md`.
 
+## UPDATE 2026-08-26: real root cause of the boot failures found — poller was authenticating with the wrong credentials
+
+Two more real deprovision attempts against the R750 (`b74b50a0…`, `93fa9ab1…`)
+reproduced the *same* symptom twice in a row: virtual CD inserted correctly,
+boot override set correctly, firmware attempted the CD, and — new, not seen
+before this session — `Boot Failed: Virtual Optical Drive`, falling through
+to the already-installed disk OS. Confirmed via `BootProgress.LastState=OSRunning`:
+the disk was never wiped either time.
+
+Root cause, found in the iDRAC's own Lifecycle Controller log, not from any
+Shoal log: continuous `Unable to log in for admin from 172.16.20.138 using
+REDFISH` / `Login attempt alert ... IP will be blocked for 60 seconds`,
+every 2–4 minutes, spanning both failure windows. `seedPollTargets`
+(`internal/cli/cli.go`) seeded the background SEL/sensor/firmware/power
+poller with the global `SHOAL_BMC_USERNAME`/`PASSWORD` (the lab's
+`admin`/`password`) for **every** device, never resolving a job's own
+`CredentialRef` — so every poll cycle against this real iDRAC (`root` +
+real password via `bmc-C784MH3`) authenticated wrong, and the iDRAC's own
+rate-limiter periodically blocked the source IP (`172.16.20.138`, this
+workstation via wg0) — the exact IP every live job's SOL/media traffic also
+comes from. This is the most likely real explanation for the TLS handshake
+timeouts, total ping unreachability, and 401s chased across this entire
+session as unexplained "iDRAC flakiness" or "session/rate hiccup" — it was
+Shoal itself, self-inflicting a periodic denial of service against the BMC
+it was trying to provision.
+
+Fixed: `seedPollTargets` now resolves `CredentialRef` via the secrets
+backend per job, falling back to the global default only when a job has
+none (lab sushy nodes). New test `TestSeedPollTargetsUsesJobCredentialRef`
+(confirmed it fails under the old behavior by mutation-testing back to it).
+Deployed and verified live: first poll after redeploy succeeded cleanly
+(`sel_new:5 sensors:38 firmware:21 failures:0`), and the failed-`admin`-login
+spam — continuous every 2–4 min before the fix — stopped entirely after.
+
+**Full round trip confirmed clean with the fix live:** deprovision
+(`c7cd569aa6b781bddcd5804eef9bea32`, 04:06–04:12, `done_ok`) then re-provision
+(`e807f37d3f7623a2508b6f4d1b37deb2`, 04:14–04:21, `done_ok`) — both via the
+NetBox buttons, no auth errors, no boot failures, no false stalls. One benign
+warning on the re-provision (`virtual media still inserted` at the DONE
+post-check) did not block the `provisioned` transition — pre-existing, not
+investigated further this session, worth a look if it recurs.
+
+## UPDATE 2026-08-25 (later still): `POST /v1/jobs` no longer blocks on BMC bring-up
+
+Removed the design wart behind the false-failure report below: the HTTP API
+now returns as soon as the job row is durable, and callers poll
+`GET /v1/jobs/{id}` for what happens next. Raising the client timeout only
+made the symptom rarer; a request that blocks ~40s on hardware is the actual
+problem.
+
+`Orchestrator.Start` split into two halves:
+
+- `prepareStart` — resolve, validate, store credentials, probe CD count,
+  expand stages, insert the job row. Fast; on error no job row is left.
+- `runStart` — the slow bring-up (SOL attach, media insert, boot override,
+  power cycle) plus the existing failure bookkeeping.
+
+`Start` = both, synchronous, **unchanged** — the CLI still needs it, because
+its in-process orchestrator dies when the command returns (`deploy run`
+without `-wait` would otherwise exit before the BMC was ever touched).
+New `StartAsync` = `prepareStart` + `go runStart`, used by the API only.
+Bring-up failures are not lost: `runStart` records them via `HandleTerminal`,
+so they surface as a terminal state on the next poll.
+
+Cancellation stays detached (`context.WithoutCancel`) independently of the
+async split — that is what stops a client that gives up from aborting a start
+mid-flight, and it is a *separate* hazard from blocking. Keeping both is
+deliberate.
+
+Verified live against the deployed binary using lab node 5 with an
+instantly-refusing BMC endpoint (real R750 untouched): `HTTP 201` in **4.4s**
+(server-side work 0.7s; the rest cold-start NetBox latency on the first
+request after the container restart), and the background bring-up failure
+landed correctly as `state=failed`. The NetBox Status tab needed no change —
+it already auto-refreshes every 5s while a job is `provisioning`, which is now
+the state the moment the POST returns.
+
+Three new tests (`internal/deploy/job/start_async_test.go`) pin the contract:
+returns before bring-up completes, bring-up failure becomes terminal state,
+and caller cancellation does not abort bring-up. Confirmed they have teeth by
+mutating `StartAsync` back to synchronous — the suite hangs rather than
+passing. Full `go test ./...`, `go vet`, `gofmt`, and 39 plugin tests clean.
+
+Note for whoever runs `-race`: `TestOrchestratorHappyPathDone` reports a data
+race on the `netbox.Memory` fake's map (test reads `nb.BySerial[...]` while
+the terminal handler writes it). **Pre-existing** — verified identical race
+count on pristine HEAD with this work stashed. Not introduced here, and worth
+fixing separately.
+
+## UPDATE 2026-08-25 (later): NetBox Deprovision button — false failure; one real API bug + three lost `-e` settings
+
+Operator reported "Deprovision failed" from the NetBox button four times.
+**Three of the four were not what the UI said they were.** Final run
+(`bc4ba2b3e69c8338f2da9f0a7c8ebdd0`) reported
+`HTTPConnectionPool(host='host.docker.internal', port=8088): Read timed out
+(read timeout=30)` and **still completed successfully**: `state=ready`,
+8/8 markers, `reason=done_ok`, 6m49s; host `PowerState=Off`, boot override
+cleared, both media slots ejected, NetBox `lifecycle_state=ready`.
+
+Timeline that explains it: job created 22:07:30 → Django gives up 22:07:56
+(30s) → SOL attached + media inserted **22:08:10 (39.4s)**. `POST /v1/jobs`
+blocks until the first stage is actually running (NetBox resolve →
+credentials → CD probe → SOL attach → media insert → boot override → power
+cycle); that is ~40s on this R750, over the plugin's 30s default. The UI
+even contradicted itself — the error banner sat directly above
+`Active job bc4ba2b3e69c833…, Phase STARTING`.
+
+**Real bug found (`internal/api/jobs.go`):** start ran as
+`s.start.Start(r.Context(), req)`. `Orchestrator.Start` detaches its
+*post-insert* work onto `context.Background()`, but everything before that
+(`resolveDeviceID`, `secrets.Put`/`Get`, `probeCDCount` — a live Redfish
+call — `store.Insert`, `syncNetBoxLifecycle`) ran on the HTTP request
+context. A client timeout therefore **aborted an in-flight start at
+whatever point it had reached**, which is exactly the 21:50 failure
+(`netbox device resolve failed` → `jobstore: insert: context canceled`,
+job never created). This is why the failures looked nondeterministic: the
+outcome depended on which side of the 30s boundary the work was on. Fixed
+with `context.WithoutCancel` — a disconnecting client can no longer abort
+a start it already committed to. Note this hazard is *independent* of the
+timeout value; raising the timeout alone would only have made it rarer.
+
+**Meta-lesson — three settings had been applied via `-e` and evaporated.**
+Each was "fixed" in an earlier session on the ansible command line and
+never written to group_vars, so every later redeploy silently reverted it:
+
+| Setting | Was | Effect of the loss |
+|---|---|---|
+| `shoal_netbox_plugin_request_timeout` | 30 (template default) | The false-failure regression above — *already fixed once*, per the 2026-08-24 update |
+| `shoal_prep_iso_url` | unset | `validate: prep wipe_only requires prep_iso_url` — the first reported failure |
+| `shoal_sol_debug_dir` | unset | **Raw SOL capture silently off** — the diagnostic that root-caused the boot-override and cold-start bugs was unavailable for every failure this session |
+
+All three now persisted (`defaults.yml`; the two BMC-reachable URLs in
+gitignored `vault.yml`, with a commented template in `vault.yml.example`),
+plus a `compose_stack` task to create the SOL capture dir. **If a fix is
+worth an `-e`, it is worth a group_vars entry** — otherwise it is a
+regression waiting for the next redeploy.
+
+Also fixed this session: NetBox deprovision never sent `stall_timeout`
+(unlike the `start` action next to it), so it used the orchestrator's
+generic 3m default instead of the 30m physical-role budget — job
+`24c438d4…` failed at exactly `3m0s`. And `shoal_poll_watch_interval`
+30s → 2m: the background SEL/sensor/firmware/power poll (4 Redfish calls)
+runs at the *elevated* rate while a job holds a SOL watch, i.e. it hits
+the same BMC hardest exactly when the job is using it.
+
+Still unexplained: job `a9d21291…` died `reason=transport` ~11 min in, and
+its cleanup then failed too, leaving the CD inserted (manually ejected).
+Sustained `dial tcp 172.16.21.202:443: i/o timeout` around that window
+suggests a genuine BMC/network stretch rather than the context bug, but
+with SOL capture now enabled the next occurrence should leave evidence.
+
+## UPDATE 2026-08-25: deprovision round trip PASSED (PR7, docs/deprovision-design.md)
+
+First real-hardware run of `Kind=deprovision` (`internal/deploy/job` PRs 1-6,
+`feature/real-bmc-provision`). Validated the prep-mode marker script locally
+in QEMU first (scratch AHCI disk as `/dev/sda`, direct `-kernel`/`-initrd`
+boot with `shoal.mode=prep shoal.target=/dev/sda`) — caught that the
+existing `/tmp/shoal-iso/shoal-marker.iso` predated the `pack_modules()`
+PATH/`modprobe` fixes (0 kernel modules packed, so `/dev/sda` never
+appeared); rebuilt fresh via the current script and the local run then
+passed clean (`blkdiscard` → `PREP_DONE` → heartbeat loop) before touching
+the BMC.
+
+**Deprovision** (job `caa016a63db7b378340ee3c61cf35761`): `SHOAL_INSTALL_MODE=prep
+SHOAL_INSTALL_TARGET=/dev/sda SHOAL_PREP_WIPE_LEVEL=discard` ISO served at
+`http://172.16.20.138:8080/shoal-prep.iso`; `shoal deploy deprovision
+-device-id C784MH3 -wipe-level discard -approve-destruct -prep-iso-url
+... -stall-timeout 15m`. `state=ready` in ~6 min (warm boot), 8/8 markers,
+`reason=done_ok`. Verified independently via Redfish/NetBox: `blkdiscard`
+ran against `/dev/sda`, `lifecycle_state=ready`, `credential_ref=bmc-C784MH3`
+**unchanged**, host `PowerState=Off` (confirms orchestrator-issued `ForceOff`
+on `PREP_DONE` — Key Decision 2 — not the guest's own heartbeat loop), boot
+override cleared, both VirtualMedia slots ejected.
+
+**Re-provision** (job `afbd958a1a8c8fd1843b86bb517b7969`): plain `shoal
+deploy run` against the same device with the already-proven
+`shoal-ubuntu-autoinstall.iso`, `-stall-timeout 30m` (cold boot this time,
+host was off after deprovision — cold POST budget, not the 15m warm figure
+above). `state=provisioned` in ~11m41s, 9/9 markers — matches the original
+Phase 7a run almost exactly. One benign repeat of the known first-post-wipe-boot
+hiccup (stale cached boot option after a fresh disk write —
+`BootProgress` briefly went `None`/`PowerState=Off` mid-POST); self-corrected
+on its own within seconds, same as the original Phase 7a note. Confirmed
+`BootProgress.LastState=OSRunning` afterward. NetBox `lifecycle_state=provisioned`,
+`credential_ref=bmc-C784MH3` still unchanged.
+
+**Full round trip closed**: `provisioned` → (wipe) → `ready` → (reinstall) →
+`provisioned`, OS confirmed running, BMC credential untouched throughout.
+Small fix found along the way: `cmdDeployDeprovision` wasn't wiring
+`Telemetry` into the orchestrator like `cmdDeployRun` does, so job_log lines
+weren't persisted for a CLI-run deprovision job (job state/stages were fine
+regardless — jobstore, not telemetry). Fixed.
+
 ## UPDATE 2026-08-24 (later same day): first clean end-to-end spike PASSED
 
 Job `aed5014210f0c9313bc89edad9d3e20b`: `state=provisioned`, `reason=done_ok`,

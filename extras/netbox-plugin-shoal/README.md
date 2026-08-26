@@ -42,7 +42,7 @@ PLUGINS_CONFIG = {
     "netbox_shoal": {
         "SHOAL_BASE_URL": "http://192.168.122.100:8088",  # empty = "not configured" state in the UI
         "SHOAL_API_TOKEN": "",                             # optional Bearer token; empty = no header sent
-        "SHOAL_REQUEST_TIMEOUT": 30,                        # seconds (Start can be slow)
+        "SHOAL_REQUEST_TIMEOUT": 30,                        # seconds; power/credentials calls wait on a live BMC
         "SHOAL_ENABLE_ACTIONS": True,                       # Status Start/Cancel forms
         "SHOAL_DEFAULT_BMC_ENDPOINT": "http://127.0.0.1:8001",  # lab virtual BMC nodes only; real servers use https://<bmc_ip>
         "SHOAL_DEFAULT_ISO_URL": "http://192.168.124.1:8080/shoal-marker.iso",
@@ -51,6 +51,16 @@ PLUGINS_CONFIG = {
     }
 }
 ```
+
+Start/deprovision return as soon as Shoal has a durable job row — BMC bring-up
+(SOL attach, media insert, boot override, power cycle; ~40s on a real
+Dell R750/iDRAC9) runs in the background, and the Status tab's 5s
+auto-refresh picks up progress or a bring-up failure from there. This means
+`SHOAL_REQUEST_TIMEOUT` no longer needs headroom for Start specifically — the
+lab's Ansible-rendered `plugins.py` still sets it to 120s (`shoal_netbox_plugin_request_timeout`
+in `infra/ansible/inventory/group_vars/all/defaults.yml`) because **power**
+and **credentials** calls are still synchronous against a live BMC and can be
+just as slow on real hardware.
 
 Start/cancel/power/credentials/poll require NetBox `dcim.change_device`. BMC
 passwords are **not** stored in NetBox: the credentials card PUTs to Shoal’s

@@ -193,6 +193,8 @@ def _handle_control_post(request, instance):
             body["serial_transport"] = defaults["serial_transport"]
         if defaults.get("credential_ref"):
             body["credential_ref"] = defaults["credential_ref"]
+        if defaults.get("stall_timeout"):
+            body["stall_timeout"] = defaults["stall_timeout"]
         user = (request.POST.get("bmc_username") or "").strip()
         password = request.POST.get("bmc_password") or ""
         if user:

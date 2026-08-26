@@ -338,8 +338,10 @@ exactly like `deploy run` already does via `applyStartBindings`),
 (required — omitting it should be a validation error, not a silent no-op),
 `-prep-iso-url` (or `SHOAL_PREP_ISO_URL`), `-wait`/`-wait-timeout`/
 `-stall-timeout` reused as-is. Internally this is sugar over
-`POST /v1/jobs` with `prep=wipe_only` and nothing else — no new
-orchestrator method beyond `Start` itself.
+`POST /v1/jobs` with `prep=wipe_only` and nothing else — `Kind=deprovision`
+needed no new orchestrator method of its own, it flows through the same
+`Start`/`StartAsync` (added 2026-08-25 so the HTTP path returns before BMC
+bring-up finishes, not before-vs-after this feature) as every other job kind.
 
 Example request body (compare to today's shape, confirmed from
 `orchestrator_test.go`):
