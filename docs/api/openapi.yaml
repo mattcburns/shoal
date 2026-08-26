@@ -1,0 +1,1367 @@
+openapi: 3.0.3
+info:
+  title: Shoal HTTP API
+  description: |
+    Shoal's `net/http` API — Discover (asset ingest), Observe (device status,
+    events, sensors, firmware, job log), Deploy (provisioning jobs, power,
+    on-demand poll), device credentials, and saved provisioning profiles.
+
+    This document is hand-written and lives at `docs/api/openapi.yaml`; there
+    is no code generator or build-time dependency on it (see
+    `docs/api/README.md` for the surrounding conventions).
+
+    All routes are implemented in `internal/api/*.go` and registered in
+    `internal/api/server.go`. `/healthz`, `/readyz`, and `/metrics` stay open
+    (no auth) for probes and scrapers; every `/v1/*` route requires bearer
+    auth **only when the server is started with `SHOAL_API_TOKEN` set** — an
+    unconfigured token disables auth entirely rather than rejecting requests.
+    This document assumes a token is configured, which is the recommended
+    deployment.
+  version: "1.0.0"
+servers:
+  - url: http://localhost:8088
+    description: Default local/lab address (SHOAL_HTTP_ADDR)
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: system
+    description: Health, readiness, and metrics probes (no auth).
+  - name: jobs
+    description: Provisioning job lifecycle (Deploy).
+  - name: discover
+    description: Hybrid asset ingest and operator confirmation (Discover).
+  - name: devices
+    description: Device status, events, job history, sensors, and firmware (Observe).
+  - name: power
+    description: On-demand BMC power control (not a provisioning job).
+  - name: poll
+    description: On-demand Redfish SEL/sensor/firmware poll into telemetry.
+  - name: credentials
+    description: Stored BMC credentials (secrets backend, never NetBox).
+  - name: profiles
+    description: Saved provisioning profiles.
+
+paths:
+  /healthz:
+    get:
+      tags: [system]
+      summary: Liveness probe
+      security: []
+      responses:
+        "200":
+          description: Always OK if the process is up.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+
+  /readyz:
+    get:
+      tags: [system]
+      summary: Readiness probe (pings the telemetry database when configured)
+      security: []
+      responses:
+        "200":
+          description: Ready (or no database configured, which is also considered ready).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReadyzResponse"
+        "503":
+          description: A configured telemetry database did not respond to a ping within 3s.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReadyzResponse"
+
+  /metrics:
+    get:
+      tags: [system]
+      summary: Prometheus text-exposition metrics
+      security: []
+      responses:
+        "200":
+          description: Process-wide counters (HTTP requests, jobs started, jobs canceled).
+          content:
+            text/plain; version=0.0.4; charset=utf-8:
+              schema:
+                type: string
+
+  /v1/jobs:
+    post:
+      tags: [jobs]
+      summary: Start a provisioning (or deprovisioning) job
+      description: |
+        Returns as soon as the job row is durable; BMC bring-up (SOL attach,
+        media insert, boot override, power cycle) continues in the
+        background. Poll `GET /v1/jobs/{id}` for progress instead of waiting
+        on this call. Full validation of install-strategy-specific fields
+        runs after profile defaults (`profile_ref`) are applied, so a
+        profile-only request may omit `iso_url`/`install_strategy`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StartJobRequest"
+      responses:
+        "201":
+          description: Job accepted; row is durable and bring-up has started in the background.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Job"
+        "400":
+          description: Validation failure, missing/unapproved profile, or destructive-step approval required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: Start failed after the job row was partially created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JobStartConflict"
+        "502":
+          description: A configured backend dependency (job store, BMC preflight) failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: No job starter configured on this server instance.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /v1/jobs/{id}:
+    get:
+      tags: [jobs]
+      summary: Get a job by id
+      parameters:
+        - $ref: "#/components/parameters/JobId"
+      responses:
+        "200":
+          description: Job state.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Job"
+        "400":
+          description: Missing job id.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: No job with that id.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "502":
+          description: The job store failed to serve the request.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: No job store configured on this server instance.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /v1/jobs/{id}/log:
+    get:
+      tags: [jobs]
+      summary: List durable job log lines (SOL/orchestrator output)
+      parameters:
+        - $ref: "#/components/parameters/JobId"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Since"
+      responses:
+        "200":
+          description: Job log lines, oldest first.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  job_id:
+                    type: string
+                  log:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/JobLogLine"
+        "400":
+          description: Missing job id.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "502":
+          description: The telemetry store failed to serve the request.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: Observe (telemetry) not configured on this server instance.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /v1/jobs/{id}/cancel:
+    post:
+      tags: [jobs]
+      summary: Cancel an in-flight job
+      parameters:
+        - $ref: "#/components/parameters/JobId"
+      responses:
+        "202":
+          description: Cancel accepted. Body is the updated job when the store re-read succeeds, otherwise a minimal acknowledgement.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/Job"
+                  - type: object
+                    properties:
+                      job_id:
+                        type: string
+                      status:
+                        type: string
+                        example: cancel_requested
+        "400":
+          description: Missing job id.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: No job with that id.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: Job is not in a cancelable state (e.g. already terminal, or not a provisioning job).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: No job canceler or job store configured on this server instance.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /v1/discover/ingest:
+    post:
+      tags: [discover]
+      summary: Normalize a raw asset (Redfish JSON, CSV row, or photo) into identity fields
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RawAssetInput"
+      responses:
+        "200":
+          description: Normalization result (deterministic and/or AI-assisted).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IngestResult"
+        "400":
+          description: Invalid JSON, unsupported/missing payload for the given kind, or ingest failure.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: Discover not configured (requires SHOAL_AI_* and optionally NetBox).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /v1/discover/confirm:
+    post:
+      tags: [discover]
+      summary: Record an operator-confirmed normalization as a learned few-shot example
+      description: Learning only — does not re-write NetBox.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ConfirmRequest"
+      responses:
+        "200":
+          description: Confirmation recorded (or a reason it was not learned).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfirmResult"
+        "400":
+          description: Invalid JSON or confirm failure.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: Discover (or its few-shot store) not configured.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /v1/devices/{id}/status:
+    get:
+      tags: [devices]
+      summary: Get the Observe aggregate status for a device
+      parameters:
+        - $ref: "#/components/parameters/DeviceId"
+      responses:
+        "200":
+          description: Device status.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeviceStatus"
+        "400":
+          description: Missing device id.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "502":
+          description: A configured backend dependency failed while computing status.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: Observe not configured on this server instance.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /v1/devices/{id}/events:
+    get:
+      tags: [devices]
+      summary: List normalized events for a device
+      parameters:
+        - $ref: "#/components/parameters/DeviceId"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Since"
+      responses:
+        "200":
+          description: Events, oldest first.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  device_id:
+                    type: string
+                  events:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/NormalizedEvent"
+        "400":
+          description: Missing device id.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "502":
+          description: A configured backend dependency failed while listing events.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: Observe not configured on this server instance.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /v1/devices/{id}/jobs:
+    get:
+      tags: [devices]
+      summary: List jobs for a device
+      parameters:
+        - $ref: "#/components/parameters/DeviceId"
+        - $ref: "#/components/parameters/Limit"
+        - name: state
+          in: query
+          description: |
+            Filter by lifecycle state (discovered | ready | provisioning |
+            provisioned | failed). An unrecognized value matches no rows
+            rather than returning 400.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Jobs for the device, most relevant per the store's ordering.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  device_id:
+                    type: string
+                  jobs:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Job"
+        "400":
+          description: Missing device id.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "502":
+          description: A configured backend dependency (job store) failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: Job store not configured on this server instance.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /v1/devices/{id}/sensors:
+    get:
+      tags: [devices]
+      summary: List sensor readings for a device
+      parameters:
+        - $ref: "#/components/parameters/DeviceId"
+        - name: limit
+          in: query
+          description: Max rows to return. Defaults to the server-side maximum (200); values above 200 are clamped to 200.
+          schema:
+            type: integer
+            default: 200
+            maximum: 200
+        - $ref: "#/components/parameters/Since"
+      responses:
+        "200":
+          description: Sensor readings.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  device_id:
+                    type: string
+                  sensors:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/SensorReading"
+        "400":
+          description: Missing device id.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "502":
+          description: A configured backend dependency (telemetry store) failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: Observe not configured on this server instance.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /v1/devices/{id}/firmware:
+    get:
+      tags: [devices]
+      summary: List the latest firmware inventory snapshot for a device
+      parameters:
+        - $ref: "#/components/parameters/DeviceId"
+        - name: limit
+          in: query
+          description: Max rows to return. Defaults to the server-side maximum (200); values above 200 are clamped to 200.
+          schema:
+            type: integer
+            default: 200
+            maximum: 200
+      responses:
+        "200":
+          description: Firmware components, plus the snapshot timestamp of the first row (if any).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  device_id:
+                    type: string
+                  ts:
+                    type: string
+                    format: date-time
+                  firmware:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/FirmwareComponent"
+        "400":
+          description: Missing device id.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "502":
+          description: A configured backend dependency (telemetry store) failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: Observe not configured on this server instance.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /v1/devices/{id}/power:
+    post:
+      tags: [power]
+      summary: Apply a Redfish power reset to a device
+      description: |
+        Operator power control — not a Deploy job. When `bmc_username` /
+        `bmc_password` / `bmc_endpoint` are omitted, they are resolved (in
+        order) from the stored device credentials, then server-configured
+        BMC defaults.
+      parameters:
+        - $ref: "#/components/parameters/DeviceId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DevicePowerRequest"
+      responses:
+        "200":
+          description: Power action applied.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DevicePowerResult"
+        "400":
+          description: Missing device id, invalid JSON, unsupported reset_type, or missing bmc_endpoint.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "502":
+          description: The BMC (Redfish) power action failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: Device power control not configured on this server instance.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /v1/devices/{id}/poll:
+    post:
+      tags: [poll]
+      summary: Run one on-demand Redfish SEL + sensor + firmware poll into telemetry
+      description: |
+        Body is optional; an empty body is treated as all-defaults, with the
+        same username/password/endpoint resolution order as the power
+        endpoint.
+      parameters:
+        - $ref: "#/components/parameters/DeviceId"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DevicePollRequest"
+      responses:
+        "200":
+          description: Poll completed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DevicePollResult"
+        "400":
+          description: Missing device id, invalid JSON, or missing bmc_endpoint.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "502":
+          description: The BMC (Redfish) poll failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: Device poll not configured on this server instance.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /v1/devices/{id}/credentials:
+    get:
+      tags: [credentials]
+      summary: Get a non-secret view of stored BMC credentials for a device
+      parameters:
+        - $ref: "#/components/parameters/DeviceId"
+        - name: credential_ref
+          in: query
+          description: When set, skips NetBox lookup and reads the secrets backend directly by ref (the plugin already knows its own custom field; avoids stalling a Status render on a NetBox round trip).
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Credentials view. Password is never included.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeviceCredentialsView"
+        "400":
+          description: Missing device id.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: No credentials found for this device.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: Credentials store not configured on this server instance.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    put:
+      tags: [credentials]
+      summary: Create or update stored BMC credentials for a device
+      description: An empty password keeps the existing secret when a credential already exists for this device.
+      parameters:
+        - $ref: "#/components/parameters/DeviceId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DeviceCredentialsPut"
+      responses:
+        "200":
+          description: Stored. Response is a non-secret view; password is never returned.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeviceCredentialsView"
+        "400":
+          description: Missing device id, invalid JSON, missing username, or store rejected the write.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Underlying device record not found (e.g. NetBox 404 when NetBox-backed).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: Credentials store not configured on this server instance.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /v1/profiles:
+    get:
+      tags: [profiles]
+      summary: List saved provisioning profiles
+      description: Backs the NetBox plugin's Provision form profile_ref dropdown, and any other caller that wants to browse options instead of typing a name.
+      responses:
+        "200":
+          description: Saved profiles.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  profiles:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ProfileRecord"
+        "500":
+          description: The profile store failed to list profiles.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: Profile store not configured (set SHOAL_PROFILE_DIR).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: |
+        `Authorization: Bearer <SHOAL_API_TOKEN>`. Enforced on every `/v1/*`
+        route as blanket middleware (internal/api/auth.go); a missing or
+        mismatched token returns 401 with `{"error": "unauthorized"}`. Only
+        enforced when the server was started with a non-empty
+        SHOAL_API_TOKEN — otherwise all `/v1/*` routes are open.
+
+  parameters:
+    JobId:
+      name: id
+      in: path
+      required: true
+      description: Job id.
+      schema:
+        type: string
+    DeviceId:
+      name: id
+      in: path
+      required: true
+      description: Device id (NetBox device id when NetBox-backed).
+      schema:
+        type: string
+    Limit:
+      name: limit
+      in: query
+      description: Max rows to return. Default 50; values above the server-side maximum (200) are clamped to 200.
+      schema:
+        type: integer
+        default: 50
+        maximum: 200
+    Since:
+      name: since
+      in: query
+      description: RFC3339 timestamp; only rows at or after this time are returned. An unparseable value is treated as "no filter" rather than a 400.
+      schema:
+        type: string
+        format: date-time
+
+  schemas:
+    Error:
+      type: object
+      description: Generic error envelope used by every non-2xx response in this API.
+      properties:
+        error:
+          type: string
+      required: [error]
+
+    ReadyzResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [ok, not_ready]
+        database:
+          type: string
+          enum: [not_configured, configured, ok, error]
+        error:
+          type: string
+          description: Present only when status is not_ready.
+
+    JobStage:
+      type: object
+      description: One step in a multi-stage provisioning job.
+      properties:
+        id:
+          type: string
+        kind:
+          type: string
+          enum: [prep, os_install, verify]
+        strategy:
+          type: string
+        family:
+          type: string
+        media_url:
+          type: string
+        seed_media_url:
+          type: string
+        seed_delivery:
+          type: string
+          enum: [none, auto, second_media, config_drive, single_iso]
+        state:
+          type: string
+          enum: [pending, running, done, failed]
+        phase:
+          type: string
+        error:
+          type: string
+      required: [id, kind, state]
+
+    Job:
+      type: object
+      description: Durable job state (deploy/jobstore).
+      properties:
+        id:
+          type: string
+        device_id:
+          type: string
+        profile_ref:
+          type: string
+        state:
+          type: string
+          enum: [discovered, ready, provisioning, provisioned, failed]
+        attempt:
+          type: integer
+        phase:
+          type: string
+        percent:
+          type: integer
+          nullable: true
+        last_marker_seq:
+          type: integer
+        started_at:
+          type: string
+          format: date-time
+          nullable: true
+        updated_at:
+          type: string
+          format: date-time
+          nullable: true
+        error:
+          type: string
+        sol_session_id:
+          type: string
+        iso_url:
+          type: string
+        bmc_endpoint:
+          type: string
+        system_id:
+          type: string
+        credential_ref:
+          type: string
+        current_stage:
+          type: string
+        install_strategy:
+          type: string
+        stages:
+          type: array
+          items:
+            $ref: "#/components/schemas/JobStage"
+        kind:
+          type: string
+          enum: [install, deprovision]
+          description: Empty/omitted means install (default for every job created before this field existed).
+      required: [id, device_id, profile_ref, state, attempt, last_marker_seq]
+
+    JobStartConflict:
+      type: object
+      description: POST /v1/jobs 409 body — start failed but a job row already exists (partial start).
+      properties:
+        error:
+          type: string
+        job:
+          $ref: "#/components/schemas/Job"
+      required: [error, job]
+
+    JobLogLine:
+      type: object
+      properties:
+        job_id:
+          type: string
+        ts:
+          type: string
+          format: date-time
+        line:
+          type: string
+      required: [job_id, ts, line]
+
+    StartJobRequest:
+      type: object
+      description: POST /v1/jobs request body.
+      properties:
+        device_id:
+          type: string
+        profile_ref:
+          type: string
+          description: Loads defaults (os_family, install_strategy, seed_delivery, iso_base, ...) from a saved profile; request fields win when non-empty.
+        iso_url:
+          type: string
+          description: Required unless a non-"spike" profile_ref or build_iso can resolve it, or kind=deprovision.
+        bmc_endpoint:
+          type: string
+          description: Redfish base URL. Required.
+        bmc_username:
+          type: string
+          description: Stored to the secrets backend; never logged.
+        bmc_password:
+          type: string
+          description: Stored to the secrets backend; never returned in any response.
+        serial_target:
+          type: string
+          description: libvirt domain or SOL target. Optional for operator_iso and for serial_transport=redfish_sol.
+        serial_transport:
+          type: string
+          enum: [libvirt, redfish_sol]
+          description: Empty uses the orchestrator default (SHOAL_SERIAL_TRANSPORT, itself defaulting to libvirt).
+        system_id:
+          type: string
+        credential_ref:
+          type: string
+          description: Alternative to bmc_username/bmc_password — a pre-seeded secrets-backend key.
+        stall_timeout:
+          type: integer
+          description: Go duration in nanoseconds; SOL silence window before ReportStall. 0 = orchestrator default. Ignored for operator_iso.
+        stage_timeout:
+          type: integer
+          description: Go duration in nanoseconds; max wait for an operator_iso coarse stage. 0 = default (60m).
+        approve_destruct:
+          type: boolean
+          description: Acknowledges a profile's needs_approval/destruct_steps. Does not bypass a missing profile store entry.
+        build_iso:
+          type: boolean
+          description: Requests a dynamic ISO build+publish before Virtual Media. Requires orchestrator ISO publish config.
+        iso_payload_file:
+          type: string
+        iso_install_mode:
+          type: string
+          enum: [simulate, write, autoinstall]
+        iso_install_target:
+          type: string
+        iso_ubuntu_base:
+          type: string
+        iso_hostname:
+          type: string
+        install_strategy:
+          type: string
+          enum: [simulate, image_write, scripted_iso, operator_iso]
+        prep:
+          type: string
+          enum: [skip, wipe_only]
+        prep_iso_url:
+          type: string
+          description: Required when prep=wipe_only unless SHOAL_PREP_ISO_URL is set.
+        wipe_level:
+          type: string
+          enum: [discard, zero]
+        seed_delivery:
+          type: string
+          enum: [none, auto, second_media, config_drive]
+          description: config_drive is forbidden with install_strategy=image_write; operator_iso requires none.
+        seed_iso_url:
+          type: string
+        os_family:
+          type: string
+          enum: [ubuntu, flatcar, esxi, windows]
+          description: Required for operator_iso.
+        kind:
+          type: string
+          enum: [install, deprovision]
+          description: Omitted/empty means install.
+      required: [device_id, bmc_endpoint]
+
+    NormalizedAsset:
+      type: object
+      description: Identity + access metadata only. BMC username/password are never stored here.
+      properties:
+        serial:
+          type: string
+        model:
+          type: string
+        vendor:
+          type: string
+        bmc_ip:
+          type: string
+        credential_ref:
+          type: string
+      required: [serial, model, vendor, bmc_ip, credential_ref]
+
+    FieldConfidence:
+      type: object
+      properties:
+        field:
+          type: string
+        confidence:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 1
+        source:
+          type: string
+          enum: [deterministic, ai]
+        evidence:
+          type: string
+      required: [field, confidence, source]
+
+    NormalizationResult:
+      type: object
+      properties:
+        asset:
+          $ref: "#/components/schemas/NormalizedAsset"
+        confidences:
+          type: array
+          items:
+            $ref: "#/components/schemas/FieldConfidence"
+        needs_review:
+          type: boolean
+      required: [asset, confidences, needs_review]
+
+    RawAssetInput:
+      type: object
+      description: POST /v1/discover/ingest request body. Exactly one of redfish_json/csv_row/photo_base64 is used, selected by kind.
+      properties:
+        kind:
+          type: string
+          enum: [redfish_json, csv, photo]
+        redfish_json:
+          type: object
+          additionalProperties: true
+        csv_row:
+          type: object
+          additionalProperties:
+            type: string
+        photo_base64:
+          type: string
+          description: JPEG/PNG; max decoded size 4 MiB.
+        bmc_username:
+          type: string
+        bmc_password:
+          type: string
+          description: Accepted once for first ingest; not logged; not returned.
+        bmc_ip:
+          type: string
+      required: [kind]
+
+    IngestResult:
+      type: object
+      properties:
+        device_id:
+          type: string
+        netbox_id:
+          type: string
+        asset:
+          $ref: "#/components/schemas/NormalizedAsset"
+        confidences:
+          type: array
+          items:
+            $ref: "#/components/schemas/FieldConfidence"
+        needs_review:
+          type: boolean
+        used_ai:
+          type: boolean
+      required: [device_id, asset, confidences, needs_review, used_ai]
+
+    ConfirmRequest:
+      type: object
+      description: POST /v1/discover/confirm request body. Stateless operator acceptance of a normalization result; appends a learned few-shot example.
+      properties:
+        kind:
+          type: string
+          enum: [redfish_json, csv, photo]
+        input:
+          type: object
+          additionalProperties: true
+          description: Redacted raw input / description map.
+        partial:
+          $ref: "#/components/schemas/NormalizedAsset"
+        result:
+          $ref: "#/components/schemas/NormalizationResult"
+        device_id:
+          type: string
+      required: [kind, input, result]
+
+    ConfirmResult:
+      type: object
+      properties:
+        learned:
+          type: boolean
+        id:
+          type: string
+        prompt:
+          type: string
+      required: [learned, prompt]
+
+    NormalizedEvent:
+      type: object
+      properties:
+        id:
+          type: string
+        device_id:
+          type: string
+        event_type:
+          type: string
+        severity:
+          type: string
+        component:
+          type: string
+        message:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+        raw:
+          type: object
+          additionalProperties: true
+          description: Redacted before any LLM call; typically omitted (not persisted by default).
+      required: [device_id, event_type, severity, component, message, timestamp]
+
+    DeviceStatus:
+      type: object
+      properties:
+        device_id:
+          type: string
+        lifecycle_state:
+          type: string
+          enum: [discovered, ready, provisioning, provisioned, failed]
+        power_state:
+          type: string
+        last_event:
+          type: string
+        active_job_id:
+          type: string
+        phase:
+          type: string
+        percent:
+          type: integer
+          nullable: true
+        updated_at:
+          type: string
+          format: date-time
+      required: [device_id, lifecycle_state, updated_at]
+
+    SensorReading:
+      type: object
+      properties:
+        device_id:
+          type: string
+        ts:
+          type: string
+          format: date-time
+        sensor:
+          type: string
+        value:
+          type: number
+          format: double
+          nullable: true
+          description: Null when the BMC listed the sensor but did not return a reading.
+        unit:
+          type: string
+        note:
+          type: string
+      required: [device_id, ts, sensor, value]
+
+    FirmwareComponent:
+      type: object
+      properties:
+        device_id:
+          type: string
+        ts:
+          type: string
+          format: date-time
+        id:
+          type: string
+        name:
+          type: string
+        version:
+          type: string
+        manufacturer:
+          type: string
+        software_id:
+          type: string
+        health:
+          type: string
+        updateable:
+          type: boolean
+        release_date:
+          type: string
+      required: [device_id, ts, id, updateable]
+
+    DevicePowerRequest:
+      type: object
+      properties:
+        reset_type:
+          type: string
+          enum: [On, ForceOff, ForceRestart, GracefulRestart, GracefulShutdown]
+        bmc_endpoint:
+          type: string
+          description: Required unless resolvable from stored credentials.
+        bmc_username:
+          type: string
+        bmc_password:
+          type: string
+        system_id:
+          type: string
+      required: [reset_type]
+
+    DevicePowerResult:
+      type: object
+      properties:
+        device_id:
+          type: string
+        reset_type:
+          type: string
+        power_state:
+          type: string
+        system_id:
+          type: string
+      required: [device_id, reset_type]
+
+    DevicePollRequest:
+      type: object
+      properties:
+        bmc_endpoint:
+          type: string
+          description: Required unless resolvable from stored credentials.
+        bmc_username:
+          type: string
+        bmc_password:
+          type: string
+        system_id:
+          type: string
+
+    DevicePollResult:
+      type: object
+      properties:
+        device_id:
+          type: string
+        sel_new:
+          type: integer
+        sensors_written:
+          type: integer
+        firmware_written:
+          type: integer
+        power_state:
+          type: string
+      required: [device_id, sel_new, sensors_written, firmware_written]
+
+    DeviceCredentialsView:
+      type: object
+      description: Non-secret view of stored BMC credentials. Password is never included.
+      properties:
+        device_id:
+          type: string
+        credential_ref:
+          type: string
+        username:
+          type: string
+        has_password:
+          type: boolean
+        bmc_ip:
+          type: string
+      required: [device_id, credential_ref, has_password]
+
+    DeviceCredentialsPut:
+      type: object
+      properties:
+        username:
+          type: string
+        password:
+          type: string
+          description: Optional. Empty keeps the existing secret when a credential already exists for this device.
+        bmc_ip:
+          type: string
+      required: [username]
+
+    ProvisioningProfile:
+      type: object
+      description: Schema-validated AI- or operator-authored profile. Fills StartJobRequest defaults when the request omits the corresponding field.
+      properties:
+        ref:
+          type: string
+        iso_base:
+          type: string
+          description: Basename or URL; required unless media_url is set.
+        embedded_payload:
+          type: string
+        post_install_steps:
+          type: array
+          items:
+            type: string
+        destruct_steps:
+          type: array
+          items:
+            type: string
+          description: Require allow_destruct + explicit operator approval before Deploy runs them.
+        needs_approval:
+          type: boolean
+        os_family:
+          type: string
+          enum: [ubuntu, flatcar, esxi, windows]
+        install_strategy:
+          type: string
+          enum: [simulate, image_write, scripted_iso, operator_iso]
+        seed_delivery:
+          type: string
+          enum: [none, auto, second_media, config_drive, single_iso]
+        seed_iso_base:
+          type: string
+        seed_iso_url:
+          type: string
+        prep:
+          type: string
+          enum: [skip, wipe_only]
+        wipe_level:
+          type: string
+          enum: [discard, zero]
+        prep_iso_base:
+          type: string
+        prep_iso_url:
+          type: string
+        media_url:
+          type: string
+        iso_hostname:
+          type: string
+        stage_timeout:
+          type: string
+          description: Go duration string (e.g. "60m"), for coarse (operator_iso) stage paths.
+      required: [ref, needs_approval]
+
+    ProfileRecord:
+      type: object
+      description: A durable saved profile plus optional operator approval.
+      properties:
+        profile:
+          $ref: "#/components/schemas/ProvisioningProfile"
+        approved_at:
+          type: string
+          format: date-time
+          nullable: true
+        approved_by:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      required: [profile, created_at, updated_at]
