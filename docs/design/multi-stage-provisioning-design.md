@@ -862,8 +862,8 @@ An operator can run **one Deploy job** over BMC (no guest transit network) that:
 ## 15. References
 
 - Design SoT § Phase 7 (v2.0.9 7a closeout)  
-- [`docs/phase-7-plan.md`](./phase-7-plan.md)  
-- [`docs/lab-runbook.md`](./lab-runbook.md) § Phase 7a  
+- [`docs/phase-7-plan.md`](../archive/phase-7-plan.md)  
+- [`docs/lab-runbook.md`](../runbooks/lab-runbook.md) § Phase 7a  
 - [Ironic configuration drive](https://docs.openstack.org/ironic/latest/install/configdrive.html)  
 - [cloud-init ConfigDrive datasource](https://docs.cloud-init.io/en/latest/reference/datasources/configdrive.html)  
 - Golden Rules in `AGENTS.md` §1  
