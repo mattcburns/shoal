@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -10,6 +11,30 @@ import (
 
 	"github.com/mattcburns/shoal/internal/common/config"
 )
+
+// errBackendDetail stands in for a raw upstream error that must never reach
+// an API client verbatim (e.g. a BMC hostname or secrets-backend path).
+var errBackendDetail = errors.New("dial tcp 10.9.8.7:5432: connection refused")
+
+// assertUpstreamError checks the consistent 502 response used for "a
+// configured backend dependency failed": a fixed status code and a body
+// that never contains the raw underlying error text.
+func assertUpstreamError(t *testing.T, rr *httptest.ResponseRecorder) {
+	t.Helper()
+	if rr.Code != http.StatusBadGateway {
+		t.Fatalf("status %d body=%s", rr.Code, rr.Body.String())
+	}
+	if strings.Contains(rr.Body.String(), "10.9.8.7") {
+		t.Fatalf("response leaked raw internal error detail: %s", rr.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := body["error"]; !ok {
+		t.Fatalf("missing error field: %s", rr.Body.String())
+	}
+}
 
 type fakePoll struct {
 	lastID  string
@@ -82,6 +107,24 @@ func TestDevicePollUnavailable(t *testing.T) {
 	s.Handler().ServeHTTP(rr, req)
 	if rr.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status %d", rr.Code)
+	}
+}
+
+func TestDevicePollUpstreamError(t *testing.T) {
+	fp := &fakePoll{err: errBackendDetail, out: DevicePollResult{SELNew: 2}}
+	s := New(config.Config{}, nil).WithDevicePoll(fp)
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/devices/6/poll", strings.NewReader(`{"bmc_endpoint":"https://bmc"}`))
+	s.Handler().ServeHTTP(rr, req)
+	assertUpstreamError(t, rr)
+	// Partial poll results gathered before the failure are still useful to
+	// the caller and are not raw error detail, so they remain in the body.
+	var body map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if sel, ok := body["sel_new"].(float64); !ok || sel != 2 {
+		t.Fatalf("expected partial results preserved, got %+v", body)
 	}
 }
 
