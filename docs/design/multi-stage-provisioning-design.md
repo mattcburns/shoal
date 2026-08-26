@@ -5,8 +5,9 @@ Flatcar Ignition, operator_iso, profile defaults). Later items (verify stage, ES
 Windows ISO compose, richer coarse progress) remain open — see §11.  
 **Date:** July 2026 (status updated August 2026)  
 **Audience:** Human architect + coding agents  
-**Related:** Design SoT `SHOAL_COMPREHENSIVE_DESIGN_AND_IMPLEMENTATION_PLAN.md` (v2.0.9+);
-Phase **7a complete** (Ubuntu nested-lab cloud image-write). This document **supersedes**
+**Related:** Design SoT [`docs/design/architecture.md`](./design/architecture.md);
+phase status in [`docs/plans/roadmap.md`](./plans/roadmap.md). Phase **7a complete**
+(Ubuntu nested-lab cloud image-write). This document **supersedes**
 deferred Phase **7b/7c** checklists for product direction.
 
 **Constraint (hard):** Provisioning assumes **no guest transit / data-plane network** during
@@ -862,8 +863,8 @@ An operator can run **one Deploy job** over BMC (no guest transit network) that:
 ## 15. References
 
 - Design SoT § Phase 7 (v2.0.9 7a closeout)  
-- [`docs/phase-7-plan.md`](./phase-7-plan.md)  
-- [`docs/lab-runbook.md`](./lab-runbook.md) § Phase 7a  
+- [`docs/phase-7-plan.md`](../archive/phase-7-plan.md)  
+- [`docs/lab-runbook.md`](../runbooks/lab-runbook.md) § Phase 7a  
 - [Ironic configuration drive](https://docs.openstack.org/ironic/latest/install/configdrive.html)  
 - [cloud-init ConfigDrive datasource](https://docs.cloud-init.io/en/latest/reference/datasources/configdrive.html)  
 - Golden Rules in `AGENTS.md` §1  

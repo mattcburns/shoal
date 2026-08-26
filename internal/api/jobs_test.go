@@ -1,6 +1,7 @@
 package api_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -16,6 +17,95 @@ import (
 	"github.com/mattcburns/shoal/internal/deploy/jobstore"
 	"github.com/mattcburns/shoal/internal/observe"
 )
+
+// fakeStarter records whether StartAsync was invoked, so tests can assert a
+// boundary-rejected request never reaches business logic.
+type fakeStarter struct {
+	called bool
+	job    models.Job
+	err    error
+}
+
+func (f *fakeStarter) StartAsync(_ context.Context, _ models.StartJobRequest) (models.Job, error) {
+	f.called = true
+	return f.job, f.err
+}
+
+func TestStartJobInvalidRequestRejectedAtBoundary(t *testing.T) {
+	fs := &fakeStarter{job: models.Job{ID: "should-not-start"}}
+	s := api.New(config.Config{}, nil).WithJobStarter(fs)
+
+	body := `{"device_id":"x","bmc_endpoint":"http://bmc.example","serial_target":"n1","bmc_username":"u","bmc_password":"p","install_strategy":"bogus"}`
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/jobs", bytes.NewBufferString(body))
+	s.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status %d body=%s", rr.Code, rr.Body.String())
+	}
+	if fs.called {
+		t.Fatal("invalid install_strategy must be rejected at the handler boundary, without reaching the orchestrator")
+	}
+}
+
+func TestStartJobMissingDeviceIDRejectedAtBoundary(t *testing.T) {
+	fs := &fakeStarter{}
+	s := api.New(config.Config{}, nil).WithJobStarter(fs)
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/jobs", bytes.NewBufferString(`{}`))
+	s.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status %d body=%s", rr.Code, rr.Body.String())
+	}
+	if fs.called {
+		t.Fatal("empty request must be rejected at the handler boundary")
+	}
+}
+
+// TestStartJobCredentialOmittedReachesOrchestrator guards against the
+// regression where moving validate.StartJobRequest to the boundary rejected
+// requests that intentionally omit BMC credentials to rely on
+// Orchestrator.prepareStart resolving them from a NetBox device record or
+// SHOAL_BMC_* env defaults (see startJobBoundaryProbe in jobs.go). The
+// handler must forward such a request to StartAsync rather than 400 it
+// itself; whether it ultimately succeeds is then up to the orchestrator.
+func TestStartJobCredentialOmittedReachesOrchestrator(t *testing.T) {
+	fs := &fakeStarter{job: models.Job{ID: "j1"}}
+	s := api.New(config.Config{}, nil).WithJobStarter(fs)
+
+	// No bmc_username/bmc_password/credential_ref at all.
+	body := `{"device_id":"x","bmc_endpoint":"http://bmc.example","serial_target":"n1","iso_url":"http://iso.example/a.iso"}`
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/jobs", bytes.NewBufferString(body))
+	s.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("status %d body=%s", rr.Code, rr.Body.String())
+	}
+	if !fs.called {
+		t.Fatal("credential-omitted request must reach the orchestrator, which may resolve credentials itself")
+	}
+}
+
+// TestStartJobHTTPSEndpointWithoutSerialTargetReachesOrchestrator guards the
+// second half of the same regression: an https bmc_endpoint with no explicit
+// serial_target relies on Orchestrator.applyStartBindings auto-detecting
+// serial_transport=redfish_sol (which doesn't need serial_target). The
+// boundary probe must not require serial_target here.
+func TestStartJobHTTPSEndpointWithoutSerialTargetReachesOrchestrator(t *testing.T) {
+	fs := &fakeStarter{job: models.Job{ID: "j1"}}
+	s := api.New(config.Config{}, nil).WithJobStarter(fs)
+
+	body := `{"device_id":"x","bmc_endpoint":"https://bmc.example","credential_ref":"ref1","iso_url":"http://iso.example/a.iso"}`
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/jobs", bytes.NewBufferString(body))
+	s.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("status %d body=%s", rr.Code, rr.Body.String())
+	}
+	if !fs.called {
+		t.Fatal("https endpoint without serial_target must reach the orchestrator, which auto-detects redfish_sol")
+	}
+}
 
 func TestGetJob(t *testing.T) {
 	store := jobstore.NewMemory()
@@ -98,6 +188,16 @@ func TestJobLog(t *testing.T) {
 	if empty["log"] == nil {
 		t.Fatal("log must be [] not null")
 	}
+}
+
+func TestJobLogUpstreamError(t *testing.T) {
+	store := erroringTelemetry{Store: telemetry.NewMemory(), jobLog: errBackendDetail}
+	obs := observe.New(nil, jobstore.NewMemory(), store, nil)
+	s := api.New(config.Config{}, nil).WithObserve(obs)
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/jobs/job-1/log", nil)
+	s.Handler().ServeHTTP(rr, req)
+	assertUpstreamError(t, rr)
 }
 
 func TestJobLogWithoutTelemetry(t *testing.T) {

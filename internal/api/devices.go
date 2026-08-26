@@ -16,6 +16,22 @@ func (s *Server) WithObserve(obs *observe.Service) *Server {
 	return s
 }
 
+// parseLimit parses the ?limit= query param, falling back to def when absent
+// or non-positive, and clamping to max so a caller can't force an unbounded
+// scan/response.
+func parseLimit(r *http.Request, def, max int) int {
+	limit := def
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	if limit > max {
+		limit = max
+	}
+	return limit
+}
+
 func (s *Server) handleDeviceStatus(w http.ResponseWriter, r *http.Request) {
 	if s.observe == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
@@ -30,8 +46,7 @@ func (s *Server) handleDeviceStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	st, err := s.observe.Status(r.Context(), id)
 	if err != nil {
-		s.log.Error("device status", "err", err.Error())
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "internal error"})
+		writeUpstreamError(w, s.log, "device status", err, "device_id", id)
 		return
 	}
 	writeJSON(w, http.StatusOK, st)
@@ -49,12 +64,7 @@ func (s *Server) handleDeviceEvents(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "missing device id"})
 		return
 	}
-	limit := 50
-	if v := r.URL.Query().Get("limit"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			limit = n
-		}
-	}
+	limit := parseLimit(r, 50, maxListLimit)
 	var since time.Time
 	if v := r.URL.Query().Get("since"); v != "" {
 		if t, err := time.Parse(time.RFC3339, v); err == nil {
@@ -63,7 +73,11 @@ func (s *Server) handleDeviceEvents(w http.ResponseWriter, r *http.Request) {
 	}
 	evs, err := s.observe.ListEvents(r.Context(), id, since, limit)
 	if err != nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": err.Error()})
+		if isNotConfiguredErr(err) {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "observe not configured"})
+			return
+		}
+		writeUpstreamError(w, s.log, "device events", err, "device_id", id)
 		return
 	}
 	if evs == nil {
@@ -87,23 +101,14 @@ func (s *Server) handleDeviceJobs(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "missing device id"})
 		return
 	}
-	limit := 50
-	if v := r.URL.Query().Get("limit"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			limit = n
-		}
-	}
-	if limit > maxListLimit {
-		limit = maxListLimit
-	}
+	limit := parseLimit(r, 50, maxListLimit)
 	// state is not validated against the LifecycleState enum: an unrecognized
 	// value simply matches no rows, mirroring how an unparseable `since`
 	// elsewhere falls back to "no filter" rather than 400.
 	state := models.LifecycleState(r.URL.Query().Get("state"))
 	jobs, err := s.jobs.ListByDevice(r.Context(), id, state, limit)
 	if err != nil {
-		s.log.Error("list device jobs", "err", err.Error())
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "internal error"})
+		writeUpstreamError(w, s.log, "list device jobs", err, "device_id", id)
 		return
 	}
 	if jobs == nil {
@@ -127,15 +132,7 @@ func (s *Server) handleDeviceSensors(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "missing device id"})
 		return
 	}
-	limit := maxListLimit
-	if v := r.URL.Query().Get("limit"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			limit = n
-		}
-	}
-	if limit > maxListLimit {
-		limit = maxListLimit
-	}
+	limit := parseLimit(r, maxListLimit, maxListLimit)
 	var since time.Time
 	if v := r.URL.Query().Get("since"); v != "" {
 		if t, err := time.Parse(time.RFC3339, v); err == nil {
@@ -144,7 +141,11 @@ func (s *Server) handleDeviceSensors(w http.ResponseWriter, r *http.Request) {
 	}
 	readings, err := s.observe.ListSensors(r.Context(), id, since, limit)
 	if err != nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": err.Error()})
+		if isNotConfiguredErr(err) {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "observe not configured"})
+			return
+		}
+		writeUpstreamError(w, s.log, "device sensors", err, "device_id", id)
 		return
 	}
 	if readings == nil {
@@ -168,18 +169,14 @@ func (s *Server) handleDeviceFirmware(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "missing device id"})
 		return
 	}
-	limit := maxListLimit
-	if v := r.URL.Query().Get("limit"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			limit = n
-		}
-	}
-	if limit > maxListLimit {
-		limit = maxListLimit
-	}
+	limit := parseLimit(r, maxListLimit, maxListLimit)
 	comps, err := s.observe.ListFirmware(r.Context(), id, limit)
 	if err != nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": err.Error()})
+		if isNotConfiguredErr(err) {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "observe not configured"})
+			return
+		}
+		writeUpstreamError(w, s.log, "device firmware", err, "device_id", id)
 		return
 	}
 	if comps == nil {

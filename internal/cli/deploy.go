@@ -11,17 +11,76 @@ import (
 	"syscall"
 	"time"
 
+	"log/slog"
+
 	"github.com/mattcburns/shoal/internal/common/config"
 	"github.com/mattcburns/shoal/internal/common/models"
 	"github.com/mattcburns/shoal/internal/common/netbox"
 	"github.com/mattcburns/shoal/internal/common/redfish"
+	"github.com/mattcburns/shoal/internal/common/secrets"
 	"github.com/mattcburns/shoal/internal/common/telemetry"
+	"github.com/mattcburns/shoal/internal/common/watchport"
 	"github.com/mattcburns/shoal/internal/core/profile"
 	"github.com/mattcburns/shoal/internal/deploy/iso"
 	"github.com/mattcburns/shoal/internal/deploy/job"
 	"github.com/mattcburns/shoal/internal/deploy/jobstore"
 	"github.com/mattcburns/shoal/internal/observe/sol"
 )
+
+// deployOrchestratorDeps bundles the job.Options fields that legitimately
+// differ between deploy subcommands. Everything else (BMC auth/TLS mode,
+// ISO base URL, orphan-reconcile behavior, default serial transport, ...) is
+// set exactly once in buildOrchestratorOptions so a new job.Options field
+// only needs to be added in one place, instead of drifting silently across
+// cmdDeployRun/cmdDeployCancel/cmdDeployDeprovision as it has in the past.
+type deployOrchestratorDeps struct {
+	Store   jobstore.Store
+	Secrets secrets.Backend
+	Watches watchport.WatchRegistrar
+	NetBox  netbox.LifecycleWriter
+	// Telemetry, Profiles, and ISOBuilder are deliberately nil for
+	// cmdDeployCancel: Cancel() only enqueues a terminal transition for an
+	// already-running job -- it never calls Start (so Profiles/ISOBuilder,
+	// which are only consulted during Start's profile/ISO resolution, are
+	// never read) and never registers a new SOL watch in this process (so no
+	// progress-port callback ever fires appendJobLog, which is the only
+	// place Telemetry is read). cmdDeployRun sets all three; cmdDeployDeprovision
+	// sets Telemetry (its HandleTerminal path can still be reached via SOL
+	// markers while the wipe runs) but leaves Profiles/ISOBuilder nil since
+	// deprovision requests carry no ProfileRef/ISOURL to resolve.
+	Telemetry  telemetry.Store
+	Profiles   profile.Store
+	ISOBuilder iso.Builder
+}
+
+// buildOrchestratorOptions is the single place that assembles job.Options
+// for the deploy subcommands (cmdDeployRun/cmdDeployCancel/
+// cmdDeployDeprovision). Keeping this shared across those three means a
+// newly added Options field only needs to be set once here rather than
+// copy-pasted into every cmdDeploy* function -- unlike the separate
+// `serve` command's own job.Options construction in cli.go, which this
+// helper does not cover and must still be updated by hand.
+func buildOrchestratorOptions(cfg config.Config, log *slog.Logger, deps deployOrchestratorDeps) job.Options {
+	return job.Options{
+		Log:                    log,
+		Store:                  deps.Store,
+		Secrets:                deps.Secrets,
+		NewBMC:                 redfish.NewBMC,
+		Watches:                deps.Watches,
+		NetBox:                 deps.NetBox,
+		Telemetry:              deps.Telemetry,
+		Profiles:               deps.Profiles,
+		ISOBaseURL:             cfg.ISOBaseURL,
+		ISOBuilder:             deps.ISOBuilder,
+		ISOPublishDir:          cfg.ISOPublishDir,
+		ISODynamic:             cfg.ISODynamic,
+		AuthMode:               cfg.RedfishAuthMode,
+		TLSMode:                cfg.RedfishTLSMode,
+		CAFile:                 cfg.RedfishCAFile,
+		ReconcileFailOrphan:    cfg.ReconcileFailOrphans,
+		DefaultSerialTransport: cfg.SerialTransport,
+	}
+}
 
 func cmdDeploy(args []string) int {
 	if len(args) < 1 {
@@ -199,25 +258,15 @@ func cmdDeployRun(args []string) int {
 			telemStore = telemetry.NewPostgres(db)
 		}
 	}
-	orch := job.NewOrchestrator(job.Options{
-		Log:                    log,
-		Store:                  store,
-		Secrets:                secretBackend,
-		NewBMC:                 redfish.NewBMC,
-		Watches:                watchSvc,
-		NetBox:                 nb,
-		Telemetry:              telemStore,
-		Profiles:               profStore,
-		ISOBaseURL:             cfg.ISOBaseURL,
-		ISOBuilder:             isoBuilder,
-		ISOPublishDir:          cfg.ISOPublishDir,
-		ISODynamic:             cfg.ISODynamic,
-		AuthMode:               cfg.RedfishAuthMode,
-		TLSMode:                cfg.RedfishTLSMode,
-		CAFile:                 cfg.RedfishCAFile,
-		ReconcileFailOrphan:    cfg.ReconcileFailOrphans,
-		DefaultSerialTransport: cfg.SerialTransport,
-	})
+	orch := job.NewOrchestrator(buildOrchestratorOptions(cfg, log, deployOrchestratorDeps{
+		Store:      store,
+		Secrets:    secretBackend,
+		Watches:    watchSvc,
+		NetBox:     nb,
+		Telemetry:  telemStore,
+		Profiles:   profStore,
+		ISOBuilder: isoBuilder,
+	}))
 	defer orch.Stop()
 	watchSvc.SetProgress(orch.ProgressPort())
 
@@ -228,6 +277,15 @@ func cmdDeployRun(args []string) int {
 		log.Warn("orphan reconcile", "err", err.Error())
 	}
 
+	// Intentionally Start (blocking), not StartAsync: this in-process
+	// orchestrator dies when the command returns, so the CLI must stay alive
+	// through bring-up (see Orchestrator.StartAsync's doc comment). The HTTP
+	// API uses StartAsync + context.WithoutCancel instead because an
+	// unrelated event -- a browser tab closing, a proxy timing out the
+	// request -- must not abort a physical BMC operation the operator still
+	// wants to happen; here, ctx is tied to this process's own SIGINT/SIGTERM,
+	// so cancellation only occurs when the same operator running this
+	// command asks to stop, which is exactly when aborting is wanted.
 	j, err := orch.Start(ctx, req)
 	if err != nil {
 		// may still have a job row
@@ -358,22 +416,21 @@ func cmdDeployCancel(args []string) int {
 	if cfg.NetBoxURL != "" && cfg.NetBoxToken != "" {
 		nb = netbox.New(cfg.NetBoxURL, cfg.NetBoxToken)
 	}
-	orch := job.NewOrchestrator(job.Options{
-		Log:                    log,
-		Store:                  store,
-		Secrets:                secretBackend,
-		NewBMC:                 redfish.NewBMC,
-		Watches:                watchSvc,
-		NetBox:                 nb,
-		AuthMode:               cfg.RedfishAuthMode,
-		TLSMode:                cfg.RedfishTLSMode,
-		CAFile:                 cfg.RedfishCAFile,
-		ReconcileFailOrphan:    cfg.ReconcileFailOrphans,
-		DefaultSerialTransport: cfg.SerialTransport,
-	})
+	orch := job.NewOrchestrator(buildOrchestratorOptions(cfg, log, deployOrchestratorDeps{
+		Store:   store,
+		Secrets: secretBackend,
+		Watches: watchSvc,
+		NetBox:  nb,
+		// Telemetry/Profiles/ISOBuilder intentionally nil -- see
+		// deployOrchestratorDeps' doc comment: Cancel never Starts a job and
+		// never attaches a new SOL watch in this process.
+	}))
 	defer orch.Stop()
 	watchSvc.SetProgress(orch.ProgressPort())
 
+	// Cancel is a single synchronous call (not Start/StartAsync), so the
+	// blocking-vs-async distinction doesn't apply here; it just enqueues a
+	// terminal transition for an already-running job.
 	if err := orch.Cancel(context.Background(), *jobID); err != nil {
 		fmt.Fprintf(os.Stderr, "cancel: %v\n", err)
 		return 1
@@ -500,20 +557,16 @@ func cmdDeployDeprovision(args []string) int {
 			telemStore = telemetry.NewPostgres(db)
 		}
 	}
-	orch := job.NewOrchestrator(job.Options{
-		Log:                    log,
-		Store:                  store,
-		Secrets:                secretBackend,
-		NewBMC:                 redfish.NewBMC,
-		Watches:                watchSvc,
-		NetBox:                 nb,
-		Telemetry:              telemStore,
-		AuthMode:               cfg.RedfishAuthMode,
-		TLSMode:                cfg.RedfishTLSMode,
-		CAFile:                 cfg.RedfishCAFile,
-		ReconcileFailOrphan:    cfg.ReconcileFailOrphans,
-		DefaultSerialTransport: cfg.SerialTransport,
-	})
+	orch := job.NewOrchestrator(buildOrchestratorOptions(cfg, log, deployOrchestratorDeps{
+		Store:     store,
+		Secrets:   secretBackend,
+		Watches:   watchSvc,
+		NetBox:    nb,
+		Telemetry: telemStore,
+		// Profiles/ISOBuilder intentionally nil -- see deployOrchestratorDeps'
+		// doc comment: a deprovision request carries no ProfileRef/ISOURL for
+		// Start to resolve.
+	}))
 	defer orch.Stop()
 	watchSvc.SetProgress(orch.ProgressPort())
 
@@ -524,6 +577,11 @@ func cmdDeployDeprovision(args []string) int {
 		log.Warn("orphan reconcile", "err", err.Error())
 	}
 
+	// Intentionally Start (blocking), not StartAsync -- same reasoning as
+	// cmdDeployRun above: this orchestrator is in-process and dies when the
+	// command returns, and a Ctrl-C here means the operator running this
+	// command wants the wipe aborted, unlike an HTTP client disconnect which
+	// must not abort an in-flight BMC operation.
 	j, err := orch.Start(ctx, req)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "deploy deprovision failed: %v\n", err)
