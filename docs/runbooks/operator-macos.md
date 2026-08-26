@@ -91,6 +91,6 @@ ansible-playbook -i infra/ansible/inventory/lab-vm.yml \
 
 ## Related
 
-- Design Phase 6c: design doc v2.0.6 / [phase-6c-plan.md](./phase-6c-plan.md)
+- Design Phase 6c: design doc v2.0.6 / [phase-6c-plan.md](../archive/phase-6c-plan.md)
 - Lab ops: [lab-runbook.md](./lab-runbook.md)
-- License notices: [NOTICE](../NOTICE), [third-party-licenses.md](./third-party-licenses.md)
+- License notices: [NOTICE](../../NOTICE), [third-party-licenses.md](../reference/third-party-licenses.md)

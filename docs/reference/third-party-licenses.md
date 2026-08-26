@@ -5,7 +5,7 @@ This file reproduces the license texts of third-party Go modules that are
 distributions can satisfy MIT/BSD notice requirements.
 
 Shoal itself is licensed under the **GNU Affero General Public License v3.0**;
-see [`LICENSE`](../LICENSE) and the short inventory in [`NOTICE`](../NOTICE).
+see [`LICENSE`](../../LICENSE) and the short inventory in [`NOTICE`](../../NOTICE).
 
 **Scope:** runtime imports of `cmd/shoal` only. Test-only modules (e.g.
 `testify`) and separate lab services (NetBox, Postgres, Ollama, sushy-tools)
@@ -17,7 +17,7 @@ are not listed here.
 go list -deps -f '{{if not .Standard}}{{.Module.Path}} {{.Module.Version}}{{end}}' ./cmd/shoal | sort -u
 ```
 
-When `go.mod` / the binary dependency graph changes, update [`NOTICE`](../NOTICE)
+When `go.mod` / the binary dependency graph changes, update [`NOTICE`](../../NOTICE)
 and this file in the same change (see `AGENTS.md` §9.1).
 
 ---

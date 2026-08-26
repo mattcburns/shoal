@@ -1,7 +1,7 @@
 # Phase 7 — Full OS install (BMC + SOL)
 
 Executable checklist for design **v2.0.9** § Phase 7. Design SoT:
-[`SHOAL_COMPREHENSIVE_DESIGN_AND_IMPLEMENTATION_PLAN.md`](../SHOAL_COMPREHENSIVE_DESIGN_AND_IMPLEMENTATION_PLAN.md).
+[`SHOAL_COMPREHENSIVE_DESIGN_AND_IMPLEMENTATION_PLAN.md`](../../SHOAL_COMPREHENSIVE_DESIGN_AND_IMPLEMENTATION_PLAN.md).
 
 ## Goal
 
@@ -44,7 +44,7 @@ lifecycle rules intact.
 **Alternate / stretch:** `build-ubuntu-autoinstall-iso.sh` live-server remaster (autoinstall
 user-data). Unreliable under nested sushy; keep for future hardware / better media fidelity.
 
-**Operator docs:** [`lab-runbook.md`](./lab-runbook.md) § Phase 7a.
+**Operator docs:** [`lab-runbook.md`](../runbooks/lab-runbook.md) § Phase 7a.
 
 ### 7b — Profile + artifact model — **DEFERRED**
 
