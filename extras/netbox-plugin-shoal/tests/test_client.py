@@ -218,7 +218,7 @@ class GetSensorsTests(unittest.TestCase):
 
     @mock.patch("netbox_shoal.client.requests.get")
     def test_get_sensors_url_and_default_limit(self, mock_get):
-        mock_get.return_value = FakeResponse({"device_id": "1", "readings": []})
+        mock_get.return_value = FakeResponse({"device_id": "1", "sensors": []})
         client.get_sensors("1")
         args, kwargs = mock_get.call_args
         self.assertEqual(args[0], "http://shoal.example:8088/v1/devices/1/sensors")
@@ -226,7 +226,7 @@ class GetSensorsTests(unittest.TestCase):
 
     @mock.patch("netbox_shoal.client.requests.get")
     def test_get_sensors_passes_limit(self, mock_get):
-        mock_get.return_value = FakeResponse({"device_id": "1", "readings": []})
+        mock_get.return_value = FakeResponse({"device_id": "1", "sensors": []})
         client.get_sensors("1", limit=5)
         _, kwargs = mock_get.call_args
         self.assertEqual(kwargs["params"], {"limit": 5})
@@ -234,11 +234,11 @@ class GetSensorsTests(unittest.TestCase):
     @mock.patch("netbox_shoal.client.requests.get")
     def test_get_sensors_returns_data_on_success(self, mock_get):
         mock_get.return_value = FakeResponse(
-            {"device_id": "1", "readings": [{"sensor": "Inlet Temp", "value": 24.5, "unit": "Cel"}]}
+            {"device_id": "1", "sensors": [{"sensor": "Inlet Temp", "value": 24.5, "unit": "Cel"}]}
         )
         data, err = client.get_sensors("1")
         self.assertIsNone(err)
-        self.assertEqual(data["readings"][0]["sensor"], "Inlet Temp")
+        self.assertEqual(data["sensors"][0]["sensor"], "Inlet Temp")
 
 
 class GetJobLogTests(unittest.TestCase):
@@ -253,7 +253,7 @@ class GetJobLogTests(unittest.TestCase):
 
     @mock.patch("netbox_shoal.client.requests.get")
     def test_get_job_log_url_and_limit(self, mock_get):
-        mock_get.return_value = FakeResponse({"job_id": "abc", "lines": []})
+        mock_get.return_value = FakeResponse({"job_id": "abc", "log": []})
         data, err = client.get_job_log("abc", limit=40)
         self.assertIsNone(err)
         self.assertEqual(data["job_id"], "abc")
@@ -331,11 +331,11 @@ class WriteJobTests(unittest.TestCase):
     @mock.patch("netbox_shoal.client.requests.get")
     def test_get_firmware(self, mock_get):
         mock_get.return_value = FakeResponse(
-            {"device_id": "6", "components": [{"id": "BIOS", "version": "1.8.0"}]}
+            {"device_id": "6", "firmware": [{"id": "BIOS", "version": "1.8.0"}]}
         )
         data, err = client.get_firmware("6")
         self.assertIsNone(err)
-        self.assertEqual(data["components"][0]["version"], "1.8.0")
+        self.assertEqual(data["firmware"][0]["version"], "1.8.0")
         args, _ = mock_get.call_args
         self.assertEqual(args[0], "http://shoal.example:8088/v1/devices/6/firmware")
 

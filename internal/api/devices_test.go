@@ -245,9 +245,9 @@ func TestDeviceSensors(t *testing.T) {
 	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	readings, ok := body["readings"].([]any)
+	readings, ok := body["sensors"].([]any)
 	if !ok || len(readings) != 1 {
-		t.Fatalf("readings: %+v", body["readings"])
+		t.Fatalf("sensors: %+v", body["sensors"])
 	}
 
 	rr = httptest.NewRecorder()
@@ -257,8 +257,8 @@ func TestDeviceSensors(t *testing.T) {
 	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	if body["readings"] == nil {
-		t.Fatal("readings must be [] not null")
+	if body["sensors"] == nil {
+		t.Fatal("sensors must be [] not null")
 	}
 }
 
@@ -294,9 +294,9 @@ func TestDeviceFirmwareAndPolledPower(t *testing.T) {
 	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	comps, ok := body["components"].([]any)
+	comps, ok := body["firmware"].([]any)
 	if !ok || len(comps) != 1 {
-		t.Fatalf("components: %+v", body["components"])
+		t.Fatalf("firmware: %+v", body["firmware"])
 	}
 
 	rr = httptest.NewRecorder()
