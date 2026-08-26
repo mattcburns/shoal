@@ -3,8 +3,10 @@ package api_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,6 +17,60 @@ import (
 	"github.com/mattcburns/shoal/internal/deploy/jobstore"
 	"github.com/mattcburns/shoal/internal/observe"
 )
+
+// errBackendDetail is a stand-in for a raw upstream error that must never
+// reach an API client verbatim (it stands in for things like a DSN, a BMC
+// hostname, or a secrets-backend path).
+var errBackendDetail = errors.New("dial tcp 10.9.8.7:5432: connection refused")
+
+// erroringTelemetry wraps a telemetry.Store and forces specific List* calls
+// to fail, so handlers can be tested against a "configured backend
+// dependency failed" error rather than a "not configured" one.
+type erroringTelemetry struct {
+	telemetry.Store
+	events   error
+	sensors  error
+	firmware error
+	jobLog   error
+}
+
+func (e erroringTelemetry) ListEvents(ctx context.Context, deviceID string, since time.Time, limit int) ([]models.NormalizedEvent, error) {
+	if e.events != nil {
+		return nil, e.events
+	}
+	return e.Store.ListEvents(ctx, deviceID, since, limit)
+}
+
+func (e erroringTelemetry) ListSensors(ctx context.Context, deviceID string, since time.Time, limit int) ([]telemetry.SensorReading, error) {
+	if e.sensors != nil {
+		return nil, e.sensors
+	}
+	return e.Store.ListSensors(ctx, deviceID, since, limit)
+}
+
+func (e erroringTelemetry) ListFirmware(ctx context.Context, deviceID string, limit int) ([]telemetry.FirmwareComponent, error) {
+	if e.firmware != nil {
+		return nil, e.firmware
+	}
+	return e.Store.ListFirmware(ctx, deviceID, limit)
+}
+
+func (e erroringTelemetry) ListJobLog(ctx context.Context, jobID string, since time.Time, limit int) ([]telemetry.JobLogLine, error) {
+	if e.jobLog != nil {
+		return nil, e.jobLog
+	}
+	return e.Store.ListJobLog(ctx, jobID, since, limit)
+}
+
+// erroringJobStore wraps a jobstore.Store and forces ListByDevice to fail.
+type erroringJobStore struct {
+	jobstore.Store
+	err error
+}
+
+func (e erroringJobStore) ListByDevice(ctx context.Context, deviceID string, state models.LifecycleState, limit int) ([]models.Job, error) {
+	return nil, e.err
+}
 
 func TestDeviceStatusAndEvents(t *testing.T) {
 	jobs := jobstore.NewMemory()
@@ -56,6 +112,39 @@ func TestDeviceStatusAndEvents(t *testing.T) {
 	}
 	if body["events"] == nil {
 		t.Fatal("events must be [] not null")
+	}
+}
+
+func TestDeviceEventsLimitClamped(t *testing.T) {
+	store := telemetry.NewMemory()
+	ctx := context.Background()
+	// maxListLimit in internal/api/server.go is 200; write more than that and
+	// request an oversized ?limit= to confirm the handler clamps it rather
+	// than passing the caller-supplied value straight through.
+	const maxListLimit = 200
+	for i := 0; i < maxListLimit+10; i++ {
+		_ = store.WriteEvent(ctx, models.NormalizedEvent{
+			DeviceID: "n1", Message: "hello", Severity: "info",
+			Timestamp: time.Now().UTC().Add(time.Duration(i) * time.Millisecond),
+		})
+	}
+	obs := observe.New(nil, jobstore.NewMemory(), store, nil)
+	s := api.New(config.Config{}, nil).WithObserve(obs)
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/devices/n1/events?limit=99999", nil)
+	s.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status %d body=%s", rr.Code, rr.Body.String())
+	}
+	var body struct {
+		Events []models.NormalizedEvent `json:"events"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Events) != maxListLimit {
+		t.Fatalf("want clamped to %d events, got %d", maxListLimit, len(body.Events))
 	}
 }
 
@@ -156,9 +245,9 @@ func TestDeviceSensors(t *testing.T) {
 	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	readings, ok := body["readings"].([]any)
+	readings, ok := body["sensors"].([]any)
 	if !ok || len(readings) != 1 {
-		t.Fatalf("readings: %+v", body["readings"])
+		t.Fatalf("sensors: %+v", body["sensors"])
 	}
 
 	rr = httptest.NewRecorder()
@@ -168,8 +257,8 @@ func TestDeviceSensors(t *testing.T) {
 	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	if body["readings"] == nil {
-		t.Fatal("readings must be [] not null")
+	if body["sensors"] == nil {
+		t.Fatal("sensors must be [] not null")
 	}
 }
 
@@ -205,9 +294,9 @@ func TestDeviceFirmwareAndPolledPower(t *testing.T) {
 	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	comps, ok := body["components"].([]any)
+	comps, ok := body["firmware"].([]any)
 	if !ok || len(comps) != 1 {
-		t.Fatalf("components: %+v", body["components"])
+		t.Fatalf("firmware: %+v", body["firmware"])
 	}
 
 	rr = httptest.NewRecorder()
@@ -220,4 +309,73 @@ func TestDeviceFirmwareAndPolledPower(t *testing.T) {
 	if st.PowerState != "Off" {
 		t.Fatalf("power %+v", st)
 	}
+}
+
+// assertUpstreamError checks the consistent 502 response used for "a
+// configured backend dependency failed": a fixed status code and a body
+// that never contains the raw underlying error text.
+func assertUpstreamError(t *testing.T, rr *httptest.ResponseRecorder) {
+	t.Helper()
+	if rr.Code != http.StatusBadGateway {
+		t.Fatalf("status %d body=%s", rr.Code, rr.Body.String())
+	}
+	if strings.Contains(rr.Body.String(), "10.9.8.7") {
+		t.Fatalf("response leaked raw internal error detail: %s", rr.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := body["error"]; !ok {
+		t.Fatalf("missing error field: %s", rr.Body.String())
+	}
+}
+
+func TestDeviceStatusUpstreamError(t *testing.T) {
+	store := erroringTelemetry{Store: telemetry.NewMemory(), events: errBackendDetail}
+	obs := observe.New(nil, jobstore.NewMemory(), store, nil)
+	s := api.New(config.Config{}, nil).WithObserve(obs)
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/devices/n5/status", nil)
+	s.Handler().ServeHTTP(rr, req)
+	assertUpstreamError(t, rr)
+}
+
+func TestDeviceEventsUpstreamError(t *testing.T) {
+	store := erroringTelemetry{Store: telemetry.NewMemory(), events: errBackendDetail}
+	obs := observe.New(nil, jobstore.NewMemory(), store, nil)
+	s := api.New(config.Config{}, nil).WithObserve(obs)
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/devices/n5/events", nil)
+	s.Handler().ServeHTTP(rr, req)
+	assertUpstreamError(t, rr)
+}
+
+func TestDeviceJobsUpstreamError(t *testing.T) {
+	jobs := erroringJobStore{Store: jobstore.NewMemory(), err: errBackendDetail}
+	s := api.New(config.Config{}, nil).WithJobStore(jobs)
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/devices/n5/jobs", nil)
+	s.Handler().ServeHTTP(rr, req)
+	assertUpstreamError(t, rr)
+}
+
+func TestDeviceSensorsUpstreamError(t *testing.T) {
+	store := erroringTelemetry{Store: telemetry.NewMemory(), sensors: errBackendDetail}
+	obs := observe.New(nil, jobstore.NewMemory(), store, nil)
+	s := api.New(config.Config{}, nil).WithObserve(obs)
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/devices/n5/sensors", nil)
+	s.Handler().ServeHTTP(rr, req)
+	assertUpstreamError(t, rr)
+}
+
+func TestDeviceFirmwareUpstreamError(t *testing.T) {
+	store := erroringTelemetry{Store: telemetry.NewMemory(), firmware: errBackendDetail}
+	obs := observe.New(nil, jobstore.NewMemory(), store, nil)
+	s := api.New(config.Config{}, nil).WithObserve(obs)
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/devices/n5/firmware", nil)
+	s.Handler().ServeHTTP(rr, req)
+	assertUpstreamError(t, rr)
 }

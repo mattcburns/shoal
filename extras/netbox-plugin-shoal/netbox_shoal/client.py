@@ -137,17 +137,17 @@ def get_jobs(device_id, limit=50, state=None):
 
 
 def get_sensors(device_id, limit=200):
-    """GET /v1/devices/{id}/sensors?limit= -> ({"device_id","readings":[...]}, error)."""
+    """GET /v1/devices/{id}/sensors?limit= -> ({"device_id","sensors":[...]}, error)."""
     return _get("/v1/devices/%s/sensors" % device_id, params={"limit": limit})
 
 
 def get_firmware(device_id, limit=200):
-    """GET /v1/devices/{id}/firmware?limit= -> ({"device_id","components":[...]}, error)."""
+    """GET /v1/devices/{id}/firmware?limit= -> ({"device_id","firmware":[...]}, error)."""
     return _get("/v1/devices/%s/firmware" % device_id, params={"limit": limit})
 
 
 def get_job_log(job_id, limit=100):
-    """GET /v1/jobs/{id}/log?limit= -> ({"job_id","lines":[...]}, error)."""
+    """GET /v1/jobs/{id}/log?limit= -> ({"job_id","log":[...]}, error)."""
     return _get("/v1/jobs/%s/log" % job_id, params={"limit": limit})
 
 

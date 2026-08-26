@@ -137,7 +137,7 @@ func TestOrchestratorRedfishSOLTransportSelectedByDefault(t *testing.T) {
 		BMCEndpoint: "http://bmc.test",
 		BMCUsername: "admin",
 		BMCPassword: "secret",
-		// validate.StartJobRequest cannot see Options.DefaultSerialTransport (it
+		// StartJobRequest cannot see Options.DefaultSerialTransport (it
 		// only validates the request itself), so serial_target is still required
 		// here even though the orchestrator will end up ignoring it in favor of
 		// bmc_endpoint — this is the documented v1 tradeoff (safe/explicit over

@@ -5,12 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/mattcburns/shoal/internal/common/models"
 	"github.com/mattcburns/shoal/internal/common/telemetry"
+	"github.com/mattcburns/shoal/internal/deploy/job"
 	"github.com/mattcburns/shoal/internal/deploy/jobstore"
 )
 
@@ -51,6 +51,35 @@ func (s *Server) WithJobStarter(st JobStarter) *Server {
 	return s
 }
 
+// startJobBoundaryProbe returns a copy of req patched, for validation
+// purposes only, with the two fields Orchestrator.prepareStart may fill in
+// from state this handler cannot see (a NetBox device record, orchestrator-
+// wide SHOAL_BMC_* env defaults, or an https bmc_endpoint's implied
+// transport) before its own job.StartJobRequest call. The original req
+// sent on to StartAsync is never modified -- only this probe, used solely to
+// decide whether the boundary check in handleStartJob should reject the
+// request outright.
+func startJobBoundaryProbe(req models.StartJobRequest) models.StartJobRequest {
+	probe := req
+	if strings.TrimSpace(probe.CredentialRef) == "" &&
+		strings.TrimSpace(probe.BMCUsername) == "" &&
+		strings.TrimSpace(probe.BMCPassword) == "" {
+		// Orchestrator.applyStartBindings/applyDefaultCredentials may still
+		// resolve real credentials from NetBox or env defaults; a placeholder
+		// here just satisfies the boundary check's "some credential material
+		// is present" rule so it defers the real answer to that later pass.
+		probe.CredentialRef = "boundary-probe-placeholder"
+	}
+	if strings.TrimSpace(probe.SerialTransport) == "" && job.LooksLikeHTTPSBMC(probe.BMCEndpoint) {
+		// Mirrors Orchestrator.applyStartBindings' auto-detect exactly (same
+		// exported helper, not a copy) so an https bmc_endpoint without an
+		// explicit serial_target isn't rejected here for a serial_target
+		// requirement that redfish_sol doesn't have.
+		probe.SerialTransport = "redfish_sol"
+	}
+	return probe
+}
+
 func (s *Server) handleStartJob(w http.ResponseWriter, r *http.Request) {
 	if s.start == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
@@ -63,10 +92,31 @@ func (s *Server) handleStartJob(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json"})
 		return
 	}
-	// Full StartJobRequest validation runs inside Orchestrator.Start after M6
-	// profile defaults are applied (so profile-only jobs can omit iso_url/strategy).
-	if strings.TrimSpace(req.DeviceID) == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "validate: device_id is required"})
+	// Boundary validation, matching every other write handler: reject a
+	// structurally-invalid request (bad install_strategy, missing device_id /
+	// bmc_endpoint, unknown enums, ...) before it reaches business logic.
+	//
+	// This runs on startJobBoundaryProbe(req), not req itself: job.StartJobRequest
+	// also requires resolvable BMC credentials and (absent an explicit
+	// serial_transport) a serial_target, but those can legitimately come from
+	// fields this handler cannot see -- Orchestrator.prepareStart's
+	// applyStartBindings/applyDefaultCredentials fill credential_ref from a
+	// NetBox device record or BMC username/password from orchestrator-wide
+	// SHOAL_BMC_* defaults (the documented "NetBox start-job need not post
+	// passwords" path), and auto-derive serial_transport=redfish_sol for an
+	// https bmc_endpoint. The probe copy patches over exactly those two
+	// defaultable gaps so this boundary check can never reject a request
+	// solely because a fill that hasn't happened yet is missing, while still
+	// catching everything else (bad enums, missing device_id/bmc_endpoint,
+	// inconsistent prep/seed/os_family combinations, ...). req itself is
+	// untouched, so Orchestrator.prepareStart's own job.StartJobRequest
+	// call -- unchanged below in internal/deploy/job/orchestrator.go -- remains
+	// the sole authority on whether credentials/serial_transport actually end
+	// up resolved, for both this handler and the CLI's direct
+	// orch.Start/StartAsync callers in internal/cli/deploy.go, which never
+	// reach this handler at all.
+	if err := job.StartJobRequest(startJobBoundaryProbe(req)); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}
 	// Returns as soon as the job row is durable; BMC bring-up (SOL attach, media
@@ -137,15 +187,7 @@ func (s *Server) handleJobLog(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "missing job id"})
 		return
 	}
-	limit := 50
-	if v := r.URL.Query().Get("limit"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			limit = n
-		}
-	}
-	if limit > maxListLimit {
-		limit = maxListLimit
-	}
+	limit := parseLimit(r, 50, maxListLimit)
 	var since time.Time
 	if v := r.URL.Query().Get("since"); v != "" {
 		if t, err := time.Parse(time.RFC3339, v); err == nil {
@@ -154,7 +196,11 @@ func (s *Server) handleJobLog(w http.ResponseWriter, r *http.Request) {
 	}
 	lines, err := s.observe.ListJobLog(r.Context(), id, since, limit)
 	if err != nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": err.Error()})
+		if isNotConfiguredErr(err) {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "observe not configured"})
+			return
+		}
+		writeUpstreamError(w, s.log, "job log", err, "job_id", id)
 		return
 	}
 	if lines == nil {
@@ -162,7 +208,7 @@ func (s *Server) handleJobLog(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"job_id": id,
-		"lines":  lines,
+		"log":    lines,
 	})
 }
 

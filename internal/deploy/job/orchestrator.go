@@ -21,7 +21,6 @@ import (
 	"github.com/mattcburns/shoal/internal/common/redfish"
 	"github.com/mattcburns/shoal/internal/common/secrets"
 	"github.com/mattcburns/shoal/internal/common/telemetry"
-	"github.com/mattcburns/shoal/internal/common/validate"
 	"github.com/mattcburns/shoal/internal/common/watchport"
 	"github.com/mattcburns/shoal/internal/core/profile"
 	"github.com/mattcburns/shoal/internal/deploy/iso"
@@ -357,7 +356,21 @@ func (o *Orchestrator) prepareStart(ctx context.Context, req models.StartJobRequ
 		}
 	}
 
-	if err := validate.StartJobRequest(req); err != nil {
+	// Authoritative validation pass: req now has every default applied
+	// (device-lookup/env BMC credentials, serial_transport, profile fields
+	// above), so this is the only point that can correctly judge a
+	// profile-only or credential-omitting start. The API handler
+	// (internal/api/jobs.go handleStartJob) also calls StartJobRequest
+	// as a boundary check, but on a *probe* copy (startJobBoundaryProbe) that
+	// patches over exactly the credential/serial_transport fields this deep
+	// call resolves -- so that earlier pass rejects malformed input (bad
+	// enums, missing device_id/bmc_endpoint, ...) without being able to
+	// wrongly reject a start that only becomes valid once those defaults are
+	// applied here. It is not a substitute for this call. The CLI
+	// (internal/cli/deploy.go) calls Start/StartAsync directly with no
+	// boundary validation of its own, so this call is its only validation;
+	// do not remove it.
+	if err := StartJobRequest(req); err != nil {
 		return preparedStart{}, err
 	}
 	if err := o.checkProfileApproval(ctx, profileRef, req.ApproveDestruct); err != nil {
@@ -1837,7 +1850,7 @@ func (o *Orchestrator) applyStartBindings(ctx context.Context, req *models.Start
 			}
 		}
 	}
-	if strings.TrimSpace(req.SerialTransport) == "" && looksLikeHTTPSBMC(req.BMCEndpoint) {
+	if strings.TrimSpace(req.SerialTransport) == "" && LooksLikeHTTPSBMC(req.BMCEndpoint) {
 		req.SerialTransport = "redfish_sol"
 	}
 }
@@ -1857,7 +1870,10 @@ func (o *Orchestrator) lookupDevice(ctx context.Context, key string) (models.Dev
 	return id, true
 }
 
-func looksLikeHTTPSBMC(endpoint string) bool {
+// LooksLikeHTTPSBMC reports whether endpoint is an https:// BMC URL. Exported
+// so internal/api/jobs.go's boundary probe can mirror this exact auto-detect
+// rule instead of maintaining its own copy (see startJobBoundaryProbe).
+func LooksLikeHTTPSBMC(endpoint string) bool {
 	u, err := url.Parse(strings.TrimSpace(endpoint))
 	if err != nil || u.Host == "" {
 		return false

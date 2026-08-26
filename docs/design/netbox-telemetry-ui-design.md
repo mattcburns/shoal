@@ -14,7 +14,7 @@ secrets then `SHOAL_BMC_*`; Start provision still uses env defaults when the
 form leaves user/pass blank. **N7** Grafana and richer wizard still open.
 **Date:** July 2026 (status updated August 2026)  
 **Audience:** Human architect + coding agents  
-**Related:** Design SoT `SHOAL_COMPREHENSIVE_DESIGN_AND_IMPLEMENTATION_PLAN.md` (v2.0.9+);
+**Related:** Design SoT [`docs/design/architecture.md`](./design/architecture.md);
 [`docs/multi-stage-provisioning-design.md`](./multi-stage-provisioning-design.md) §16.1 (NetBox remains device identity SoT).
 
 ---
@@ -247,7 +247,7 @@ shapes, empty lists not 404.
 ```json
 {
   "device_id": "lab-node-1",
-  "readings": [
+  "sensors": [
     { "sensor": "Inlet Temp", "value": 24.5, "unit": "C", "ts": "…" }
   ]
 }
@@ -258,7 +258,7 @@ shapes, empty lists not 404.
 ```json
 {
   "job_id": "abc…",
-  "lines": [
+  "log": [
     { "ts": "…", "line": "SHOAL|1|3|…|IMAGE_WRITE|10|OK|…" }
   ]
 }

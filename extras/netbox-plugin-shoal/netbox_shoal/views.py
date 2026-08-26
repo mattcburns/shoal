@@ -339,7 +339,7 @@ def _status_context(instance, request=None):
     log_error = None
     if active and active.get("id"):
         log_data, log_error = client.get_job_log(active["id"], limit=40)
-        log_lines = (log_data or {}).get("lines", [])
+        log_lines = (log_data or {}).get("log", [])
     provisioning = bool(
         data and (data.get("lifecycle_state") == "provisioning" or data.get("active_job_id"))
     ) or any((j or {}).get("state") == "provisioning" for j in jobs)
@@ -438,7 +438,7 @@ class ShoalJobsView(generic.ObjectView):
         log_error = None
         if active and active.get("id"):
             log_data, log_error = client.get_job_log(active["id"], limit=80)
-            log_lines = (log_data or {}).get("lines", [])
+            log_lines = (log_data or {}).get("log", [])
         return {
             "shoal_jobs": jobs,
             "shoal_error": error,
@@ -475,7 +475,7 @@ class ShoalSensorsView(generic.ObjectView):
         if str(defaults.get("serial_target") or "").startswith("shoal-node"):
             power_system_id = defaults.get("system_id") or ""
         return {
-            "shoal_sensors": (data or {}).get("readings", []),
+            "shoal_sensors": (data or {}).get("sensors", []),
             "shoal_error": error,
             "shoal_can_control": bool(request and _can_control(request)),
             "shoal_actions_enabled": bool(_cfg().get("SHOAL_ENABLE_ACTIONS", True)),
@@ -508,7 +508,7 @@ class ShoalFirmwareView(generic.ObjectView):
         if str(defaults.get("serial_target") or "").startswith("shoal-node"):
             power_system_id = defaults.get("system_id") or ""
         return {
-            "shoal_firmware": (data or {}).get("components", []),
+            "shoal_firmware": (data or {}).get("firmware", []),
             "shoal_firmware_ts": (data or {}).get("ts"),
             "shoal_error": error,
             "shoal_can_control": bool(request and _can_control(request)),

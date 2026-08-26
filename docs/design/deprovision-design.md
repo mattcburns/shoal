@@ -17,7 +17,7 @@ discover → ready → provisioning → provisioned pool instead of sitting in
 
 The core design bet: **deprovision is not a new concept, it's the existing
 `prep=wipe_only` mechanism run standalone, with the lifecycle write-back
-changed from `provisioned` to `ready`.** `SHOAL_COMPREHENSIVE_DESIGN_AND_IMPLEMENTATION_PLAN.md`
+changed from `provisioned` to `ready`.** `docs/design/architecture.md` §4.3
 already names `PROVISIONED → READY` as the intended re-provision transition
 and explicitly says not to invent a separate long-lived `CLEANUP` lifecycle
 enum — this document follows that instruction rather than reopening it.
@@ -111,8 +111,8 @@ added later.
   `validate.go` already reserves (and rejects) `prep=full` as "not
   implemented" — that's the eventual home for anything beyond a disk wipe,
   not this document.
-- **A new `retired`/`decommissioned` lifecycle state.** Per the
-  comprehensive design doc's own instruction, deprovision targets the
+- **A new `retired`/`decommissioned` lifecycle state.** Per
+  `docs/design/architecture.md` §4.3/§5, deprovision targets the
   existing `ready` state. A device that should never be provisioned again
   (hardware pulled, RMA'd) is a NetBox-side concern (change its role/status
   there) — Shoal's lifecycle field only tracks "is this usable by Shoal
@@ -428,10 +428,9 @@ Decision 5's explicit `Kind` field removes the "implicit shape" concern
 that was the main argument in this alternative's favor.
 
 **B. New `retired` lifecycle state instead of returning to `ready`.**
-Rejected per Non-Goals — the design doc this project already follows
-explicitly calls this out as unnecessary, and Shoal doesn't need to model
-"permanently retired" since that's NetBox's job (role/status), not a
-provisioning-tool concern.
+Rejected per Non-Goals — `docs/design/architecture.md` already calls this
+out as unnecessary, and Shoal doesn't need to model "permanently retired"
+since that's NetBox's job (role/status), not a provisioning-tool concern.
 
 **C. Have the guest (marker ISO) power itself off after `PREP_DONE` when
 it detects no next stage, via a new kernel cmdline flag.** This is Key
