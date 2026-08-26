@@ -1,4 +1,3 @@
-// Package adapters implements deterministic Redfish/CSV normalization (Discover).
 package adapters
 
 import (

@@ -1,4 +1,3 @@
-// Package netbox implements NetBox REST for identity + lifecycle_state only.
 package netbox
 
 import (
