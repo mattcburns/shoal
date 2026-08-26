@@ -20,6 +20,11 @@ Architecture and feature designs — some implemented, some proposed.
 - [`design/sol-transports-design.md`](design/sol-transports-design.md) — real-hardware Serial-over-LAN transports (Dell iDRAC SSH attach and stdlib IPMI SOL).
 - [`design/netbox-integration.md`](design/netbox-integration.md) — NetBox as an optional integration: the consumer interfaces and how the app degrades when it's unconfigured.
 
+## API
+
+- [`api/README.md`](api/README.md) — HTTP API conventions (auth, error envelope, pagination).
+- [`api/openapi.yaml`](api/openapi.yaml) — hand-written OpenAPI 3.0 spec for every `/v1/*` route.
+
 ## Plans
 
 - [`plans/roadmap.md`](plans/roadmap.md) — at-a-glance phase status, linking out to the archive/design docs below instead of restating them.
