@@ -337,8 +337,3 @@ type StartJobRequest struct {
 	// deprovision (docs/deprovision-design.md). See JobKindInstall/JobKindDeprovision.
 	Kind string `json:"kind,omitempty"`
 }
-
-// CancelJobRequest cancels an in-flight provisioning job.
-type CancelJobRequest struct {
-	JobID string `json:"job_id"`
-}

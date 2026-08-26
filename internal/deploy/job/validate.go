@@ -219,11 +219,3 @@ func installStrategyIsImageWrite(r models.StartJobRequest) bool {
 		return true
 	}
 }
-
-// CancelJobRequest requires job_id.
-func CancelJobRequest(r models.CancelJobRequest) error {
-	if strings.TrimSpace(r.JobID) == "" {
-		return fmt.Errorf("validate: job_id is required")
-	}
-	return nil
-}

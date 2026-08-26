@@ -115,6 +115,39 @@ func TestDeviceStatusAndEvents(t *testing.T) {
 	}
 }
 
+func TestDeviceEventsLimitClamped(t *testing.T) {
+	store := telemetry.NewMemory()
+	ctx := context.Background()
+	// maxListLimit in internal/api/server.go is 200; write more than that and
+	// request an oversized ?limit= to confirm the handler clamps it rather
+	// than passing the caller-supplied value straight through.
+	const maxListLimit = 200
+	for i := 0; i < maxListLimit+10; i++ {
+		_ = store.WriteEvent(ctx, models.NormalizedEvent{
+			DeviceID: "n1", Message: "hello", Severity: "info",
+			Timestamp: time.Now().UTC().Add(time.Duration(i) * time.Millisecond),
+		})
+	}
+	obs := observe.New(nil, jobstore.NewMemory(), store, nil)
+	s := api.New(config.Config{}, nil).WithObserve(obs)
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/devices/n1/events?limit=99999", nil)
+	s.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status %d body=%s", rr.Code, rr.Body.String())
+	}
+	var body struct {
+		Events []models.NormalizedEvent `json:"events"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Events) != maxListLimit {
+		t.Fatalf("want clamped to %d events, got %d", maxListLimit, len(body.Events))
+	}
+}
+
 func TestDeviceEventsWithoutTelemetry(t *testing.T) {
 	obs := observe.New(nil, jobstore.NewMemory(), nil, nil)
 	s := api.New(config.Config{}, nil).WithObserve(obs)
