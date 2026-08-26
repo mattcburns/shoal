@@ -3,7 +3,7 @@
 A NetBox plugin that adds **Shoal Status**, **Events**, **Jobs**, **Sensors**,
 and **Firmware** tabs to the device detail page, reading
 [Shoal](https://github.com/mattcburns/shoal)'s HTTP API server-side. See
-[`docs/netbox-telemetry-ui-design.md`](../../docs/netbox-telemetry-ui-design.md)
+[`docs/design/netbox-telemetry-ui-design.md`](../../docs/design/netbox-telemetry-ui-design.md)
 in the main repo for the full design. This package covers slices **N4–N6**
 plus demo polish (v0.4): progress/stages/job log, auto-refresh while
 provisioning, **Start provision / Cancel**, **host power**, **BMC credentials**

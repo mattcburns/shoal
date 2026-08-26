@@ -1,8 +1,8 @@
 # Phase 6c — Packaging + L0 host profiles
 
 Executable checklist for Phase 6c (packaging + L0 host profiles). Design SoT:
-[`docs/design/architecture.md`](./design/architecture.md); phase status:
-[`docs/plans/roadmap.md`](./plans/roadmap.md).
+[`docs/design/architecture.md`](../design/architecture.md); phase status:
+[`docs/plans/roadmap.md`](../plans/roadmap.md).
 
 ## Goals
 

@@ -1,4 +1,5 @@
-// Package ai is the sole LLM transport boundary (net/http clients in later phases).
+// Package ai is the sole LLM transport boundary, with net/http clients for
+// Ollama and OpenAI-compatible endpoints plus a Fake for tests.
 // Discover/Observe/Deploy never call an LLM directly — they go through Core.
 package ai
 

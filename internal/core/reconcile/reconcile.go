@@ -1,5 +1,3 @@
-// Package reconcile implements AI-only asset/event reconciliation (Core).
-// Core never imports Discover.
 package reconcile
 
 import (

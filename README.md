@@ -44,7 +44,7 @@ see the "Stack" note in `AGENTS.md`) that adds **Shoal Status**,
 **Events**, **Jobs**, **Sensors**, and **Firmware** tabs to the NetBox device page, reading
 the API above server-side. It's baked into the lab's NetBox image by default
 (`shoal_netbox_plugin: true`); see
-[`docs/netbox-telemetry-ui-design.md`](docs/netbox-telemetry-ui-design.md)
+[`docs/design/netbox-telemetry-ui-design.md`](docs/design/netbox-telemetry-ui-design.md)
 for the design and its own README for plugin development.
 
 ---
@@ -60,7 +60,7 @@ The lab topology is:
 - **L2**: virtual Redfish/BMC nodes (emulated by libvirt + exposed via sushy-tools)
 
 **macOS operators** use a prebuilt/darwin binary (or `go build`) against a remote
-Linux lab — see [docs/operator-macos.md](docs/operator-macos.md). Multi-platform
+Linux lab — see [docs/runbooks/operator-macos.md](docs/runbooks/operator-macos.md). Multi-platform
 release builds: `./scripts/build-release.sh` (see Phase 6c).
 
 ## What's in this repo
@@ -74,17 +74,8 @@ release builds: `./scripts/build-release.sh` (see Phase 6c).
 - `infra/ansible/roles/compose_stack/templates/docker-compose.lab.yml.j2` - Ansible template for the lab service stack (rendered on the target host during `lab_up.yml`)
 
 ## Lab docs
-- [Lab Runbook (Quick Ops)](docs/lab-runbook.md)
-- [Lab Setup Checklist (First-Time)](docs/lab-setup-checklist.md)
-- [Lab on Debian (VM-hosted L0)](docs/lab-setup-debian.md)
-- [Operator host: macOS](docs/operator-macos.md)
-- [Phase 6c plan (packaging + L0 hosts)](docs/phase-6c-plan.md)
-- [Phase 6d plan (Compose app + auth + metrics)](docs/phase-6d-plan.md)
-- [Phase 7 plan (full OS autoinstall)](docs/phase-7-plan.md)
-- [Multi-stage provisioning design (M1–M6 implemented)](docs/multi-stage-provisioning-design.md)
-- [NetBox telemetry UI design (backend API + plugin N1–N6)](docs/netbox-telemetry-ui-design.md)
-- [Real-hardware SOL runbook](docs/real-hardware-sol-runbook.md)
-- [Real-hardware SOL transports design (Dell SSH + stdlib IPMI)](docs/sol-transports-design.md)
+See [docs/README.md](docs/README.md) for the full index of design docs,
+runbooks, archived plans, and reference material.
 
 ## Prerequisites (L0 host)
 Install and verify:
@@ -238,5 +229,5 @@ This project is licensed under the **GNU Affero General Public License v3.0**
 
 Third-party Go libraries linked into the Shoal binary are listed in
 [NOTICE](./NOTICE); full license texts are in
-[docs/third-party-licenses.md](./docs/third-party-licenses.md). Binary and
+[docs/reference/third-party-licenses.md](./docs/reference/third-party-licenses.md). Binary and
 source distributions should include `LICENSE`, `NOTICE`, and that notice file.
