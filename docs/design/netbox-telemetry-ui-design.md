@@ -247,7 +247,7 @@ shapes, empty lists not 404.
 ```json
 {
   "device_id": "lab-node-1",
-  "readings": [
+  "sensors": [
     { "sensor": "Inlet Temp", "value": 24.5, "unit": "C", "ts": "…" }
   ]
 }
@@ -258,7 +258,7 @@ shapes, empty lists not 404.
 ```json
 {
   "job_id": "abc…",
-  "lines": [
+  "log": [
     { "ts": "…", "line": "SHOAL|1|3|…|IMAGE_WRITE|10|OK|…" }
   ]
 }
