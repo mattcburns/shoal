@@ -352,6 +352,13 @@ func cmdObservePower(args []string) int {
 		fmt.Fprintln(os.Stderr, "observe power: -device-id, -bmc-url, and -reset-type required")
 		return 2
 	}
+	// Same validation the HTTP API applies (POST /v1/devices/{id}/power) before
+	// it dispatches to the BMC, so an invalid reset_type can't reach hardware
+	// unchecked just because it came in via the CLI instead of the API.
+	if err := api.ValidateDevicePower(*resetType, *bmcURL); err != nil {
+		fmt.Fprintf(os.Stderr, "observe power: %v\n", err)
+		return 2
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	out, err := (devicePower{cfg: cfg}).Power(ctx, *deviceID, api.DevicePowerRequest{
