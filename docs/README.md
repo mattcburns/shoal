@@ -8,19 +8,21 @@ Related docs kept outside this directory:
 - [`PROVISIONING_PROGRESS.md`](../PROVISIONING_PROGRESS.md) — an active field
   log of real-hardware provisioning attempts; kept at the repo root because it
   is updated frequently and isn't a static reference.
-- [`SHOAL_COMPREHENSIVE_DESIGN_AND_IMPLEMENTATION_PLAN.md`](../SHOAL_COMPREHENSIVE_DESIGN_AND_IMPLEMENTATION_PLAN.md) —
-  the design/implementation source of truth. It's being split into smaller
-  documents by a separate, parallel cleanup effort; linked here as-is until
-  that lands.
 
 ## Design
 
 Architecture and feature designs — some implemented, some proposed.
 
+- [`design/architecture.md`](design/architecture.md) — the architecture/data-model/AI-guideline source of truth (split out of the former root design monolith).
 - [`design/deprovision-design.md`](design/deprovision-design.md) — draft design for returning a node from `provisioned` back to `ready`.
 - [`design/multi-stage-provisioning-design.md`](design/multi-stage-provisioning-design.md) — the multi-stage provisioning orchestrator and OS support matrix (stage runner, wipe, offline seed, Ignition, ISO compose).
 - [`design/netbox-telemetry-ui-design.md`](design/netbox-telemetry-ui-design.md) — NetBox plugin integration for visual telemetry, events, and job context (backend APIs + device page tabs).
 - [`design/sol-transports-design.md`](design/sol-transports-design.md) — real-hardware Serial-over-LAN transports (Dell iDRAC SSH attach and stdlib IPMI SOL).
+- [`design/netbox-integration.md`](design/netbox-integration.md) — NetBox as an optional integration: the consumer interfaces and how the app degrades when it's unconfigured.
+
+## Plans
+
+- [`plans/roadmap.md`](plans/roadmap.md) — at-a-glance phase status, linking out to the archive/design docs below instead of restating them.
 
 ## Runbooks
 

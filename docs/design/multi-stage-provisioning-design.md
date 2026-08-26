@@ -5,8 +5,9 @@ Flatcar Ignition, operator_iso, profile defaults). Later items (verify stage, ES
 Windows ISO compose, richer coarse progress) remain open — see §11.  
 **Date:** July 2026 (status updated August 2026)  
 **Audience:** Human architect + coding agents  
-**Related:** Design SoT `SHOAL_COMPREHENSIVE_DESIGN_AND_IMPLEMENTATION_PLAN.md` (v2.0.9+);
-Phase **7a complete** (Ubuntu nested-lab cloud image-write). This document **supersedes**
+**Related:** Design SoT [`docs/design/architecture.md`](./design/architecture.md);
+phase status in [`docs/plans/roadmap.md`](./plans/roadmap.md). Phase **7a complete**
+(Ubuntu nested-lab cloud image-write). This document **supersedes**
 deferred Phase **7b/7c** checklists for product direction.
 
 **Constraint (hard):** Provisioning assumes **no guest transit / data-plane network** during
