@@ -16,7 +16,10 @@ serial (SOL) markers, and **Deploy** drives provisioning over Redfish
 Virtual Media + SOL. NetBox stays the identity/lifecycle-of-record; Shoal
 owns time-series telemetry (events, sensors, job logs) in Postgres and
 exposes it over a small `net/http` API (`:8088`) and a `flag`-based CLI —
-see [`AGENTS.md`](./AGENTS.md) §3.2–3.3 for the command/env reference.
+see [`AGENTS.md`](./AGENTS.md) §3.2–3.3 for the command/env reference, and
+[`docs/api/README.md`](docs/api/README.md) (with
+[`docs/api/openapi.yaml`](docs/api/openapi.yaml)) for the full HTTP API
+reference.
 
 Architecture, data models, and the phased implementation plan are the
 [`AGENTS.md`](./AGENTS.md) working conventions and
