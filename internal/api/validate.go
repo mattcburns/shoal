@@ -53,3 +53,11 @@ func validateDevicePower(resetType, bmcEndpoint string) error {
 	}
 	return nil
 }
+
+// ValidateDevicePower is the exported form of validateDevicePower, for
+// internal/cli's "observe power" command to apply the same reset_type/
+// bmc_endpoint check the HTTP handler (POST /v1/devices/{id}/power) applies,
+// so an invalid reset_type can't reach the BMC unchecked via the CLI.
+func ValidateDevicePower(resetType, bmcEndpoint string) error {
+	return validateDevicePower(resetType, bmcEndpoint)
+}

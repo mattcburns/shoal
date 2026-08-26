@@ -14,7 +14,6 @@ import (
 	"github.com/mattcburns/shoal/internal/common/models"
 	"github.com/mattcburns/shoal/internal/common/redfish"
 	"github.com/mattcburns/shoal/internal/common/telemetry"
-	"github.com/mattcburns/shoal/internal/common/validate"
 	"github.com/mattcburns/shoal/internal/core/ai"
 	"github.com/mattcburns/shoal/internal/core/ocr"
 	"github.com/mattcburns/shoal/internal/observe"
@@ -356,7 +355,7 @@ func cmdObservePower(args []string) int {
 	// Same validation the HTTP API applies (POST /v1/devices/{id}/power) before
 	// it dispatches to the BMC, so an invalid reset_type can't reach hardware
 	// unchecked just because it came in via the CLI instead of the API.
-	if err := validate.DevicePower(*resetType, *bmcURL); err != nil {
+	if err := api.ValidateDevicePower(*resetType, *bmcURL); err != nil {
 		fmt.Fprintf(os.Stderr, "observe power: %v\n", err)
 		return 2
 	}
