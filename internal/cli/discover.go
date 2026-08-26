@@ -224,12 +224,16 @@ func openDiscoverService(cfg config.Config, log *slog.Logger) (*discover.Service
 			return nil, err
 		}
 	}
+	// NetBox is fully optional: when unconfigured, pass nil (matching every
+	// other call site in internal/cli -- see cli.go and deploy.go). The
+	// discover.Service nil-checks s.NetBox before use, so ingest/confirm
+	// simply skip the NetBox upsert rather than silently writing into a
+	// non-persistent in-memory fake that would be discarded on process exit.
 	var nb netbox.API
 	if cfg.NetBoxURL != "" && cfg.NetBoxToken != "" {
 		nb = netbox.New(cfg.NetBoxURL, cfg.NetBoxToken)
 	} else {
-		log.Warn("netbox not configured; using memory store")
-		nb = netbox.NewMemory()
+		log.Warn("netbox not configured; skipping netbox upsert")
 	}
 	return discover.NewWithFewShot(log, rec, openSecrets(cfg), nb, fsStore), nil
 }
