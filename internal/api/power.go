@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
-
-	"github.com/mattcburns/shoal/internal/common/validate"
 )
 
 // DevicePowerRequest is POST /v1/devices/{id}/power.
@@ -75,7 +73,7 @@ func (s *Server) handleDevicePower(w http.ResponseWriter, r *http.Request) {
 			req.BMCEndpoint = endpointFromBMCIP(view.BMCIP)
 		}
 	}
-	if err := validate.DevicePower(req.ResetType, req.BMCEndpoint); err != nil {
+	if err := validateDevicePower(req.ResetType, req.BMCEndpoint); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}

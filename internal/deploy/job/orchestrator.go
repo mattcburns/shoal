@@ -21,7 +21,6 @@ import (
 	"github.com/mattcburns/shoal/internal/common/redfish"
 	"github.com/mattcburns/shoal/internal/common/secrets"
 	"github.com/mattcburns/shoal/internal/common/telemetry"
-	"github.com/mattcburns/shoal/internal/common/validate"
 	"github.com/mattcburns/shoal/internal/common/watchport"
 	"github.com/mattcburns/shoal/internal/core/profile"
 	"github.com/mattcburns/shoal/internal/deploy/iso"
@@ -357,7 +356,7 @@ func (o *Orchestrator) prepareStart(ctx context.Context, req models.StartJobRequ
 		}
 	}
 
-	if err := validate.StartJobRequest(req); err != nil {
+	if err := StartJobRequest(req); err != nil {
 		return preparedStart{}, err
 	}
 	if err := o.checkProfileApproval(ctx, profileRef, req.ApproveDestruct); err != nil {

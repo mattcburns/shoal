@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
-
-	"github.com/mattcburns/shoal/internal/common/validate"
 )
 
 // DeviceCredentialsView is a non-secret view of stored BMC credentials.
@@ -75,7 +73,7 @@ func (s *Server) handleDeviceCredentialsPut(w http.ResponseWriter, r *http.Reque
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json"})
 		return
 	}
-	if err := validate.DeviceCredentials(req.Username, req.Password); err != nil {
+	if err := validateDeviceCredentials(req.Username, req.Password); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}
