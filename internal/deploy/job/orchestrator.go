@@ -1851,7 +1851,7 @@ func (o *Orchestrator) applyStartBindings(ctx context.Context, req *models.Start
 			}
 		}
 	}
-	if strings.TrimSpace(req.SerialTransport) == "" && looksLikeHTTPSBMC(req.BMCEndpoint) {
+	if strings.TrimSpace(req.SerialTransport) == "" && LooksLikeHTTPSBMC(req.BMCEndpoint) {
 		req.SerialTransport = "redfish_sol"
 	}
 }
@@ -1871,7 +1871,10 @@ func (o *Orchestrator) lookupDevice(ctx context.Context, key string) (models.Dev
 	return id, true
 }
 
-func looksLikeHTTPSBMC(endpoint string) bool {
+// LooksLikeHTTPSBMC reports whether endpoint is an https:// BMC URL. Exported
+// so internal/api/jobs.go's boundary probe can mirror this exact auto-detect
+// rule instead of maintaining its own copy (see startJobBoundaryProbe).
+func LooksLikeHTTPSBMC(endpoint string) bool {
 	u, err := url.Parse(strings.TrimSpace(endpoint))
 	if err != nil || u.Host == "" {
 		return false

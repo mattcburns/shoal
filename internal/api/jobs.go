@@ -5,13 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 
 	"github.com/mattcburns/shoal/internal/common/models"
 	"github.com/mattcburns/shoal/internal/common/telemetry"
 	"github.com/mattcburns/shoal/internal/common/validate"
+	"github.com/mattcburns/shoal/internal/deploy/job"
 	"github.com/mattcburns/shoal/internal/deploy/jobstore"
 )
 
@@ -71,26 +71,14 @@ func startJobBoundaryProbe(req models.StartJobRequest) models.StartJobRequest {
 		// is present" rule so it defers the real answer to that later pass.
 		probe.CredentialRef = "boundary-probe-placeholder"
 	}
-	if strings.TrimSpace(probe.SerialTransport) == "" && looksLikeHTTPSBMC(probe.BMCEndpoint) {
-		// Mirrors Orchestrator.applyStartBindings' auto-detect exactly (see
-		// internal/deploy/job/orchestrator.go looksLikeHTTPSBMC) so an https
-		// bmc_endpoint without an explicit serial_target isn't rejected here
-		// for a serial_target requirement that redfish_sol doesn't have.
+	if strings.TrimSpace(probe.SerialTransport) == "" && job.LooksLikeHTTPSBMC(probe.BMCEndpoint) {
+		// Mirrors Orchestrator.applyStartBindings' auto-detect exactly (same
+		// exported helper, not a copy) so an https bmc_endpoint without an
+		// explicit serial_target isn't rejected here for a serial_target
+		// requirement that redfish_sol doesn't have.
 		probe.SerialTransport = "redfish_sol"
 	}
 	return probe
-}
-
-// looksLikeHTTPSBMC duplicates internal/deploy/job/orchestrator.go's
-// unexported helper of the same name: a pure, IO-free check on the endpoint
-// URL's scheme, safe to run at the HTTP boundary before any device/profile
-// lookups happen.
-func looksLikeHTTPSBMC(endpoint string) bool {
-	u, err := url.Parse(strings.TrimSpace(endpoint))
-	if err != nil || u.Host == "" {
-		return false
-	}
-	return strings.EqualFold(u.Scheme, "https")
 }
 
 func (s *Server) handleStartJob(w http.ResponseWriter, r *http.Request) {
