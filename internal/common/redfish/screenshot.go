@@ -76,11 +76,6 @@ func (c *client) CaptureScreenshot(ctx context.Context, systemID string, kind Sc
 		dbg = append(dbg, step)
 	}
 
-	api, err := c.apiClient()
-	if err != nil {
-		return Screenshot{Debug: dbg}, err
-	}
-
 	// Multi-system BMCs (lab sushy) need an explicit id; if empty, pick the first and record it.
 	if systemID == "" {
 		systems, lerr := c.ListSystems(ctx)
@@ -111,7 +106,7 @@ func (c *client) CaptureScreenshot(ctx context.Context, systemID string, kind Sc
 
 	// List managers for OEM actions and manufacturer hints.
 	var mgrHints []string
-	managers, err := api.Service.Managers()
+	managers, err := c.managers()
 	if err != nil {
 		add(CaptureDebugStep{Phase: "detect", OK: false, Message: "list managers: " + err.Error()})
 	} else {
@@ -191,7 +186,7 @@ func (c *client) captureDell(ctx context.Context, kind ScreenshotKind, add func(
 		fileType = "LastCrashScreenShot"
 	}
 	// Resolve manager OData IDs from live service.
-	mgrs, err := api.Service.Managers()
+	mgrs, err := c.managers()
 	if err != nil {
 		add(CaptureDebugStep{Phase: "probe", Vendor: "dell", OK: false, Message: err.Error()})
 		return Screenshot{Vendor: VendorDell, Kind: kind}, err
@@ -275,7 +270,7 @@ func (c *client) captureSupermicro(ctx context.Context, kind ScreenshotKind, add
 	if err != nil {
 		return Screenshot{}, err
 	}
-	mgrs, err := api.Service.Managers()
+	mgrs, err := c.managers()
 	if err != nil {
 		add(CaptureDebugStep{Phase: "probe", Vendor: "supermicro", OK: false, Message: err.Error()})
 		return Screenshot{Vendor: VendorSupermicro, Kind: kind}, err

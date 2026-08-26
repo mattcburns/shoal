@@ -5,7 +5,6 @@ go 1.22
 require (
 	github.com/coder/websocket v1.8.12
 	github.com/jackc/pgx/v5 v5.7.4
-	github.com/stmcginnis/gofish v0.20.0
 	golang.org/x/crypto v0.31.0
 )
 

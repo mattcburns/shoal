@@ -35,7 +35,7 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-// --- fake Redfish HTTP server (drives real gofish parsing, not a mock of *client) ---
+// --- fake Redfish HTTP server (drives the real hand-written client, not a mock of *client) ---
 
 type fakeSOLServerOpts struct {
 	systemJSON          string // body for /redfish/v1/Systems/1

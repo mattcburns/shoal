@@ -126,8 +126,10 @@ control.
 8. **Document decisions** — Any significant choice must be recorded in this
    document or linked issues.
 9. **Stdlib-first (with documented exceptions)** — Reach for the standard
-   library before a dependency. **Exception:** Redfish uses **gofish** from
-   day one (§4.5). Any other new module must update §7.1 in the same change.
+   library before a dependency. Redfish is a hand-written `net/http` client
+   (§4.5) — an earlier revision used **gofish** here as a documented
+   exception; it was later removed once gofish's actual usage proved narrow
+   enough to hand-write. Any new module must update §7.1 in the same change.
 10. **Interfaces at boundaries** — Data structs live in `models` (and small
     protocol packages under `common`). **Cross-component ports live in
     neutral `common` packages** so siblings never import each other.
@@ -786,24 +788,29 @@ optional, not required.
 - Discover/Deploy/Observe take interfaces as struct fields; **only
   `cmd/shoal` wires concrete types across siblings**.
 
-#### Redfish client (gofish-backed, Shoal interfaces)
+#### Redfish client (hand-written HTTP client, Shoal interfaces)
 
-Shoal uses **`github.com/stmcginnis/gofish`** for Redfish sessions, Virtual
-Media, power, and boot override — this is the one deliberate exception to
-stdlib-first (§7.3(a) discusses the alternatives that were considered and
-rejected).
+**Superseded design note:** an earlier revision of this document adopted
+`github.com/stmcginnis/gofish` for Redfish sessions, Virtual Media, power, and
+boot override (§7.3(a) below preserves that original decision record as
+history). That dependency has since been removed: `internal/common/redfish`
+is now a small hand-written `net/http`-based Redfish client — the actual
+gofish usage turned out to be narrow (flat JSON struct decoding plus simple
+GET/PATCH/POST, no `@odata.type` polymorphic dispatch), so the maintenance
+cost of a generated third-party SDK stopped paying for itself. Behavior
+(request shapes, response mapping, error handling) is unchanged.
 
-**Boundary rule:** gofish types **must not** leak outside
-`internal/common/redfish`. Call sites (Deploy, Observe) depend only on Shoal
-interfaces and models. Implementation wraps gofish and maps to Shoal structs.
+**Boundary rule:** this package's internal Redfish JSON-decoding types
+**must not** leak outside `internal/common/redfish`. Call sites (Deploy,
+Observe) depend only on Shoal interfaces and models.
 
 Lab smoke uses **HTTP basic auth** against sushy-tools (`force_basic_auth`).
-SessionService is **not** proven by current smoke. Production BMCs typically
-need sessions + often HTTPS with bad/self-signed certs. Configure
-gofish/client for basic (lab) vs session (prod) via `Config.AuthMode`.
+Production BMCs typically need sessions + often HTTPS with bad/self-signed
+certs; the client supports both **basic** and **session** (Redfish
+`SessionService` login, `X-Auth-Token`) auth via `Config.AuthMode`.
 
 ```go
-// internal/common/redfish — illustrative API surface (gofish stays inside this package)
+// internal/common/redfish — illustrative API surface
 type Config struct {
     BaseURL            string
     Username           string
@@ -816,7 +823,7 @@ type Config struct {
 }
 
 // BMC is the only Redfish surface Deploy/Observe import.
-// Implementation uses gofish under the hood.
+// Implementation is a hand-written Redfish HTTP client.
 type BMC interface {
     Open(ctx context.Context) error
     Close(ctx context.Context) error
@@ -832,23 +839,23 @@ type BMC interface {
     // Observe: GetSEL, GetSensors as needed
 }
 
-// NewBMC constructs the gofish-backed implementation.
-func NewBMC(cfg Config) (BMC, error) { /* gofish connect + session/basic */ return nil, nil }
+// NewBMC constructs the hand-written-client-backed implementation.
+func NewBMC(cfg Config) (BMC, error) { /* connect + session/basic auth */ return nil, nil }
 ```
 
-**Minimum Redfish operations (via gofish + wrappers):**
+**Minimum Redfish operations (hand-written client):**
 
 | Step | Redfish intent | Notes |
 |------|----------------|-------|
-| Connect | gofish client to ServiceRoot | Discover `@odata.id` links via library |
-| Auth | Basic (lab) / session (prod) | On 401: re-auth once; then fail |
+| Connect | GET `/redfish/v1/` (ServiceRoot) | Discover `@odata.id` links by decoding JSON directly |
+| Auth | Basic (lab) / session (prod) | Session: POST `Links.Sessions`, reuse `X-Auth-Token` |
 | System | Systems collection / by ID | PowerState, serial/model for adapters |
-| Virtual Media | InsertMedia / EjectMedia | sushy-tools path may differ; capture fixtures; wrap gofish APIs |
+| Virtual Media | POST InsertMedia / EjectMedia actions | sushy-tools path may differ; capture fixtures |
 | Boot override | one-time CD/DVD + clear | Read-before-write idempotency in wrapper |
 | Power | Reset On / ForceRestart | Idempotent check PowerState first |
 | Errors | Retry with backoff; honor `Retry-After` where exposed | Cap retries; per-BMC semaphore still in wrapper |
 
-**TLS policy (`crypto/tls` / gofish HTTP client config):**
+**TLS policy (`crypto/tls` HTTP client config):**
 - Lab sushy-tools: plain HTTP (`TLSMode=off`).
 - Real BMC HTTPS with self-signed: `TLSMode=insecure` **only** when
   explicitly configured (`SHOAL_REDFISH_TLS_MODE=insecure`); never default
@@ -857,9 +864,9 @@ func NewBMC(cfg Config) (BMC, error) { /* gofish connect + session/basic */ retu
 - Document risk of MITM on management network when using insecure mode.
 
 **Idempotency:** every Deploy action reads current VirtualMedia.Inserted /
-Boot override / PowerState (via gofish) and only mutates when drift exists.
+Boot override / PowerState and only mutates when drift exists.
 
-**Fixture-first development:** record sushy-tools / gofish-visible JSON
+**Fixture-first development:** record sushy-tools-visible JSON
 under `testdata/redfish/sushy-tools/`; unit-test wrappers with fakes of
 `BMC` and/or recorded HTTP where practical. Integration tests hit live
 sushy-tools.
@@ -1286,12 +1293,17 @@ section in the same PR (and updating `NOTICE` /
 
 | Dependency | Kind | Why not avoidable with stdlib alone |
 |------------|------|-------------------------------------|
-| `github.com/stmcginnis/gofish` | runtime (required) | Redfish sessions, Virtual Media, boot override, power — adopted **day one** so Phase 2 is not blocked on a greenfield Redfish client. Wrapped behind `internal/common/redfish`; types do not leak to call sites. |
 | `github.com/jackc/pgx/v5` | runtime (default) | Postgres driver for lab telemetry/jobs DB on `:5433` |
 | `modernc.org/sqlite` | runtime (optional demo) | Pure-Go SQLite if someone runs without Compose; not required for lab ACs |
-| `github.com/coder/websocket` | runtime (required) | Real Redfish SOL transport: native WebSocket SOL dial for recognized BMC vendors (`internal/common/redfish/sol.go`); gofish has no client-side streaming/WebSocket support. Context-native `Read`/`Close` fits the cancellation-bounded `sol.Transport` contract. |
-| `golang.org/x/crypto` (`ssh` subpackage) | runtime (required) | Real-hardware SOL: SSH attach for `OpenSOL` when Redfish SerialConsole advertises SSH **or** (Dell) NetworkProtocol/OEM serial-redirection is enabled. Password and keyboard-interactive auth against BMC credentials (iDRAC offers KI only). Already an indirect transitive dep (gofish/pgx); used in `internal/common/redfish/sol.go`. Never used for IPMI or BMC control. IPMI 2.0 SOL is stdlib-only (`net`, `crypto/sha1`, `crypto/sha256`, `crypto/aes`, …) in `internal/common/redfish/internal/ipmi` — **no new module**. |
+| `github.com/coder/websocket` | runtime (required) | Real Redfish SOL transport: native WebSocket SOL dial for recognized BMC vendors (`internal/common/redfish/sol.go`). Context-native `Read`/`Close` fits the cancellation-bounded `sol.Transport` contract. |
+| `golang.org/x/crypto` (`ssh` subpackage) | runtime (required) | Real-hardware SOL: SSH attach for `OpenSOL` when Redfish SerialConsole advertises SSH **or** (Dell) NetworkProtocol/OEM serial-redirection is enabled. Password and keyboard-interactive auth against BMC credentials (iDRAC offers KI only). Used in `internal/common/redfish/sol.go`. Never used for IPMI or BMC control. IPMI 2.0 SOL is stdlib-only (`net`, `crypto/sha1`, `crypto/sha256`, `crypto/aes`, …) in `internal/common/redfish/internal/ipmi` — **no new module**. |
 | `honnef.co/go/tools/cmd/staticcheck` | toolchain | Static analysis beyond `go vet`; not linked into binary |
+
+**Removed:** `github.com/stmcginnis/gofish` — originally adopted day one for
+Redfish sessions, Virtual Media, boot override, power. `internal/common/redfish`
+now implements those requests by hand over `net/http`; gofish's actual usage
+was narrow (flat JSON decoding, simple GET/PATCH/POST) so the dependency no
+longer paid for itself. See §4.5.
 
 **Toolchain install (see `AGENTS.md` §3.2 for the pinned version):**
 ```bash
@@ -1308,7 +1320,7 @@ go install honnef.co/go/tools/cmd/staticcheck@<pinned-version>
 | Cobra | Few subcommands; `flag` enough |
 | Gin / Echo / Chi / Fiber | ServeMux enough |
 | LiteLLM / official OpenAI SDKs | Thin `net/http` client |
-| Greenfield thin Redfish `net/http` client | gofish is the chosen Redfish stack (§4.5) |
+| Session-token refresh / retry middleware from a Redfish SDK | Basic-Auth-only in practice; hand-written client covers exactly the used surface (§4.5) |
 | ORMs | Hand-written SQL for four tables |
 | Celery / Redis as app queue | Single-process goroutines; lab Redis is for NetBox |
 | Python app packages | App is Go; sushy-tools is lab-only |
@@ -1329,7 +1341,7 @@ go install honnef.co/go/tools/cmd/staticcheck@<pinned-version>
 | CLI | `flag` + switch | Zero deps |
 | Models | Structs + `encoding/json` | Stdlib |
 | Validation | `internal/common/validate` + `core/ai/decode` | No Pydantic equivalent needed |
-| Redfish | **gofish** behind `internal/common/redfish` | Day-one Virtual Media/session parity; interfaces hide library |
+| Redfish | Hand-written `net/http` client behind `internal/common/redfish` | Narrow actual usage (flat JSON decode, simple GET/PATCH/POST); interfaces hide internal types |
 | AI | `internal/core/ai` | Ollama + OpenAI-compatible |
 | Image building | `os/exec` → dracut/xorriso | Host tools |
 | NetBox | REST `net/http` | Small API subset |
@@ -1339,7 +1351,7 @@ go install honnef.co/go/tools/cmd/staticcheck@<pinned-version>
 | Logging | `log/slog` | Stdlib; level via `SHOAL_LOG_LEVEL` |
 | Testing | `testing` | Table-driven |
 | OCR (graphics failure screens) | `Core.CompleteVision` | See §6 |
-| BMC TLS | `crypto/tls` + gofish client config | Policy §4.5 |
+| BMC TLS | `crypto/tls` + hand-written client's `http.Transport` config | Policy §4.5 |
 | App listen | **`:8088`** | Confirmed |
 
 ### 7.3 Alternatives considered
@@ -1357,6 +1369,14 @@ earlier draft of the design had deferred gofish behind a thin-client
 timebox; that plan was reversed because the Redfish session/Virtual Media
 surface was the Phase 2 critical path. Stdlib-first remains the default for
 everything except Redfish.
+
+**Superseded:** once Phase 2's actual gofish usage was in place and measured,
+it turned out to be narrow — flat JSON struct decoding plus simple
+GET/PATCH/POST, no `@odata.type` polymorphic dispatch, retry logic, or
+session-token refresh actually exercised. `internal/common/redfish` was
+rewritten as the "Thin `net/http` client" option above (basic auth only, with
+a thin session-login path), and `github.com/stmcginnis/gofish` was dropped
+from `go.mod`. See §4.5 for the current design.
 
 #### (b) Postgres-only vs SQLite dual-path
 
@@ -1423,8 +1443,8 @@ rationale that don't fit as a convention statement:
 | Risk | Likelihood | Impact | Mitigation |
 |------|------------|--------|------------|
 | Virtual Media throughput | Medium | Medium | Lean live image |
-| Spec-deviant Redfish | High | Medium | gofish wrappers + hybrid AI + fixtures |
-| gofish quirks / API drift | Medium | Medium | Thin Shoal `BMC` facade; fixtures; pin gofish version in `go.mod` |
+| Spec-deviant Redfish | High | Medium | Hand-written client wrappers + hybrid AI + fixtures |
+| Redfish client quirks / vendor API drift | Medium | Medium | Thin Shoal `BMC` facade; fixtures; behavior pinned by package tests |
 | BMC session lockout | High | Medium | Caps + backoff + reuse |
 | SOL transport variance | Medium | Medium | `sol.Transport`; lab libvirt; HW stretch |
 | Secrets → LLM | Medium | High | Redact + tests |
@@ -1448,7 +1468,7 @@ rationale that don't fit as a convention statement:
 | Hybrid ownership | **Discover adapters+gate+merge; Core Reconciler AI-only** | Prevents core↔discover import cycle; matches boundaries |
 | Validation | Hand decode+validate pipeline | Replaces Pydantic without new deps |
 | AI client | Thin `net/http` | Ollama + OpenAI-compatible |
-| Redfish | **gofish day one** behind `internal/common/redfish` | Phase 2 critical path; stdlib-first elsewhere |
+| Redfish | Hand-written `net/http` client behind `internal/common/redfish` (gofish used day one, later removed) | Phase 2 critical path; stdlib-first elsewhere |
 | Job mutation | **Orchestrator sole lifecycle writer**; Observe → `jobport` only | Clear boundary; no Observe↔Deploy imports |
 | JobStore role | **Pure persistence** (CRUD/progress/transition SQL) | Cleanup/Redfish stay in Orchestrator.HandleTerminal |
 | Sibling wiring | **Neutral ports + composition root** | Avoids Go import cycles |
@@ -1481,7 +1501,6 @@ place to track progress.
 - Lab: `docs/lab-runbook.md`, `infra/ansible/`, README endpoints
 - Compose telemetry DB: port `5433`, DB `shoal_telemetry`
 - Module: `github.com/mattcburns/shoal`
-- gofish: `github.com/stmcginnis/gofish`
 - Go ServeMux 1.22+ routing enhancements
 - DMTF Redfish; Ollama / OpenAI-compatible HTTP APIs
 - Working conventions: [`AGENTS.md`](../../AGENTS.md)
@@ -1524,3 +1543,8 @@ detail lives in git history):
   markers → `gunzip|dd` → reboot). 7b/7c deferred pending a separate
   multi-stage-provisioning design (now
   [`docs/multi-stage-provisioning-design.md`](../multi-stage-provisioning-design.md)).
+- **v2.0.10:** `github.com/stmcginnis/gofish` removed. `internal/common/redfish`
+  reimplemented as a hand-written `net/http` Redfish client (§4.5, §7.3(a));
+  actual gofish usage had stayed narrow enough (flat JSON decoding, simple
+  GET/PATCH/POST) that the dependency no longer paid for itself. `BMC`
+  interface and observable behavior unchanged.

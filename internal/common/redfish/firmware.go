@@ -4,8 +4,6 @@ import (
 	"context"
 	"fmt"
 	"strings"
-
-	gofishredfish "github.com/stmcginnis/gofish/redfish"
 )
 
 const maxFirmwareEntries = 200
@@ -16,19 +14,16 @@ func (c *client) ListFirmware(_ context.Context) ([]FirmwareComponent, error) {
 	if err != nil {
 		return nil, err
 	}
-	if api.Service == nil {
-		return nil, fmt.Errorf("redfish: nil service root")
-	}
-	us, err := api.Service.UpdateService()
+	us, err := fetchOne[rfUpdateService](api, c.root.UpdateService.ODataID)
 	if err != nil || us == nil {
 		return nil, nil
 	}
-	items, err := us.FirmwareInventories()
+	items, err := fetchCollection[rfSoftwareInventory](api, us.FirmwareInventory.ODataID)
 	if err != nil {
 		return nil, fmt.Errorf("redfish: firmware inventory: %w", err)
 	}
 	if len(items) == 0 {
-		sw, swErr := us.SoftwareInventories()
+		sw, swErr := fetchCollection[rfSoftwareInventory](api, us.SoftwareInventory.ODataID)
 		if swErr == nil {
 			items = sw
 		}
@@ -59,7 +54,7 @@ func (c *client) ListFirmware(_ context.Context) ([]FirmwareComponent, error) {
 	return out, nil
 }
 
-func mapSoftwareInventory(inv *gofishredfish.SoftwareInventory) FirmwareComponent {
+func mapSoftwareInventory(inv *rfSoftwareInventory) FirmwareComponent {
 	id := inv.ID
 	if id == "" {
 		id = inv.ODataID
@@ -71,8 +66,8 @@ func mapSoftwareInventory(inv *gofishredfish.SoftwareInventory) FirmwareComponen
 		SoftwareID:   inv.SoftwareID,
 		Manufacturer: inv.Manufacturer,
 		ReleaseDate:  inv.ReleaseDate,
-		Health:       string(inv.Status.Health),
-		State:        string(inv.Status.State),
+		Health:       inv.Status.Health,
+		State:        inv.Status.State,
 		Updateable:   inv.Updateable,
 	}
 }

@@ -34,11 +34,6 @@ github.com/jackc/puddle/v2
   License:  MIT
   Copyright (c) 2018 Jack Christensen
 
-github.com/stmcginnis/gofish
-  Version:  v0.20.0
-  License:  BSD-3-Clause
-  Copyright (c) 2019, Sean McGinnis
-
 github.com/coder/websocket
   Version:  v1.8.12
   License:  ISC

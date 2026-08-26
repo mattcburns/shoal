@@ -9,8 +9,6 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
-
-	gofishredfish "github.com/stmcginnis/gofish/redfish"
 )
 
 func TestSensorUnavailableNote(t *testing.T) {
@@ -47,13 +45,13 @@ func TestDiscretePowerGood(t *testing.T) {
 }
 
 func TestLogServiceRank(t *testing.T) {
-	sel := &gofishredfish.LogService{LogEntryType: gofishredfish.SELLogEntryTypes}
+	sel := &rfLogService{LogEntryType: rfSELLogEntryType}
 	sel.Name, sel.ID, sel.ODataID = "SEL Log", "Sel", "/redfish/v1/Managers/1/LogServices/Sel"
 
-	lc := &gofishredfish.LogService{}
+	lc := &rfLogService{}
 	lc.Name, lc.ID, lc.ODataID = "LC Log", "Lclog", "/redfish/v1/Managers/1/LogServices/Lclog"
 
-	fault := &gofishredfish.LogService{}
+	fault := &rfLogService{}
 	fault.Name, fault.ID, fault.ODataID = "Fault List", "FaultList", "/redfish/v1/Managers/1/LogServices/FaultList"
 
 	if logServiceRank(sel) != logRankSEL {

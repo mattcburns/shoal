@@ -3,11 +3,9 @@ package redfish
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
-
-	gofishcommon "github.com/stmcginnis/gofish/common"
-	gofishredfish "github.com/stmcginnis/gofish/redfish"
 )
 
 const (
@@ -17,12 +15,12 @@ const (
 )
 
 // logServiceRank prefers IPMI SEL over vendor dumps (iDRAC LC log can be thousands
-// of entries; gofish Entries() GETs every member and blows a poll deadline).
-func logServiceRank(ls *gofishredfish.LogService) int {
+// of entries; fetching every member GETs the whole collection and blows a poll deadline).
+func logServiceRank(ls *rfLogService) int {
 	if ls == nil {
 		return logRankVerbose
 	}
-	if ls.LogEntryType == gofishredfish.SELLogEntryTypes {
+	if ls.LogEntryType == rfSELLogEntryType {
 		return logRankSEL
 	}
 	blob := strings.ToLower(ls.Name + " " + ls.ID + " " + ls.ODataID)
@@ -64,7 +62,7 @@ func (c *client) ListSEL(ctx context.Context, systemID string, opts SELOptions) 
 		max = 200
 	}
 
-	var discovered []*gofishredfish.LogService
+	var discovered []*rfLogService
 	var firstReadErr error
 	var sysErr error
 
@@ -72,17 +70,17 @@ func (c *client) ListSEL(ctx context.Context, systemID string, opts SELOptions) 
 	if sysErr != nil {
 		firstReadErr = sysErr
 	} else if sys != nil {
-		if services, err := sys.LogServices(); err == nil {
+		if services, err := fetchCollection[rfLogService](api, sys.LogServices.ODataID); err == nil {
 			discovered = append(discovered, services...)
 		}
 	}
 
-	if managers, err := api.Service.Managers(); err == nil {
+	if managers, err := c.managers(); err == nil {
 		for _, m := range managers {
 			if m == nil {
 				continue
 			}
-			if services, err := m.LogServices(); err == nil {
+			if services, err := fetchCollection[rfLogService](api, m.LogServices.ODataID); err == nil {
 				discovered = append(discovered, services...)
 			}
 		}
@@ -90,12 +88,12 @@ func (c *client) ListSEL(ctx context.Context, systemID string, opts SELOptions) 
 		firstReadErr = fmt.Errorf("redfish: managers: %w", err)
 	}
 
-	if chassis, err := api.Service.Chassis(); err == nil {
+	if chassis, err := c.chassisList(); err == nil {
 		for _, ch := range chassis {
 			if ch == nil {
 				continue
 			}
-			if services, err := ch.LogServices(); err == nil {
+			if services, err := fetchCollection[rfLogService](api, ch.LogServices.ODataID); err == nil {
 				discovered = append(discovered, services...)
 			}
 		}
@@ -109,7 +107,7 @@ func (c *client) ListSEL(ctx context.Context, systemID string, opts SELOptions) 
 	entryReadOK := 0
 	entryReadFail := 0
 
-	appendEntries := func(logName string, entries []*gofishredfish.LogEntry) {
+	appendEntries := func(logName string, entries []*rfLogEntry) {
 		entryReadOK++
 		for _, e := range entries {
 			if e == nil {
@@ -134,7 +132,7 @@ func (c *client) ListSEL(ctx context.Context, systemID string, opts SELOptions) 
 		}
 	}
 
-	readOne := func(ls *gofishredfish.LogService, allowUnfiltered bool) {
+	readOne := func(ls *rfLogService, allowUnfiltered bool) {
 		if ls == nil {
 			return
 		}
@@ -149,9 +147,18 @@ func (c *client) ListSEL(ctx context.Context, systemID string, opts SELOptions) 
 		if remain <= 0 {
 			return
 		}
-		entries, err := ls.FilteredEntries(gofishcommon.WithTop(remain))
+		link := ls.Entries.ODataID
+		filtered := link
+		if link != "" {
+			sep := "?"
+			if strings.Contains(link, "?") {
+				sep = "&"
+			}
+			filtered = link + sep + "$top=" + strconv.Itoa(remain)
+		}
+		entries, err := fetchCollection[rfLogEntry](api, filtered)
 		if err != nil && allowUnfiltered {
-			entries, err = ls.Entries()
+			entries, err = fetchCollection[rfLogEntry](api, link)
 		}
 		if err != nil {
 			entryReadFail++
@@ -207,7 +214,7 @@ func (c *client) ListSEL(ctx context.Context, systemID string, opts SELOptions) 
 	return out, nil
 }
 
-func mapLogEntry(logName string, e *gofishredfish.LogEntry) SELEntry {
+func mapLogEntry(logName string, e *rfLogEntry) SELEntry {
 	msg := strings.TrimSpace(e.Message)
 	if msg == "" {
 		msg = strings.TrimSpace(e.Description)
@@ -225,10 +232,10 @@ func mapLogEntry(logName string, e *gofishredfish.LogEntry) SELEntry {
 	return SELEntry{
 		ID:         e.ID,
 		Message:    msg,
-		Severity:   string(e.Severity),
-		EntryType:  string(e.EntryType),
+		Severity:   e.Severity,
+		EntryType:  e.EntryType,
 		Created:    created,
-		SensorType: string(e.SensorType),
+		SensorType: e.SensorType,
 		SensorNum:  e.SensorNumber,
 		ODataID:    e.ODataID,
 		LogService: logName,
@@ -270,16 +277,16 @@ func (c *client) ListSensors(ctx context.Context, systemID string) ([]SensorSamp
 	if err != nil {
 		return nil, err
 	}
-	chassis, err := api.Service.Chassis()
+	chassis, chErr := c.chassisList()
 	if len(chassis) == 0 {
-		if err != nil {
-			return nil, fmt.Errorf("redfish: chassis for sensors: %w", err)
+		if chErr != nil {
+			return nil, fmt.Errorf("redfish: chassis for sensors: %w", chErr)
 		}
 		return nil, nil
 	}
 	hostOff := false
 	if sys, err := c.computerSystem(systemID); err == nil && sys != nil {
-		hostOff = strings.EqualFold(string(sys.PowerState), "Off")
+		hostOff = strings.EqualFold(sys.PowerState, "Off")
 	}
 
 	var out []SensorSample
@@ -308,23 +315,23 @@ func (c *client) ListSensors(ctx context.Context, systemID string) ([]SensorSamp
 			continue
 		}
 		fromSensors := false
-		if list, err := ch.Sensors(); err == nil {
+		if list, err := fetchCollection[rfSensor](api, ch.Sensors.ODataID); err == nil {
 			for _, s := range list {
 				if s == nil {
 					continue
 				}
 				fromSensors = true
-				kind := strings.ToLower(string(s.ReadingType))
+				kind := strings.ToLower(s.ReadingType)
 				if kind == "" {
 					kind = "sensor"
 				}
 				sample := SensorSample{
 					Name:            uniqueSensorName(seen, firstNonEmpty(s.Name, s.ID), s.ID),
-					Reading:         float64(s.Reading),
+					Reading:         s.Reading,
 					HasReading:      sensorReporting(s),
 					Units:           s.ReadingUnits,
-					PhysicalContext: string(s.PhysicalContext),
-					Status:          strings.TrimSpace(string(s.Status.State)),
+					PhysicalContext: s.PhysicalContext,
+					Status:          strings.TrimSpace(s.Status.State),
 					Kind:            kind,
 				}
 				if !sample.HasReading {
@@ -338,33 +345,33 @@ func (c *client) ListSensors(ctx context.Context, systemID string) ([]SensorSamp
 			// look like readings when Redfish actually omitted them.
 			continue
 		}
-		if thermal, err := ch.Thermal(); err == nil && thermal != nil {
+		if thermal, err := fetchOne[rfThermal](api, ch.Thermal.ODataID); err == nil && thermal != nil {
 			for _, t := range thermal.Temperatures {
 				add(SensorSample{
 					Name:            firstNonEmpty(t.Name, t.MemberID, t.ID),
-					Reading:         float64(t.ReadingCelsius),
+					Reading:         t.ReadingCelsius,
 					HasReading:      true,
 					Units:           "Cel",
-					PhysicalContext: string(t.PhysicalContext),
+					PhysicalContext: t.PhysicalContext,
 					Kind:            "temperature",
 				})
 			}
 			for _, f := range thermal.Fans {
-				units := string(f.ReadingUnits)
+				units := f.ReadingUnits
 				if units == "" {
 					units = "RPM"
 				}
 				add(SensorSample{
 					Name:            firstNonEmpty(f.Name, f.MemberID, f.ID),
-					Reading:         float64(f.Reading),
+					Reading:         f.Reading,
 					HasReading:      true,
 					Units:           units,
-					PhysicalContext: string(f.PhysicalContext),
+					PhysicalContext: f.PhysicalContext,
 					Kind:            "fan",
 				})
 			}
 		}
-		if power, err := ch.Power(); err == nil && power != nil {
+		if power, err := fetchOne[rfPower](api, ch.Power.ODataID); err == nil && power != nil {
 			for _, v := range power.Voltages {
 				name := firstNonEmpty(v.Name, v.MemberID, v.ID)
 				if discretePowerGood(name) {
@@ -372,10 +379,10 @@ func (c *client) ListSensors(ctx context.Context, systemID string) ([]SensorSamp
 				}
 				add(SensorSample{
 					Name:            name,
-					Reading:         float64(v.ReadingVolts),
+					Reading:         v.ReadingVolts,
 					HasReading:      true,
 					Units:           "V",
-					PhysicalContext: string(v.PhysicalContext),
+					PhysicalContext: v.PhysicalContext,
 					Kind:            "voltage",
 				})
 			}
@@ -384,17 +391,17 @@ func (c *client) ListSensors(ctx context.Context, systemID string) ([]SensorSamp
 	return out, nil
 }
 
-func sensorReporting(s *gofishredfish.Sensor) bool {
+func sensorReporting(s *rfSensor) bool {
 	if s == nil {
 		return false
 	}
-	return strings.TrimSpace(string(s.Status.State)) != ""
+	return strings.TrimSpace(s.Status.State) != ""
 }
 
-func sensorUnavailableNote(s *gofishredfish.Sensor, hostOff bool) string {
+func sensorUnavailableNote(s *rfSensor, hostOff bool) string {
 	st := ""
 	if s != nil {
-		st = strings.TrimSpace(string(s.Status.State))
+		st = strings.TrimSpace(s.Status.State)
 	}
 	if st != "" && !strings.EqualFold(st, "enabled") {
 		return "BMC sensor state: " + st

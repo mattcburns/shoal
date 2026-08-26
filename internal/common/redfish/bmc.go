@@ -7,7 +7,8 @@ import (
 )
 
 // BMC is the only Redfish surface Deploy/Observe import.
-// Implementation uses gofish under the hood; types do not leak.
+// Implementation is a hand-written Redfish HTTP client; its internal types do
+// not leak outside this package.
 type BMC interface {
 	Open(ctx context.Context) error
 	Close(ctx context.Context) error
