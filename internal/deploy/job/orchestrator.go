@@ -21,7 +21,6 @@ import (
 	"github.com/mattcburns/shoal/internal/common/redfish"
 	"github.com/mattcburns/shoal/internal/common/secrets"
 	"github.com/mattcburns/shoal/internal/common/telemetry"
-	"github.com/mattcburns/shoal/internal/common/validate"
 	"github.com/mattcburns/shoal/internal/common/watchport"
 	"github.com/mattcburns/shoal/internal/core/profile"
 	"github.com/mattcburns/shoal/internal/deploy/iso"
@@ -361,7 +360,7 @@ func (o *Orchestrator) prepareStart(ctx context.Context, req models.StartJobRequ
 	// (device-lookup/env BMC credentials, serial_transport, profile fields
 	// above), so this is the only point that can correctly judge a
 	// profile-only or credential-omitting start. The API handler
-	// (internal/api/jobs.go handleStartJob) also calls validate.StartJobRequest
+	// (internal/api/jobs.go handleStartJob) also calls StartJobRequest
 	// as a boundary check, but on a *probe* copy (startJobBoundaryProbe) that
 	// patches over exactly the credential/serial_transport fields this deep
 	// call resolves -- so that earlier pass rejects malformed input (bad
@@ -371,7 +370,7 @@ func (o *Orchestrator) prepareStart(ctx context.Context, req models.StartJobRequ
 	// (internal/cli/deploy.go) calls Start/StartAsync directly with no
 	// boundary validation of its own, so this call is its only validation;
 	// do not remove it.
-	if err := validate.StartJobRequest(req); err != nil {
+	if err := StartJobRequest(req); err != nil {
 		return preparedStart{}, err
 	}
 	if err := o.checkProfileApproval(ctx, profileRef, req.ApproveDestruct); err != nil {

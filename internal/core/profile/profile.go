@@ -1,5 +1,3 @@
-// Package profile generates provisioning profiles (AI-assisted).
-// Destructive steps still require human approval before Deploy executes them.
 package profile
 
 import (
@@ -11,7 +9,6 @@ import (
 
 	"github.com/mattcburns/shoal/internal/common/models"
 	"github.com/mattcburns/shoal/internal/common/redact"
-	"github.com/mattcburns/shoal/internal/common/validate"
 	"github.com/mattcburns/shoal/internal/core/ai"
 	"github.com/mattcburns/shoal/internal/core/ai/decode"
 	"github.com/mattcburns/shoal/prompts"
@@ -54,7 +51,7 @@ func (s *Service) GenerateProvisioningProfile(
 	if s.LLM == nil {
 		return models.ProvisioningProfile{}, fmt.Errorf("profile: LLM not configured")
 	}
-	if err := validate.ProfileRequirements(requirements); err != nil {
+	if err := ProfileRequirements(requirements); err != nil {
 		return models.ProvisioningProfile{}, err
 	}
 	// Redact extra map defensively even after validate.
@@ -120,7 +117,7 @@ func (s *Service) GenerateProvisioningProfile(
 			out.NeedsApproval = false
 		}
 	}
-	if err := validate.ProvisioningProfile(out); err != nil {
+	if err := ProvisioningProfile(out); err != nil {
 		return models.ProvisioningProfile{}, err
 	}
 	return out, nil

@@ -1,4 +1,3 @@
-// Package poll implements SEL/sensor polling for Observe (Phase 4).
 package poll
 
 import (

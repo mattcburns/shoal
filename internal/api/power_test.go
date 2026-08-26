@@ -88,6 +88,16 @@ func TestDevicePowerFillsEndpointFromStoredBMCIP(t *testing.T) {
 	}
 }
 
+func TestDevicePowerUpstreamError(t *testing.T) {
+	fp := &fakePower{err: errBackendDetail}
+	s := New(config.Config{}, nil).WithDevicePower(fp)
+	body, _ := json.Marshal(DevicePowerRequest{ResetType: "On", BMCEndpoint: "https://bmc"})
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/devices/6/power", bytes.NewReader(body))
+	s.Handler().ServeHTTP(rr, req)
+	assertUpstreamError(t, rr)
+}
+
 func TestDevicePowerUnavailable(t *testing.T) {
 	s := New(config.Config{}, nil)
 	rr := httptest.NewRecorder()

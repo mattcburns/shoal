@@ -10,7 +10,7 @@ SHOAL|<schema_ver>|<seq>|<iso8601_utc>|<phase>|<percent>|<state>|<detail>
 ```
 
 See design §4.3. Reference shell emitter (non-bootable harness):
-[`infra/scripts/marker-producer.sh`](../infra/scripts/marker-producer.sh).
+[`infra/scripts/marker-producer.sh`](../../infra/scripts/marker-producer.sh).
 
 ## Build + publish
 

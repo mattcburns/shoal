@@ -190,6 +190,16 @@ func TestJobLog(t *testing.T) {
 	}
 }
 
+func TestJobLogUpstreamError(t *testing.T) {
+	store := erroringTelemetry{Store: telemetry.NewMemory(), jobLog: errBackendDetail}
+	obs := observe.New(nil, jobstore.NewMemory(), store, nil)
+	s := api.New(config.Config{}, nil).WithObserve(obs)
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/jobs/job-1/log", nil)
+	s.Handler().ServeHTTP(rr, req)
+	assertUpstreamError(t, rr)
+}
+
 func TestJobLogWithoutTelemetry(t *testing.T) {
 	obs := observe.New(nil, jobstore.NewMemory(), nil, nil)
 	s := api.New(config.Config{}, nil).WithObserve(obs)
