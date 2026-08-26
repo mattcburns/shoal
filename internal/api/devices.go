@@ -152,7 +152,7 @@ func (s *Server) handleDeviceSensors(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"device_id": id,
-		"readings":  readings,
+		"sensors":   readings,
 	})
 }
 
@@ -190,8 +190,8 @@ func (s *Server) handleDeviceFirmware(w http.ResponseWriter, r *http.Request) {
 		ts = comps[0].TS
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"device_id":  id,
-		"ts":         ts,
-		"components": comps,
+		"device_id": id,
+		"ts":        ts,
+		"firmware":  comps,
 	})
 }

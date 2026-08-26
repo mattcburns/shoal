@@ -79,7 +79,7 @@ func TestJobLog(t *testing.T) {
 	}
 	var body struct {
 		JobID string                 `json:"job_id"`
-		Lines []telemetry.JobLogLine `json:"lines"`
+		Lines []telemetry.JobLogLine `json:"log"`
 	}
 	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
@@ -95,8 +95,8 @@ func TestJobLog(t *testing.T) {
 	if err := json.Unmarshal(rr.Body.Bytes(), &empty); err != nil {
 		t.Fatal(err)
 	}
-	if empty["lines"] == nil {
-		t.Fatal("lines must be [] not null")
+	if empty["log"] == nil {
+		t.Fatal("log must be [] not null")
 	}
 }
 

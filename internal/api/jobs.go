@@ -162,7 +162,7 @@ func (s *Server) handleJobLog(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"job_id": id,
-		"lines":  lines,
+		"log":    lines,
 	})
 }
 
