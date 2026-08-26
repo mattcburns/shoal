@@ -3,7 +3,7 @@
 **Author:** TBD  
 **Date:** 2026-08-23  
 **Status:** PR1 implemented (live iDRAC SSH attach). PR2 stdlib IPMI SOL implemented (`internal/common/redfish/internal/ipmi`). Rev 6.  
-**Companion to:** `SHOAL_COMPREHENSIVE_DESIGN_AND_IMPLEMENTATION_PLAN.md` v2.0.9, `docs/real-hardware-sol-runbook.md`, `AGENTS.md` Golden Rule 6  
+**Companion to:** `docs/design/architecture.md`, `docs/real-hardware-sol-runbook.md`, `AGENTS.md` Golden Rule 6  
 **Not a rewrite of those documents.** This records field findings from a live Dell iDRAC and the rule/interface changes needed so `BMC.OpenSOL` can actually attach on real hardware. Sections below that say “today” / “current implementation” describe the **pre-PR1** tree; see the runbook for what shipped.
 
 **Rev 2 notes:** IPMI v2.0 byte-accurate tables (RAKP 1–4 unencrypted; Get Channel Auth Caps `[0x0E, 0x84]`; SIDc vs SIDm; Table 15-2 bits; HMAC fixture vectors); Dell-only SSH command guessing; WS sniff must not drop SOL or hang ahead of SSH; PR1 rule text does not claim an IPMI client that is not in the tree.
@@ -982,8 +982,8 @@ None remaining. Not open: go-ipmi, ipmitool, KVM-as-progress, renaming `redfish_
 
 ## References
 
-- `SHOAL_COMPREHENSIVE_DESIGN_AND_IMPLEMENTATION_PLAN.md` v2.0.9 — §4.3 transport line 561, §5 `WatchSession`, §7.1 allow-list (`gofish`, `coder/websocket`, `golang.org/x/crypto/ssh`), §12.1 Golden Rule 6
-- `AGENTS.md` — Golden Rules 5–7, §3.3 `SHOAL_SERIAL_TRANSPORT`, §7 Redfish/SOL
+- `docs/design/architecture.md` — §4.3 transport, §5 `WatchSession`, §7.1 allow-list (`gofish`, `coder/websocket`, `golang.org/x/crypto/ssh`)
+- `AGENTS.md` — §1 Golden Rules 5–7, §3.3 `SHOAL_SERIAL_TRANSPORT`, §7 Redfish/SOL
 - `docs/real-hardware-sol-runbook.md` — current “never IPMI” runbook (to be revised)
 - `internal/common/redfish/sol.go`, `bmc.go` (`BMC.OpenSOL`, `SOLStream`, `SOLConnectKind`, `SOLUnsupportedError`)
 - `internal/common/redfish/sol_test.go` — `newFakeSOLServer`, `startFakeSSHServer`, `TestOpenSOL_IPMIOnly_Unsupported`

@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
-
-	"github.com/mattcburns/shoal/internal/common/validate"
 )
 
 // DeviceCredentialsView is a non-secret view of stored BMC credentials.
@@ -54,8 +52,7 @@ func (s *Server) handleDeviceCredentialsGet(w http.ResponseWriter, r *http.Reque
 	}
 	view, err := s.creds.Get(r.Context(), id, r.URL.Query().Get("credential_ref"))
 	if err != nil {
-		s.log.Warn("device credentials get", "device_id", id, "err", err.Error())
-		writeJSON(w, http.StatusNotFound, map[string]any{"error": err.Error()})
+		writeUpstreamError(w, s.log, "device credentials get", err, "device_id", id)
 		return
 	}
 	writeJSON(w, http.StatusOK, view)
@@ -76,19 +73,35 @@ func (s *Server) handleDeviceCredentialsPut(w http.ResponseWriter, r *http.Reque
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json"})
 		return
 	}
-	if err := validate.DeviceCredentials(req.Username, req.Password); err != nil {
+	if err := validateDeviceCredentials(req.Username, req.Password); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}
 	view, err := s.creds.Put(r.Context(), id, req)
 	if err != nil {
-		s.log.Warn("device credentials put", "device_id", id, "err", err.Error())
 		msg := err.Error()
-		code := http.StatusBadRequest
-		if strings.Contains(msg, "not found") || strings.Contains(msg, "status 404") {
-			code = http.StatusNotFound
+		// Exact-match (not substring) against the handful of client-facing
+		// messages deviceCreds.Put crafts itself (see internal/cli/credentials.go).
+		// Substring matching here would be unsafe: a wrapped upstream error (e.g.
+		// "netbox: PUT ...: status 400: {\"bmc_ip\":[\"This field is required.\"]}")
+		// could contain "is required" or "not configured" as part of raw response
+		// body text, which must never reach the client verbatim.
+		switch msg {
+		case "username is required", "password is required for new credentials":
+			s.log.Warn("device credentials put", "device_id", id, "err", msg)
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": msg})
+			return
+		case "secrets backend not configured (set SHOAL_SECRETS_DIR)":
+			s.log.Warn("device credentials put", "device_id", id, "err", msg)
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": msg})
+			return
 		}
-		writeJSON(w, code, map[string]any{"error": msg})
+		if strings.Contains(msg, "not found") || strings.Contains(msg, "status 404") {
+			s.log.Warn("device credentials put", "device_id", id, "err", msg)
+			writeJSON(w, http.StatusNotFound, map[string]any{"error": "not found"})
+			return
+		}
+		writeUpstreamError(w, s.log, "device credentials put", err, "device_id", id)
 		return
 	}
 	writeJSON(w, http.StatusOK, view)

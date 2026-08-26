@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/mattcburns/shoal/internal/common/models"
-	"github.com/mattcburns/shoal/internal/common/validate"
 )
 
 // Record is a durable profile plus optional operator approval.
@@ -69,7 +68,7 @@ func (f *FileStore) path(ref string) string {
 
 // Save validates and writes the profile (preserves approval if same ref).
 func (f *FileStore) Save(_ context.Context, p models.ProvisioningProfile) (Record, error) {
-	if err := validate.ProvisioningProfile(p); err != nil {
+	if err := ProvisioningProfile(p); err != nil {
 		return Record{}, err
 	}
 	f.mu.Lock()
@@ -183,7 +182,7 @@ func NewMemory() *Memory {
 
 // Save implements Store.
 func (m *Memory) Save(_ context.Context, p models.ProvisioningProfile) (Record, error) {
-	if err := validate.ProvisioningProfile(p); err != nil {
+	if err := ProvisioningProfile(p); err != nil {
 		return Record{}, err
 	}
 	m.mu.Lock()

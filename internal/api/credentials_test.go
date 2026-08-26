@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -108,6 +109,56 @@ func TestDeviceCredentialsGetEmptyOK(t *testing.T) {
 	}
 	if bytes.Contains(rr.Body.Bytes(), []byte(`"password":`)) {
 		t.Fatal("GET must not include password field")
+	}
+}
+
+func TestDeviceCredentialsGetUpstreamError(t *testing.T) {
+	fc := &fakeCreds{err: errBackendDetail}
+	s := New(config.Config{}, nil).WithDeviceCredentials(fc)
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/devices/6/credentials", nil)
+	s.Handler().ServeHTTP(rr, req)
+	assertUpstreamError(t, rr)
+}
+
+func TestDeviceCredentialsPutUpstreamError(t *testing.T) {
+	fc := &fakeCreds{err: errBackendDetail}
+	s := New(config.Config{}, nil).WithDeviceCredentials(fc)
+	body, _ := json.Marshal(DeviceCredentialsPut{Username: "root", Password: "secret"})
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/v1/devices/6/credentials", bytes.NewReader(body))
+	s.Handler().ServeHTTP(rr, req)
+	assertUpstreamError(t, rr)
+}
+
+// TestDeviceCredentialsPutDoesNotLeakWrappedUpstreamError guards against a
+// wrapped upstream error (e.g. a NetBox validation error body) that happens
+// to contain a substring like "is required" or "not configured" -- it must
+// not be classified as a safe, crafted client-facing message and echoed
+// verbatim; the exact-match check in handleDeviceCredentialsPut should send
+// it through the generic upstream-error path instead.
+func TestDeviceCredentialsPutDoesNotLeakWrappedUpstreamError(t *testing.T) {
+	fc := &fakeCreds{err: errors.New(`netbox: PUT /api/dcim/devices/6/: status 400: {"bmc_ip":["This field is required."]}`)}
+	s := New(config.Config{}, nil).WithDeviceCredentials(fc)
+	body, _ := json.Marshal(DeviceCredentialsPut{Username: "root", Password: "secret"})
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/v1/devices/6/credentials", bytes.NewReader(body))
+	s.Handler().ServeHTTP(rr, req)
+	assertUpstreamError(t, rr)
+	if bytes.Contains(rr.Body.Bytes(), []byte("bmc_ip")) || bytes.Contains(rr.Body.Bytes(), []byte("/api/dcim")) {
+		t.Fatalf("leaked wrapped upstream detail: %s", rr.Body.String())
+	}
+}
+
+func TestDeviceCredentialsPutNotFound(t *testing.T) {
+	fc := &fakeCreds{err: errors.New(`device "6" not found`)}
+	s := New(config.Config{}, nil).WithDeviceCredentials(fc)
+	body, _ := json.Marshal(DeviceCredentialsPut{Username: "root", Password: "secret"})
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/v1/devices/6/credentials", bytes.NewReader(body))
+	s.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("status %d body=%s", rr.Code, rr.Body.String())
 	}
 }
 

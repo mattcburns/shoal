@@ -62,7 +62,7 @@ func NewWithFewShot(log *slog.Logger, rec reconcile.Reconciler, sec secrets.Back
 
 // Ingest runs deterministic → gate → optional AI → merge → secrets → NetBox.
 func (s *Service) Ingest(ctx context.Context, in models.RawAssetInput) (IngestResult, error) {
-	if err := validate.RawAssetInput(in); err != nil {
+	if err := RawAssetInput(in); err != nil {
 		return IngestResult{}, err
 	}
 	kind := strings.ToLower(in.Kind)
