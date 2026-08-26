@@ -18,6 +18,7 @@ PLUGINS_CONFIG = {
         # Prefill only — BMC passwords stay on Shoal (SHOAL_BMC_* in shoal-app).
         "SHOAL_DEFAULT_BMC_ENDPOINT": "{{ shoal_netbox_plugin_default_bmc_endpoint | default('http://127.0.0.1:' ~ shoal_sushy_port) }}",
         "SHOAL_DEFAULT_ISO_URL": "{{ shoal_netbox_plugin_default_iso_url | default('http://' ~ shoal_lab_network_gateway ~ ':' ~ shoal_iso_server_port ~ '/shoal-marker.iso') }}",
+        "SHOAL_REAL_BMC_ISO_URL": "{{ shoal_netbox_plugin_real_bmc_iso_url | default('') }}",
         "SHOAL_DEFAULT_PROFILE_REF": "{{ shoal_netbox_plugin_default_profile_ref | default('spike') }}",
     }
 }

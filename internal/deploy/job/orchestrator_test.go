@@ -2,6 +2,7 @@ package job_test
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"strings"
@@ -88,7 +89,7 @@ func TestOrchestratorHappyPathDone(t *testing.T) {
 	_ = pw.Close()
 
 	deadline := time.Now().Add(3 * time.Second)
-	var final models.ProvisioningJob
+	var final models.Job
 	for time.Now().Before(deadline) {
 		final, err = store.Get(ctx, j.ID)
 		if err != nil {
@@ -116,6 +117,270 @@ func TestOrchestratorHappyPathDone(t *testing.T) {
 	if j.DeviceID != "1" {
 		t.Fatalf("want device_id remapped to NetBox pk, got %q", j.DeviceID)
 	}
+}
+
+// TestOrchestratorDeprovisionPowersOffAndWritesReady proves the Kind=deprovision
+// path (docs/deprovision-design.md Key Decisions 2 and 5): a single prep
+// stage runs, PREP_DONE (the same marker prep-then-install jobs use to
+// advance to os_install) finds no next stage and instead triggers an
+// orchestrator-issued ForceOff and a lifecycle_state=ready write-back --
+// never provisioned, and never left running the marker ISO's heartbeat loop
+// waiting for a media swap that was never coming.
+func TestOrchestratorDeprovisionPowersOffAndWritesReady(t *testing.T) {
+	ctx := context.Background()
+	store := jobstore.NewMemory()
+	sec := secrets.NewMemory()
+	fakeBMC := redfish.NewFake()
+	nb := netbox.NewMemory()
+	_, _ = nb.UpsertDevice(ctx, models.DeviceIdentity{
+		Serial: "lab-node-1", LifecycleState: models.StateProvisioned,
+	})
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	pr, pw := io.Pipe()
+	watch := sol.NewWatchService(log, nil)
+	watch.NewTransport = func(session models.WatchSession) sol.Transport {
+		return sol.NewReaderTransport(pr)
+	}
+
+	orch := job.NewOrchestrator(job.Options{
+		Log:     log,
+		Store:   store,
+		Secrets: sec,
+		NewBMC: func(cfg redfish.Config) (redfish.BMC, error) {
+			return fakeBMC, nil
+		},
+		Watches:             watch,
+		NetBox:              nb,
+		AuthMode:            "basic",
+		TLSMode:             "off",
+		ReconcileFailOrphan: true,
+	})
+	defer orch.Stop()
+	watch.SetProgress(orch.ProgressPort())
+
+	j, err := orch.Start(ctx, models.StartJobRequest{
+		DeviceID:        "lab-node-1",
+		BMCEndpoint:     "http://bmc.test",
+		BMCUsername:     "admin",
+		BMCPassword:     "secret",
+		SerialTarget:    "lab-node-1",
+		Kind:            models.JobKindDeprovision,
+		Prep:            "wipe_only",
+		PrepISOURL:      "http://iso/shoal-prep.iso",
+		WipeLevel:       "zero",
+		ApproveDestruct: true,
+	})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if j.Kind != models.JobKindDeprovision {
+		t.Fatalf("kind not persisted: %q", j.Kind)
+	}
+	if len(j.Stages) != 1 || j.Stages[0].Kind != models.JobStageKindPrep {
+		t.Fatalf("want single prep stage, got %+v", j.Stages)
+	}
+
+	writeMarker(t, pw, "SHOAL|1|1|2026-06-19T04:10:00Z|BOOT|5|OK|booting")
+	writeMarker(t, pw, "SHOAL|1|2|2026-06-19T04:10:10Z|WIPE|50|OK|wiping")
+	writeMarker(t, pw, "SHOAL|1|3|2026-06-19T04:10:20Z|PREP_DONE|100|OK|prep complete ready for os install")
+
+	deadline := time.Now().Add(3 * time.Second)
+	var final models.Job
+	for time.Now().Before(deadline) {
+		final, err = store.Get(ctx, j.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if final.State == models.StateReady || final.State == models.StateFailed {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	_ = pw.Close()
+	if final.State != models.StateReady {
+		t.Fatalf("want ready, got %s err=%s phase=%s", final.State, final.Error, final.Phase)
+	}
+	sys, err := fakeBMC.GetSystem(ctx, "1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.EqualFold(sys.PowerState, "Off") {
+		t.Fatalf("want orchestrator-issued power-off, power state=%s", sys.PowerState)
+	}
+	if !fakeBMC.BootCleared() || fakeBMC.MediaInserted() {
+		t.Fatal("cleanup incomplete: media/boot still set")
+	}
+	if nb.BySerial["lab-node-1"].LifecycleState != models.StateReady {
+		t.Fatalf("netbox want ready, got %s", nb.BySerial["lab-node-1"].LifecycleState)
+	}
+}
+
+// TestOrchestratorDeletesEphemeralCredentialOnDone proves the "job-"+ID
+// credential Start mints when the caller supplies raw username/password
+// (no persistent credential_ref) is deleted once the job reaches a
+// terminal state -- it's never referenced again after that, and nothing
+// else cleaned these up before this change (docs/deprovision-design.md
+// Key Decision 6).
+func TestOrchestratorDeletesEphemeralCredentialOnDone(t *testing.T) {
+	ctx := context.Background()
+	store := jobstore.NewMemory()
+	sec := secrets.NewMemory()
+	fakeBMC := redfish.NewFake()
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	pr, pw := io.Pipe()
+	watch := sol.NewWatchService(log, nil)
+	watch.NewTransport = func(session models.WatchSession) sol.Transport {
+		return sol.NewReaderTransport(pr)
+	}
+
+	orch := job.NewOrchestrator(job.Options{
+		Log: log, Store: store, Secrets: sec,
+		NewBMC:              func(cfg redfish.Config) (redfish.BMC, error) { return fakeBMC, nil },
+		Watches:             watch,
+		ReconcileFailOrphan: true,
+	})
+	defer orch.Stop()
+	watch.SetProgress(orch.ProgressPort())
+
+	j, err := orch.Start(ctx, models.StartJobRequest{
+		DeviceID: "n1", BMCEndpoint: "http://bmc.test", BMCUsername: "admin", BMCPassword: "secret",
+		SerialTarget: "n1", ISOURL: "http://iso/shoal-marker.iso",
+	})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	loaded, err := store.Get(ctx, j.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.CredentialRef != "job-"+j.ID {
+		t.Fatalf("expected ephemeral ref job-%s, got %q", j.ID, loaded.CredentialRef)
+	}
+	// Sanity: the ref actually resolves before the job ends.
+	if _, err := sec.Get(ctx, loaded.CredentialRef); err != nil {
+		t.Fatalf("credential should resolve mid-job: %v", err)
+	}
+
+	writeMarker(t, pw, "SHOAL|1|1|2026-06-19T04:10:00Z|BOOT|5|OK|booting")
+	writeMarker(t, pw, "SHOAL|1|2|2026-06-19T04:10:20Z|DONE|100|OK|reboot pending")
+	_ = pw.Close()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		got, _ := store.Get(ctx, j.ID)
+		if got.State == models.StateProvisioned {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if _, err := sec.Get(ctx, loaded.CredentialRef); !errors.Is(err, secrets.ErrNotFound) {
+		t.Fatalf("expected ephemeral credential deleted after terminal, got err=%v", err)
+	}
+}
+
+// TestOrchestratorPreservesExplicitCredentialRefOnDone proves a
+// caller-supplied (persistent, device-scoped in practice) credential_ref
+// is left alone on job completion -- only the "job-"+ID minting
+// convention is eligible for cleanup, never an explicit ref (Key
+// Decision 6's exact-match safety property).
+func TestOrchestratorPreservesExplicitCredentialRefOnDone(t *testing.T) {
+	ctx := context.Background()
+	store := jobstore.NewMemory()
+	sec := secrets.NewMemory()
+	fakeBMC := redfish.NewFake()
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	if err := sec.Put(ctx, "bmc-n1", secrets.Credential{Username: "admin", Password: "secret"}); err != nil {
+		t.Fatal(err)
+	}
+
+	pr, pw := io.Pipe()
+	watch := sol.NewWatchService(log, nil)
+	watch.NewTransport = func(session models.WatchSession) sol.Transport {
+		return sol.NewReaderTransport(pr)
+	}
+
+	orch := job.NewOrchestrator(job.Options{
+		Log: log, Store: store, Secrets: sec,
+		NewBMC:              func(cfg redfish.Config) (redfish.BMC, error) { return fakeBMC, nil },
+		Watches:             watch,
+		ReconcileFailOrphan: true,
+	})
+	defer orch.Stop()
+	watch.SetProgress(orch.ProgressPort())
+
+	j, err := orch.Start(ctx, models.StartJobRequest{
+		DeviceID: "n1", BMCEndpoint: "http://bmc.test", CredentialRef: "bmc-n1",
+		SerialTarget: "n1", ISOURL: "http://iso/shoal-marker.iso",
+	})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+
+	writeMarker(t, pw, "SHOAL|1|1|2026-06-19T04:10:00Z|DONE|100|OK|reboot pending")
+	_ = pw.Close()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		got, _ := store.Get(ctx, j.ID)
+		if got.State == models.StateProvisioned {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if _, err := sec.Get(ctx, "bmc-n1"); err != nil {
+		t.Fatalf("explicit credential_ref must survive job completion, got err=%v", err)
+	}
+}
+
+// TestOrchestratorDeletesEphemeralCredentialOnFailure proves cleanup is
+// unconditional on terminal reason, not gated on success.
+func TestOrchestratorDeletesEphemeralCredentialOnFailure(t *testing.T) {
+	ctx := context.Background()
+	store := jobstore.NewMemory()
+	sec := secrets.NewMemory()
+	fakeBMC := redfish.NewFake()
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	pr, pw := io.Pipe()
+	defer pw.Close()
+	watch := sol.NewWatchService(log, nil)
+	watch.NewTransport = func(session models.WatchSession) sol.Transport {
+		return sol.NewReaderTransport(pr)
+	}
+
+	orch := job.NewOrchestrator(job.Options{
+		Log: log, Store: store, Secrets: sec,
+		NewBMC:              func(cfg redfish.Config) (redfish.BMC, error) { return fakeBMC, nil },
+		Watches:             watch,
+		ReconcileFailOrphan: true,
+	})
+	defer orch.Stop()
+	watch.SetProgress(orch.ProgressPort())
+
+	j, err := orch.Start(ctx, models.StartJobRequest{
+		DeviceID: "n1", BMCEndpoint: "http://bmc", BMCUsername: "u", BMCPassword: "p",
+		SerialTarget: "n1", ISOURL: "http://iso/x.iso",
+		StallTimeout: 80 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := "job-" + j.ID
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		got, _ := store.Get(ctx, j.ID)
+		if got.State == models.StateFailed {
+			if _, err := sec.Get(ctx, ref); !errors.Is(err, secrets.ErrNotFound) {
+				t.Fatalf("expected ephemeral credential deleted after failure, got err=%v", err)
+			}
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("stall did not fail job in time")
 }
 
 func TestStartFillsDefaultBMCCredentials(t *testing.T) {
@@ -254,7 +519,7 @@ func TestOrchestratorCancelWithoutRunStateUsesDurableRuntime(t *testing.T) {
 	_ = fakeBMC.SetBootOverrideOnceCD(ctx, "1")
 	_ = sec.Put(ctx, "job-orphan", secrets.Credential{Username: "admin", Password: "secret"})
 	now := time.Now().UTC()
-	pj := models.ProvisioningJob{
+	pj := models.Job{
 		ID: "orphan-1", DeviceID: "d1", State: models.StateProvisioning,
 		BMCEndpoint: "http://bmc.test", SystemID: "1", CredentialRef: "job-orphan",
 		SOLSessionID: "sol-orphan-1", StartedAt: &now, UpdatedAt: &now,
@@ -276,7 +541,7 @@ func TestOrchestratorCancelWithoutRunStateUsesDurableRuntime(t *testing.T) {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(2 * time.Second)
-	var final models.ProvisioningJob
+	var final models.Job
 	for time.Now().Before(deadline) {
 		final, _ = store.Get(ctx, "orphan-1")
 		if final.State == models.StateFailed {
@@ -454,7 +719,7 @@ func TestOrchestratorDoneDespiteStuckSOLClose(t *testing.T) {
 
 	// Unregister should attempt Close (which hangs); HandleTerminal must still provision.
 	deadline := time.Now().Add(15 * time.Second)
-	var final models.ProvisioningJob
+	var final models.Job
 	for time.Now().Before(deadline) {
 		final, err = store.Get(ctx, j.ID)
 		if err != nil {
@@ -478,7 +743,7 @@ func TestOrchestratorOrphanReconcile(t *testing.T) {
 	store := jobstore.NewMemory()
 	// Pre-seed orphan PROVISIONING job as if process restarted mid-install.
 	now := time.Now().UTC()
-	_ = store.Insert(ctx, models.ProvisioningJob{
+	_ = store.Insert(ctx, models.Job{
 		ID: "orphan-1", DeviceID: "d", State: models.StateProvisioning,
 		Phase: "WAITING_SOL", BMCEndpoint: "http://bmc",
 		StartedAt: &now, UpdatedAt: &now,
@@ -516,7 +781,7 @@ func TestOrchestratorOrphanReconcileDoneOK(t *testing.T) {
 	store := jobstore.NewMemory()
 	now := time.Now().UTC()
 	pct := 100
-	_ = store.Insert(ctx, models.ProvisioningJob{
+	_ = store.Insert(ctx, models.Job{
 		ID: "orphan-done", DeviceID: "d", State: models.StateProvisioning,
 		Phase: "DONE", Percent: &pct, LastMarkerSeq: 7,
 		BMCEndpoint: "http://bmc", SystemID: "1",
@@ -600,7 +865,7 @@ func TestOrchestratorScriptedISOFlatcarDualMediaCoarse(t *testing.T) {
 	}
 
 	deadline := time.Now().Add(3 * time.Second)
-	var final models.ProvisioningJob
+	var final models.Job
 	for time.Now().Before(deadline) {
 		final, _ = store.Get(ctx, j.ID)
 		if final.State == models.StateProvisioned {
@@ -656,7 +921,7 @@ func TestOrchestratorOperatorISOCoarseDeadline(t *testing.T) {
 	}
 
 	deadline := time.Now().Add(3 * time.Second)
-	var final models.ProvisioningJob
+	var final models.Job
 	for time.Now().Before(deadline) {
 		final, _ = store.Get(ctx, j.ID)
 		if final.State == models.StateProvisioned {

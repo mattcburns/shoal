@@ -75,7 +75,7 @@ Usage:
 Commands:
   version    Print version and exit
   serve      Run the HTTP API server
-  deploy     Provisioning: run | status | cancel | iso
+  deploy     Provisioning: run | status | cancel | deprovision | iso
   discover   Assets: ingest | confirm
   observe    Status / poll / ocr / power (host On, ForceOff, ForceRestart)
 
@@ -222,6 +222,7 @@ func cmdServe(args []string) int {
 				log.Info("profile store enabled", "dir", cfg.ProfileDir)
 			}
 		}
+		srvAPI.WithProfiles(profStore)
 		// Phase 4: Telemetry is Postgres-only — no silent memory fallback.
 		// Open before Orchestrator so SOL markers can append job_log for the NetBox UI.
 		var telemStore telemetry.Store
@@ -286,7 +287,7 @@ func cmdServe(args []string) int {
 			if rec != nil {
 				poller.Events = rec
 			}
-			seedPollTargets(ctx, poller, store, cfg)
+			seedPollTargets(ctx, poller, store, cfg, secretBackend)
 			go func() {
 				ticker := time.NewTicker(30 * time.Second)
 				defer ticker.Stop()
@@ -295,7 +296,7 @@ func cmdServe(args []string) int {
 					case <-ctx.Done():
 						return
 					case <-ticker.C:
-						seedPollTargets(ctx, poller, store, cfg)
+						seedPollTargets(ctx, poller, store, cfg, secretBackend)
 					}
 				}
 			}()
@@ -349,7 +350,21 @@ func openSecrets(cfg config.Config) secrets.Backend {
 }
 
 // seedPollTargets registers BMC endpoints from durable jobs for SEL/sensor poll.
-func seedPollTargets(ctx context.Context, p *poll.Poller, store jobstore.Store, cfg config.Config) {
+//
+// Each job's own CredentialRef is resolved via the secrets backend when
+// present -- the same credential the job itself used to reach the BMC.
+// Falling back unconditionally to the global SHOAL_BMC_* lab defaults (as
+// this did previously) means the background poller authenticates every real
+// device with the lab's shared admin/password instead of that device's own
+// stored credential. Real iDRACs rate-limit and temporarily block the source
+// IP after repeated failed logins ("Login attempt alert ... IP will be
+// blocked for 60 seconds") -- so a poller re-seeded every 30s (cli.go above)
+// against a real BMC with the wrong password is a self-inflicted, periodic
+// denial of service against the exact BMC a live job needs to reach --
+// producing the "iDRAC session/rate hiccup" and mid-boot virtual-media
+// failures chased as external flakiness for most of 2026-08-25/26
+// (PROVISIONING_PROGRESS.md) before this was found.
+func seedPollTargets(ctx context.Context, p *poll.Poller, store jobstore.Store, cfg config.Config, sec secrets.Backend) {
 	if p == nil || store == nil {
 		return
 	}
@@ -367,12 +382,18 @@ func seedPollTargets(ctx context.Context, p *poll.Poller, store jobstore.Store, 
 			if j.BMCEndpoint == "" || j.DeviceID == "" {
 				continue
 			}
+			user, pass := cfg.BMCUsername, cfg.BMCPassword
+			if j.CredentialRef != "" && sec != nil {
+				if cred, err := sec.Get(ctx, j.CredentialRef); err == nil {
+					user, pass = cred.Username, cred.Password
+				}
+			}
 			_ = p.SetTarget(poll.Target{
 				DeviceID: j.DeviceID,
 				BMC: redfish.Config{
 					BaseURL:  j.BMCEndpoint,
-					Username: cfg.BMCUsername,
-					Password: cfg.BMCPassword,
+					Username: user,
+					Password: pass,
 					AuthMode: cfg.RedfishAuthMode,
 					TLSMode:  cfg.RedfishTLSMode,
 					CAFile:   cfg.RedfishCAFile,

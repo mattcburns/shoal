@@ -6,9 +6,12 @@ import (
 	"testing"
 
 	"github.com/mattcburns/shoal/internal/api"
+	"github.com/mattcburns/shoal/internal/common/config"
 	"github.com/mattcburns/shoal/internal/common/models"
 	"github.com/mattcburns/shoal/internal/common/netbox"
 	"github.com/mattcburns/shoal/internal/common/secrets"
+	"github.com/mattcburns/shoal/internal/deploy/jobstore"
+	"github.com/mattcburns/shoal/internal/observe/poll"
 )
 
 func TestDeviceCredsPutGetNoPasswordLeak(t *testing.T) {
@@ -133,5 +136,61 @@ func TestDeviceCredsPutRequiresPasswordForNew(t *testing.T) {
 	_, err := d.Put(context.Background(), "6", api.DeviceCredentialsPut{Username: "root"})
 	if err == nil || !strings.Contains(err.Error(), "password is required") {
 		t.Fatalf("err %v", err)
+	}
+}
+
+// TestSeedPollTargetsUsesJobCredentialRef pins the fix for a real-hardware bug
+// found 2026-08-26: the background poller was seeded with the global
+// SHOAL_BMC_* lab defaults for every device, ignoring each job's own
+// CredentialRef. Against a real BMC whose stored credential differs from the
+// lab default (this device: root/realpass vs. the lab's admin/password), that
+// meant every poll cycle authenticated wrong. iDRACs rate-limit and briefly
+// block the source IP after repeated failed logins, so this was a
+// self-inflicted denial of service against the same BMC an active job needed
+// to reach -- misdiagnosed for a full session as unexplained "iDRAC
+// flakiness" before the credential mismatch was found in the iDRAC's own
+// login-attempt log.
+func TestSeedPollTargetsUsesJobCredentialRef(t *testing.T) {
+	ctx := context.Background()
+	sec := secrets.NewMemory()
+	if err := sec.Put(ctx, "bmc-real", secrets.Credential{Username: "root", Password: "realpass"}); err != nil {
+		t.Fatal(err)
+	}
+	store := jobstore.NewMemory()
+	if err := store.Insert(ctx, models.Job{
+		ID: "job-real", DeviceID: "6", State: models.StateProvisioning,
+		BMCEndpoint: "https://172.16.21.202", CredentialRef: "bmc-real",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// No CredentialRef -- must still fall back to the global lab default.
+	if err := store.Insert(ctx, models.Job{
+		ID: "job-lab", DeviceID: "1", State: models.StateProvisioning,
+		BMCEndpoint: "http://127.0.0.1:8001",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	p := poll.New(nil, nil, nil)
+	cfg := config.Config{BMCUsername: "admin", BMCPassword: "password"}
+	seedPollTargets(ctx, p, store, cfg, sec)
+
+	byDevice := map[string]poll.Target{}
+	for _, tgt := range p.Targets() {
+		byDevice[tgt.DeviceID] = tgt
+	}
+	real, ok := byDevice["6"]
+	if !ok {
+		t.Fatal("device 6 not seeded")
+	}
+	if real.BMC.Username != "root" || real.BMC.Password != "realpass" {
+		t.Fatalf("real device got wrong creds: %+v", real.BMC)
+	}
+	lab, ok := byDevice["1"]
+	if !ok {
+		t.Fatal("device 1 not seeded")
+	}
+	if lab.BMC.Username != "admin" || lab.BMC.Password != "password" {
+		t.Fatalf("no-CredentialRef device should fall back to global default: %+v", lab.BMC)
 	}
 }

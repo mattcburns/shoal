@@ -21,7 +21,7 @@ func TestStatusAggregatesJobAndEvents(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now().UTC()
 	pct := 40
-	_ = jobs.Insert(ctx, models.ProvisioningJob{
+	_ = jobs.Insert(ctx, models.Job{
 		ID: "j1", DeviceID: "node-1", State: models.StateProvisioning,
 		Phase: "IMAGE_WRITE", Percent: &pct, UpdatedAt: &now,
 	})
@@ -53,7 +53,7 @@ func TestStatusFailedJobNoActiveID(t *testing.T) {
 	jobs := jobstore.NewMemory()
 	ctx := context.Background()
 	now := time.Now().UTC()
-	_ = jobs.Insert(ctx, models.ProvisioningJob{
+	_ = jobs.Insert(ctx, models.Job{
 		ID: "j-fail", DeviceID: "n2", State: models.StateFailed,
 		Phase: "IMAGE_WRITE", Error: "bmc error", UpdatedAt: &now,
 	})

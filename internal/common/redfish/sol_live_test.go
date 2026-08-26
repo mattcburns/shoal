@@ -8,6 +8,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -25,6 +26,64 @@ import (
 //
 // TestLiveOpenSOL is attach-only (no power). TestLiveOpenSOL_ResetAndRead
 // attaches first, then On / ForceRestart, and records console text.
+
+// TestLiveConsoleTail is a passive, read-only diagnostic: attach to SOL and
+// dump whatever the console prints for a while, with no Reset and no
+// virtual-media change. Use this to check on an already-running host (e.g.
+// confirm an OS actually came up and is visible over SOL) without
+// disturbing it, unlike TestLiveMarkerBootCapture / TestLiveOpenSOL_ResetAndRead.
+//
+//	set -a && . ./.env && set +a
+//	SHOAL_BMC_URL=https://172.16.21.202 SHOAL_CAPTURE_SECONDS=30 \
+//	  go test ./internal/common/redfish -tags=live_sol -run TestLiveConsoleTail -v -count=1 -timeout 60s
+func TestLiveConsoleTail(t *testing.T) {
+	secs := 20
+	if v := os.Getenv("SHOAL_CAPTURE_SECONDS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			secs = n
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(secs+15)*time.Second)
+	defer cancel()
+	bmc, sys := liveBMC(t, ctx)
+	defer func() { _ = bmc.Close(context.Background()) }()
+	stream := liveOpenSOL(t, ctx, bmc, sys.ID)
+
+	// readSOLFor does a single Read() and returns on the first burst,
+	// however small -- fine for TestLiveOpenSOL's 3s liveness probe, wrong
+	// here where the whole point is accumulating over the full window.
+	var (
+		mu  sync.Mutex
+		got bytes.Buffer
+	)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		buf := make([]byte, 4096)
+		for {
+			n, err := stream.Read(buf)
+			if n > 0 {
+				mu.Lock()
+				got.Write(buf[:n])
+				mu.Unlock()
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+	time.Sleep(time.Duration(secs) * time.Second)
+	closeStream(t, stream)
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Log("reader still blocked after Close")
+	}
+	mu.Lock()
+	buf := got.Bytes()
+	mu.Unlock()
+	t.Logf("read n=%d\n%s", len(buf), sanitizeConsole(buf, 1<<20))
+}
 
 func TestLiveOpenSOL(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
@@ -113,6 +172,204 @@ func TestLiveOpenSOL_ResetAndRead(t *testing.T) {
 	if len(bytes.TrimSpace(stripANSI(capture))) < 8 {
 		t.Fatalf("expected console text after %s, got %d bytes (%q)", resetType, len(capture), sanitizeConsole(capture, 120))
 	}
+}
+
+func TestLiveVirtualMediaISO(t *testing.T) {
+	isoURL := os.Getenv("SHOAL_ISO_URL")
+	if isoURL == "" {
+		t.Skip("SHOAL_ISO_URL required (BMC-reachable HTTP ISO)")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	bmc, sys := liveBMC(t, ctx)
+	defer func() { _ = bmc.Close(context.Background()) }()
+
+	vms, err := bmc.ListVirtualMedia(ctx, sys.ID)
+	if err != nil {
+		t.Fatalf("ListVirtualMedia: %v", err)
+	}
+	var slot redfish.VirtualMedia
+	for _, vm := range vms {
+		t.Logf("vm id=%s name=%s inserted=%v image=%s cd=%v types=%v uri=%s",
+			vm.ID, vm.Name, vm.Inserted, vm.Image, vm.SupportsCD, vm.MediaTypes, vm.URI)
+		if slot.URI == "" && vm.SupportsCD {
+			slot = vm
+		}
+	}
+	if slot.URI == "" && len(vms) > 0 {
+		slot = vms[0]
+	}
+	if slot.URI == "" {
+		t.Fatal("no virtual media slot")
+	}
+	t.Logf("insert %s into %s", isoURL, slot.URI)
+	if err := bmc.InsertVirtualMedia(ctx, slot.URI, isoURL); err != nil {
+		t.Fatalf("InsertVirtualMedia: %v", err)
+	}
+	defer func() {
+		if err := bmc.EjectVirtualMedia(context.Background(), slot.URI); err != nil {
+			t.Logf("eject: %v", err)
+		}
+	}()
+	vms, err = bmc.ListVirtualMedia(ctx, sys.ID)
+	if err != nil {
+		t.Fatalf("list after insert: %v", err)
+	}
+	ok := false
+	for _, vm := range vms {
+		if vm.URI == slot.URI {
+			t.Logf("after insert inserted=%v image=%s", vm.Inserted, vm.Image)
+			ok = vm.Inserted && strings.Contains(vm.Image, "shoal-marker.iso")
+		}
+	}
+	if !ok {
+		t.Fatal("expected inserted shoal-marker.iso")
+	}
+}
+
+// TestLiveMarkerBootCapture is a raw-SOL diagnostic: insert the marker ISO,
+// set the one-time CD boot override, ForceRestart, and dump everything the
+// console prints for several minutes -- unfiltered by the SHOAL| marker
+// parser. Use this when a job stalls with last_marker_seq=0 to see directly
+// whether the box is booting the CD and going silent, looping, or falling
+// through to disk/PXE.
+//
+//	set -a && . ./.env && set +a
+//	SHOAL_BMC_URL=https://172.16.21.202 \
+//	SHOAL_ISO_URL=http://172.16.20.138:8080/shoal-marker.iso \
+//	  go test ./internal/common/redfish -tags=live_sol -run TestLiveMarkerBootCapture -v -count=1 -timeout 12m
+func TestLiveMarkerBootCapture(t *testing.T) {
+	isoURL := os.Getenv("SHOAL_ISO_URL")
+	if isoURL == "" {
+		t.Skip("SHOAL_ISO_URL required (BMC-reachable HTTP ISO)")
+	}
+	ctxMinutes := 11
+	if v := os.Getenv("SHOAL_CAPTURE_MINUTES"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			ctxMinutes = n + 2
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(ctxMinutes)*time.Minute)
+	defer cancel()
+	bmc, sys := liveBMC(t, ctx)
+	defer func() { _ = bmc.Close(context.Background()) }()
+
+	vms, err := bmc.ListVirtualMedia(ctx, sys.ID)
+	if err != nil {
+		t.Fatalf("ListVirtualMedia: %v", err)
+	}
+	inserted := 0
+	for _, vm := range vms {
+		t.Logf("vm id=%s name=%s inserted=%v image=%s cd=%v types=%v uri=%s",
+			vm.ID, vm.Name, vm.Inserted, vm.Image, vm.SupportsCD, vm.MediaTypes, vm.URI)
+		if !vm.SupportsCD {
+			continue
+		}
+		t.Logf("insert %s into %s", isoURL, vm.URI)
+		if err := bmc.InsertVirtualMedia(ctx, vm.URI, isoURL); err != nil {
+			t.Logf("insert %s: %v (continuing)", vm.URI, err)
+			continue
+		}
+		inserted++
+	}
+	if inserted == 0 {
+		t.Fatal("no virtual media slot accepted the ISO")
+	}
+
+	if err := bmc.SetBootOverrideOnceCD(ctx, sys.ID); err != nil {
+		t.Fatalf("SetBootOverrideOnceCD: %v", err)
+	}
+	boot, err := bmc.GetBoot(ctx, sys.ID)
+	if err != nil {
+		t.Fatalf("GetBoot: %v", err)
+	}
+	t.Logf("boot override after set: enabled=%s target=%s", boot.OverrideEnabled, boot.OverrideTarget)
+
+	stream := liveOpenSOL(t, ctx, bmc, sys.ID)
+
+	var (
+		mu   sync.Mutex
+		got  bytes.Buffer
+		rerr error
+	)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		buf := make([]byte, 4096)
+		for {
+			n, err := stream.Read(buf)
+			if n > 0 {
+				mu.Lock()
+				if got.Len() < 1<<20 {
+					_, _ = got.Write(buf[:n])
+				}
+				mu.Unlock()
+			}
+			if err != nil {
+				if !errors.Is(err, io.EOF) {
+					rerr = err
+				}
+				return
+			}
+		}
+	}()
+
+	// Mirror the orchestrator's power path: ForceRestart, falling back to On
+	// for a host that is powered off. The cold Power-On path matters: on this
+	// R750 every observed success started warm (ForceRestart from On) and the
+	// hard failures started cold, where POST does memory training / LC init
+	// with long console-silent stretches.
+	resetType := "ForceRestart"
+	if err := bmc.Reset(ctx, sys.ID, resetType); err != nil {
+		resetType = "On"
+		if err2 := bmc.Reset(ctx, sys.ID, resetType); err2 != nil {
+			t.Fatalf("Reset ForceRestart: %v (On fallback: %v)", err, err2)
+		}
+	}
+	t.Logf("power action %s sent (was PowerState=%s)", resetType, sys.PowerState)
+
+	captureMinutes := 9
+	if v := os.Getenv("SHOAL_CAPTURE_MINUTES"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			captureMinutes = n
+		}
+	}
+	deadline := time.Now().Add(time.Duration(captureMinutes) * time.Minute)
+	var last int
+	for time.Now().Before(deadline) {
+		time.Sleep(10 * time.Second)
+		mu.Lock()
+		n := got.Len()
+		snippet := sanitizeConsole(got.Bytes(), 4000)
+		mu.Unlock()
+		if n != last {
+			t.Logf("sol bytes so far: %d\n--- tail ---\n%s\n--- end tail ---", n, tailLines(snippet, 20))
+			last = n
+		}
+		if strings.Contains(snippet, "SHOAL|") {
+			t.Log("SHOAL| marker observed -- boot succeeded, stopping capture early")
+			break
+		}
+	}
+	closeStream(t, stream)
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Log("reader still blocked after Close")
+	}
+
+	mu.Lock()
+	capture := got.Bytes()
+	mu.Unlock()
+	t.Logf("FULL CAPTURE n=%d read_err=%v\n%s", len(capture), rerr, sanitizeConsole(capture, 1<<20))
+}
+
+func tailLines(s string, n int) string {
+	lines := strings.Split(s, "\n")
+	if len(lines) <= n {
+		return s
+	}
+	return strings.Join(lines[len(lines)-n:], "\n")
 }
 
 func liveBMC(t *testing.T, ctx context.Context) (redfish.BMC, redfish.SystemInfo) {

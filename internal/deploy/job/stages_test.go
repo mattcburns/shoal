@@ -273,6 +273,45 @@ func TestExpandStagesConfigDriveRequiresPrep(t *testing.T) {
 	}
 }
 
+func TestExpandStagesDeprovision(t *testing.T) {
+	stages, err := expandStages(models.StartJobRequest{
+		Kind:       models.JobKindDeprovision,
+		Prep:       "wipe_only",
+		PrepISOURL: "http://example/prep.iso",
+		WipeLevel:  "zero",
+	}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stages) != 1 {
+		t.Fatalf("len=%d, want 1 (no os_install stage for deprovision)", len(stages))
+	}
+	if stages[0].Kind != models.JobStageKindPrep || stages[0].MediaURL != "http://example/prep.iso" {
+		t.Fatalf("prep %+v", stages[0])
+	}
+}
+
+func TestExpandStagesDeprovisionRequiresWipeOnly(t *testing.T) {
+	_, err := expandStages(models.StartJobRequest{
+		Kind: models.JobKindDeprovision,
+		Prep: "skip",
+	}, 1)
+	if err == nil || !strings.Contains(err.Error(), "wipe_only") {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestExpandStagesDeprovisionNeedsPrepURL(t *testing.T) {
+	t.Setenv("SHOAL_PREP_ISO_URL", "")
+	_, err := expandStages(models.StartJobRequest{
+		Kind: models.JobKindDeprovision,
+		Prep: "wipe_only",
+	}, 1)
+	if err == nil || !strings.Contains(err.Error(), "prep_iso") {
+		t.Fatalf("got %v", err)
+	}
+}
+
 func TestSetStageState(t *testing.T) {
 	stages := []models.JobStage{
 		{ID: "os_install", State: models.JobStageStatePending},

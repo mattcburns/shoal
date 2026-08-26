@@ -20,6 +20,6 @@ type JobProgress interface {
 // JobQuery is a read-only view of durable jobs for Observe status aggregation.
 // jobstore.Store satisfies this without Observe importing deploy.
 type JobQuery interface {
-	Get(ctx context.Context, id string) (models.ProvisioningJob, error)
-	ListByState(ctx context.Context, state models.LifecycleState) ([]models.ProvisioningJob, error)
+	Get(ctx context.Context, id string) (models.Job, error)
+	ListByState(ctx context.Context, state models.LifecycleState) ([]models.Job, error)
 }

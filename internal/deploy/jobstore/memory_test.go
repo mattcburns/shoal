@@ -13,7 +13,7 @@ import (
 func TestMemoryStoreLifecycle(t *testing.T) {
 	ctx := context.Background()
 	s := jobstore.NewMemory()
-	job := models.ProvisioningJob{
+	job := models.Job{
 		ID:       "j1",
 		DeviceID: "d1",
 		State:    models.StateProvisioning,
@@ -54,7 +54,7 @@ func TestMemoryListByDevice(t *testing.T) {
 	s := jobstore.NewMemory()
 	older := time.Now().UTC().Add(-time.Hour)
 	newer := time.Now().UTC()
-	seed := []models.ProvisioningJob{
+	seed := []models.Job{
 		{ID: "d4-old", DeviceID: "d4", State: models.StateProvisioned, UpdatedAt: &older},
 		{ID: "d4-new", DeviceID: "d4", State: models.StateFailed, UpdatedAt: &newer},
 		{ID: "other", DeviceID: "d5", State: models.StateProvisioned, UpdatedAt: &newer},
@@ -101,7 +101,7 @@ func TestMemoryListByDevice(t *testing.T) {
 func TestMemoryUpdateRuntime(t *testing.T) {
 	ctx := context.Background()
 	s := jobstore.NewMemory()
-	if err := s.Insert(ctx, models.ProvisioningJob{
+	if err := s.Insert(ctx, models.Job{
 		ID: "j2", DeviceID: "d2", State: models.StateProvisioning, CredentialRef: "job-j2",
 	}); err != nil {
 		t.Fatal(err)
@@ -121,7 +121,7 @@ func TestMemoryUpdateRuntime(t *testing.T) {
 func TestMemoryUpdateStages(t *testing.T) {
 	ctx := context.Background()
 	s := jobstore.NewMemory()
-	if err := s.Insert(ctx, models.ProvisioningJob{
+	if err := s.Insert(ctx, models.Job{
 		ID: "j3", DeviceID: "d3", State: models.StateProvisioning,
 		Stages: []models.JobStage{{ID: "os_install", Kind: "os_install", State: "pending"}},
 	}); err != nil {

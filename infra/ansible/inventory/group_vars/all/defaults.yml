@@ -53,7 +53,14 @@ shoal_redfish_auth_mode: basic
 shoal_redfish_tls_mode: insecure
 # Observe SEL/sensor poll cadence (Go duration). Keep idle high vs real BMCs.
 shoal_poll_idle_interval: 5m
-shoal_poll_watch_interval: 30s
+# Elevated rate while a SOL watch (active job) is running -- was 30s, which
+# adds a 4-call Redfish poll (SEL/sensors/firmware/power) on top of the job's
+# own SOL/media traffic every 30s for the job's full duration. Real-hardware
+# testing against a Dell R750/iDRAC9 (2026-08-25, PROVISIONING_PROGRESS.md)
+# showed sustained TLS handshake timeouts / auth hiccups and a mid-job
+# transport death during real jobs; raised to reduce concurrent BMC load
+# during exactly the window a job is also hammering the same BMC.
+shoal_poll_watch_interval: 2m
 # Optional Bearer token for /v1/* (empty = open lab API). Prefer vault.
 shoal_api_token: ""
 
@@ -67,6 +74,26 @@ shoal_netbox_plugin: true
 # VM-hosted and direct-host lab modes, so this one value covers both instead
 # of needing a per-mode override.
 shoal_netbox_plugin_base_url: "http://host.docker.internal:{{ shoal_app_http_port }}"
+# Django-side HTTP timeout for every call into shoal-app. POST /v1/jobs now
+# returns as soon as the job row is durable (BMC bring-up continues in the
+# background and the Status tab polls for it), so start is no longer the
+# constraint it was -- this headroom is for the other synchronous calls that
+# still wait on a real BMC, notably power actions on a slow iDRAC.
+# Keep it well above the 30s default: at 30s a slow BMC surfaces as a bogus
+# "Read timed out" in the NetBox UI for an action that in fact succeeded.
+# (2026-08-25: was set once via -e and lost; persisted here.)
+shoal_netbox_plugin_request_timeout: 120
+# Optional BMC-reachable ISO for physical servers (empty = lab ISO URL).
+# Example: http://172.16.20.138:8080/shoal-marker.iso
+shoal_netbox_plugin_real_bmc_iso_url: ""
+# BMC-reachable prep (wipe) live ISO. Required server-side for any
+# kind=deprovision job (prep=wipe_only) that doesn't pass prep_iso_url
+# explicitly -- including every NetBox "Deprovision" button click, since the
+# plugin never sends prep_iso_url itself. Empty disables SHOAL_PREP_ISO_URL
+# in env.j2 -- deprovision then fails validation until the plugin gains a
+# per-request field.
+# Example: http://172.16.20.138:8080/shoal-prep.iso
+shoal_prep_iso_url: ""
 
 # --- AI provider (see design doc §6 / v2.0.4 dual-model contract) ---
 # Provider is "ollama" (local, served by the shoal-ollama container) or "cloud".
@@ -99,6 +126,14 @@ shoal_secrets_dir: /var/lib/shoal/secrets
 # Provisioning profiles + approval records (Phase 5b). Outside git; durable on
 # the lab service host. Empty string disables SHOAL_PROFILE_DIR in env.j2.
 shoal_profile_dir: /var/lib/shoal/profiles
+# Raw per-session SOL byte capture (every byte the transports read, teed to a
+# file). This is the diagnostic that root-caused the boot-override and
+# cold-start failures on the R750 -- a real job records its own console, which
+# an operator can't otherwise do while the job holds the SOL session. Cheap
+# (tens of KB per job); keep it on so the next failure is diagnosable instead
+# of needing a reproduction run. Empty string disables it.
+# (2026-08-25: was set once via -e and lost; persisted here.)
+shoal_sol_debug_dir: /var/lib/shoal/sol-debug
 
 # --- Telemetry DB (non-secret parts) ---
 shoal_telemetry_db_name: shoal_telemetry

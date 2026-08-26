@@ -29,7 +29,11 @@ fi
 
 if [[ "$(id -u)" -ne 0 ]]; then
   echo "re-exec with sudo for loop mounts..."
-  exec sudo -E env \
+  # -E (preserve caller env) is unnecessary here -- every var the script
+  # needs is already reconstructed explicitly below via `env VAR=val`, and
+  # -E requires SETENV in sudoers, which some restricted sudo policies
+  # (NOPASSWD scoped to a specific wrapper) don't grant.
+  exec sudo env \
     "SHOAL_UBUNTU_CLOUD_IMG=$IMG" \
     "SHOAL_AUTOINSTALL_HOSTNAME=$HOSTNAME" \
     "SHOAL_AUTOINSTALL_USERNAME=$USERNAME" \
@@ -45,6 +49,8 @@ done
 WORK="$(mktemp -d /tmp/shoal-cloud-prep.XXXXXX)"
 cleanup() {
   set +e
+  # Unmount nested boot mount before its parent.
+  umount "$WORK/mnt/boot" 2>/dev/null
   umount "$WORK/mnt" 2>/dev/null
   losetup -d "$LOOP" 2>/dev/null
   rm -rf "$WORK"
@@ -137,12 +143,47 @@ cat > "$WORK/mnt/etc/cloud/cloud.cfg.d/99-shoal-nocloud.cfg" <<'EOF'
 datasource_list: [ NoCloud, None ]
 EOF
 
-# Serial console for SOL after install
+# Serial console for SOL after install. Lab libvirt bridges ttyS0; real BMC
+# SOL (iDRAC and friends) bridges COM2/ttyS1 -- add both so the installed OS
+# is visible over SOL on either path (see build-marker-iso.sh's own dual-UART
+# fanout for the same reasoning).
+#
+# Ubuntu 24.04 cloud images ship /boot as its OWN partition (LABEL=BOOT, see
+# fstab), separate from rootfs, with GRUB already installed and grub.cfg
+# already generated at image-build time -- editing only /etc/default/grub
+# and running `chroot update-grub` (as this script used to) does nothing
+# useful: update-grub can't find/write /boot without it bind-mounted into
+# the chroot (needs /proc, /sys, /dev too for grub-probe), so it silently
+# no-ops, and the pre-baked grub.cfg -- the one actually used at boot --
+# never gets our console= addition. Confirmed by mounting a written disk
+# image and finding /boot/grub.cfg unmodified. Fix: mount the real /boot
+# partition and edit its grub.cfg directly instead of trying to regenerate
+# it. (The ESP's grub.cfg is just `configfile` chainloading to this one --
+# no separate edit needed there.)
 if [[ -f "$WORK/mnt/etc/default/grub" ]]; then
   if ! grep -q 'console=ttyS0' "$WORK/mnt/etc/default/grub"; then
-    sed -i 's/GRUB_CMDLINE_LINUX="/GRUB_CMDLINE_LINUX="console=ttyS0,115200n8 /' "$WORK/mnt/etc/default/grub" || true
+    sed -i 's/GRUB_CMDLINE_LINUX="/GRUB_CMDLINE_LINUX="console=ttyS0,115200n8 console=ttyS1,115200n8 /' "$WORK/mnt/etc/default/grub" || true
   fi
-  chroot "$WORK/mnt" update-grub 2>/dev/null || true
+  if [[ -f "$WORK/mnt/etc/default/grub.d/50-cloudimg-settings.cfg" ]]; then
+    sed -i 's#console=ttyS0,115200#console=ttyS0,115200n8 console=ttyS1,115200n8#' \
+      "$WORK/mnt/etc/default/grub.d/50-cloudimg-settings.cfg" 2>/dev/null || true
+  fi
+fi
+BOOT_PART="$(blkid -L BOOT 2>/dev/null || true)"
+if [[ -n "$BOOT_PART" ]]; then
+  mkdir -p "$WORK/mnt/boot"
+  if mount "$BOOT_PART" "$WORK/mnt/boot" 2>/dev/null; then
+    GRUB_CFG="$WORK/mnt/boot/grub/grub.cfg"
+    if [[ -f "$GRUB_CFG" ]] && ! grep -q 'console=ttyS1' "$GRUB_CFG"; then
+      sed -i 's/console=ttyS0\b/console=ttyS0 console=ttyS1,115200n8/g' "$GRUB_CFG" || true
+      echo "grub.cfg: added console=ttyS1,115200n8 ($(grep -c 'console=ttyS1' "$GRUB_CFG" || true) entries)"
+    fi
+    umount "$WORK/mnt/boot"
+  else
+    echo "warn: found BOOT partition ($BOOT_PART) but could not mount it -- grub.cfg not edited, installed OS may not be visible over real-BMC SOL (ttyS1)" >&2
+  fi
+else
+  echo "warn: no BOOT-labeled partition found -- grub.cfg not edited (older/different image layout?)" >&2
 fi
 
 sync

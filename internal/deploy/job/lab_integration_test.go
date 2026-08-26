@@ -147,7 +147,7 @@ func TestLabDeployRealBMCInjectedSOL(t *testing.T) {
 	_ = pw.Close()
 
 	deadline := time.Now().Add(30 * time.Second)
-	var final models.ProvisioningJob
+	var final models.Job
 	for time.Now().Before(deadline) {
 		final, err = store.Get(ctx, j.ID)
 		if err != nil {

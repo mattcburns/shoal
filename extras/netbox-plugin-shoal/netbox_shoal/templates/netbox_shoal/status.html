@@ -66,8 +66,14 @@
               </div>
               <div class="col-md-2">
                 <label class="form-label small mb-0" for="id_profile_ref">Profile</label>
-                <input class="form-control form-control-sm" id="id_profile_ref" name="profile_ref"
-                       value="{{ d.profile_ref }}">
+                <select class="form-select form-select-sm" id="id_profile_ref" name="profile_ref">
+                  <option value="spike" {% if d.profile_ref == "spike" or not d.profile_ref %}selected{% endif %}>spike (default)</option>
+                  {% for p in shoal_profiles %}
+                    <option value="{{ p.profile.ref }}" {% if p.profile.ref == d.profile_ref %}selected{% endif %}>
+                      {{ p.profile.ref }}{% if p.profile.os_family %} ({{ p.profile.os_family }}{% if p.profile.install_strategy %}, {{ p.profile.install_strategy }}{% endif %}){% endif %}
+                    </option>
+                  {% endfor %}
+                </select>
               </div>
               <div class="col-md-2">
                 <label class="form-label small mb-0" for="id_serial_target">Serial / system</label>
@@ -78,13 +84,13 @@
               <div class="col-md-3">
                 <label class="form-label small mb-0" for="id_bmc_username">BMC user (optional)</label>
                 <input class="form-control form-control-sm" id="id_bmc_username" name="bmc_username"
-                       autocomplete="off" placeholder="uses Shoal env if empty">
+                       autocomplete="off" placeholder="stored BMC creds, then env">
               </div>
               <div class="col-md-3">
                 <label class="form-label small mb-0" for="id_bmc_password">BMC password (optional)</label>
                 <input class="form-control form-control-sm" type="password" id="id_bmc_password"
                        name="bmc_password" autocomplete="new-password"
-                       placeholder="uses Shoal env if empty">
+                       placeholder="stored BMC creds, then env">
               </div>
               <div class="col-md-3 form-check mt-4 ms-2">
                 <input class="form-check-input" type="checkbox" name="approve_destruct" id="id_approve_destruct">
@@ -107,10 +113,90 @@
             </form>
             <p class="text-muted small mt-2 mb-0">
               Starts <code>POST /v1/jobs</code> on Shoal with device id
-              <code>{{ d.device_id }}</code>. Passwords are not stored in NetBox;
-              empty user/pass uses Shoal <code>SHOAL_BMC_*</code> (not the
-              stored per-device secret). Lab spike needs libvirt SOL; real BMC
-              SOL/ISO reachability is a separate gap.
+              <code>{{ d.device_id }}</code>. Passwords are not stored in NetBox.
+              Empty user/pass uses the stored per-device secret, then
+              <code>SHOAL_BMC_*</code>. Lab nodes use libvirt SOL; physical
+              servers send <code>serial_transport=redfish_sol</code>. The ISO
+              URL must be fetchable by the BMC (set
+              <code>SHOAL_REAL_BMC_ISO_URL</code> for real hardware).
+            </p>
+            {% endwith %}
+          {% endif %}
+        </div>
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
+  {% if shoal_actions_enabled %}
+  <div class="row mb-3">
+    <div class="col col-md-12">
+      <div class="card border-danger">
+        <h5 class="card-header">Deprovision this device</h5>
+        <div class="card-body">
+          {% if not shoal_can_control %}
+            <div class="alert alert-secondary mb-0" role="alert">
+              View-only: <code>dcim.change_device</code> is required to deprovision.
+            </div>
+          {% else %}
+            {% with d=shoal_start_defaults %}
+            <form method="post" class="row g-2 align-items-end">
+              {% csrf_token %}
+              <input type="hidden" name="next" value="{{ request.path }}">
+              <input type="hidden" name="action" value="deprovision">
+              <div class="col-md-4">
+                <label class="form-label small mb-0" for="id_dep_bmc_endpoint">BMC endpoint</label>
+                <input class="form-control form-control-sm" id="id_dep_bmc_endpoint" name="bmc_endpoint"
+                       value="{{ d.bmc_endpoint }}" required>
+              </div>
+              <div class="col-md-2">
+                <label class="form-label small mb-0" for="id_dep_serial_target">Serial / system</label>
+                <input class="form-control form-control-sm" id="id_dep_serial_target" name="serial_target"
+                       value="{{ d.serial_target }}">
+                <input type="hidden" name="system_id" value="{{ d.system_id }}">
+              </div>
+              <div class="col-md-2">
+                <label class="form-label small mb-0" for="id_dep_wipe_level">Wipe level</label>
+                <select class="form-select form-select-sm" id="id_dep_wipe_level" name="wipe_level" required>
+                  <option value="" selected disabled>Choose…</option>
+                  <option value="discard">discard (fast)</option>
+                  <option value="zero">zero (dd)</option>
+                </select>
+              </div>
+              <div class="col-md-2">
+                <label class="form-label small mb-0" for="id_dep_bmc_username">BMC user (optional)</label>
+                <input class="form-control form-control-sm" id="id_dep_bmc_username" name="bmc_username"
+                       autocomplete="off" placeholder="stored BMC creds, then env">
+              </div>
+              <div class="col-md-2">
+                <label class="form-label small mb-0" for="id_dep_bmc_password">BMC password (optional)</label>
+                <input class="form-control form-control-sm" type="password" id="id_dep_bmc_password"
+                       name="bmc_password" autocomplete="new-password"
+                       placeholder="stored BMC creds, then env">
+              </div>
+              <div class="col-md-8 form-check mt-3">
+                <input class="form-check-input" type="checkbox" name="approve_destruct" id="id_dep_approve_destruct" required>
+                <label class="form-check-label small" for="id_dep_approve_destruct">
+                  This will permanently wipe the boot disk. The device's stored BMC credential is not affected.
+                </label>
+              </div>
+              <div class="col-md-4 d-flex justify-content-end mt-3">
+                <button type="submit" name="action" value="deprovision" class="btn btn-danger btn-sm"
+                        {% if shoal_status.active_job_id or shoal_status.lifecycle_state == "provisioning" %}
+                          disabled title="A job is already provisioning"
+                        {% elif shoal_status.lifecycle_state != "provisioned" and shoal_status.lifecycle_state != "failed" %}
+                          disabled title="Deprovision requires lifecycle_state provisioned or failed"
+                        {% endif %}
+                        onclick="return confirm('Permanently wipe the boot disk on this device?');">
+                  Deprovision
+                </button>
+              </div>
+            </form>
+            <p class="text-muted small mt-2 mb-0">
+              Wipes the boot disk (<code>prep=wipe_only</code>) and returns
+              <code>lifecycle_state</code> to <code>ready</code>. Powers the
+              host off when the wipe completes. Does not touch the device's
+              stored BMC credential.
             </p>
             {% endwith %}
           {% endif %}

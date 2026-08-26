@@ -281,10 +281,10 @@ sequenceDiagram
     participant BMC as BMC / libvirt serial
 
     CLI->>API: POST /v1/jobs
-    API->>DEP: Start(ctx, req) returns immediately with job ID
+    API->>DEP: StartAsync(ctx, req) returns immediately with job ID
     DEP->>JS: Insert PROVISIONING job
-    DEP-->>API: 202 + job
-    Note over DEP: goroutine: runJob(jobCtx)
+    DEP-->>API: 201 + job
+    Note over DEP: goroutine: runStart(jobCtx)
     DEP->>RF: InsertVirtualMedia / BootOverride / PowerOn
     RF->>BMC: Redfish HTTP
     DEP->>WR: Register(WatchSession)
@@ -303,10 +303,24 @@ sequenceDiagram
 2. Root `ctx, stop := signal.NotifyContext(parent, SIGINT, SIGTERM)`.
 3. Construct `JobStore` → `Orchestrator` → Observe service; inject `jobport.JobProgress` into Observe and `watchport.WatchRegistrar` into Orchestrator (**no sibling imports**).
 4. `http.Server` runs in a goroutine; handlers use `r.Context()` only for request-scoped work.
-5. **`POST /v1/jobs` does not block on provisioning.** Handler calls `Orchestrator.Start`, which:
-   - Persists the job (`PROVISIONING`)
-   - Spawns `go o.runJob(jobCtx, job)` with a **child context** derived from root (or from a cancel registry)
-   - Returns `202` + job JSON
+5. **`POST /v1/jobs` does not block on provisioning** (implemented 2026-08-25,
+   `internal/deploy/job/orchestrator.go` / `internal/api/jobs.go`; landed after
+   an earlier session shipped it synchronous and a real deprovision then timed
+   out client-side on a job that had in fact started fine). The handler calls
+   `Orchestrator.StartAsync`, which:
+   - Runs `prepareStart` (resolve, validate, credentials, CD probe, persist
+     the job as `PROVISIONING`) synchronously, on the caller's context
+   - Backgrounds `go runStart(bg, p)` — the actual BMC bring-up (SOL attach,
+     media insert, boot override, power cycle) — on `bg := context.WithoutCancel(ctx)`,
+     a **detached** context so a client giving up mid-request can't abort BMC
+     work already committed to
+   - Returns `201` + job JSON (the diagram's `202` was the pre-implementation
+     intent; the shipped handler predates this note and already used `201`,
+     so that's what stayed)
+   - `Orchestrator.Start` (synchronous: `prepareStart` + `runStart` inline, no
+     goroutine) still exists and is what the CLI uses — its in-process
+     orchestrator would otherwise exit before bring-up finished on a
+     `deploy run` invoked without `-wait`
 6. **`Orchestrator`** holds:
    - `mu sync.Mutex`
    - `active map[string]context.CancelFunc` (per-job cancel)
@@ -1349,7 +1363,9 @@ Default VM-hosted endpoints: NetBox `:8000`, sushy `:8001`, ISO HTTP `:8080`, Ol
 | `SHOAL_PROFILE_DIR` | no | JSON provisioning profiles + approval records (Phase 5b). Lab default via Ansible `shoal_profile_dir` → `/var/lib/shoal/profiles` in `env.j2` + mkdir. Empty disables non-spike profile load; `spike` profile ref always allowed without a store |
 | `SHOAL_API_TOKEN` | no | Phase 6d: Bearer token for `/v1/*` when set; empty = open API (lab default). Never log. Lab Ansible: `shoal_api_token` (vault optional) |
 | `SHOAL_POLL_IDLE_INTERVAL` | no | Background SEL/sensor poll when no SOL watch. Go `time.ParseDuration` (default `5m`) |
-| `SHOAL_POLL_WATCH_INTERVAL` | no | Elevated poll while a SOL watch is active. Go duration (default `30s`) |
+| `SHOAL_POLL_WATCH_INTERVAL` | no | Elevated poll while a SOL watch is active. Go duration (default `30s`; lab Ansible `2m` via `shoal_poll_watch_interval` — 30s meant the background poll and a job's own SOL/media traffic hit the same real BMC at once, contributing to real-hardware TLS/auth flakiness, 2026-08-25) |
+| `SHOAL_PREP_ISO_URL` | if deprovision | BMC-reachable prep (wipe) live ISO, fallback when `StartJobRequest.prep_iso_url` is empty. Required for any `kind=deprovision` job — including every NetBox Deprovision click, since the plugin never sends `prep_iso_url` itself. Lab Ansible: `shoal_prep_iso_url` in gitignored `vault.yml` (workstation/session-specific, not shared `defaults.yml`) |
+| `SHOAL_SOL_DEBUG_DIR` | no | Raw per-session SOL byte capture (every byte the transports read, teed to a file) — the diagnostic that root-caused the real-hardware boot-override and cold-start bugs. Empty disables. Lab Ansible default: `/var/lib/shoal/sol-debug` via `shoal_sol_debug_dir` + `env.j2`/compose template |
 | `shoal_compose_app` (Ansible) | — | Phase 6d: when true (lab default), stage binary + Dockerfile and run Compose service `shoal` (`network_mode: host`, port `shoal_app_http_port` / 8088) |
 
 **Ansible extensions (when packaging app service):**

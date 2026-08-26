@@ -135,6 +135,35 @@ class GetEventsTests(unittest.TestCase):
         self.assertEqual(kwargs["params"], {"limit": 50})
 
 
+class GetProfilesTests(unittest.TestCase):
+    def setUp(self):
+        settings.PLUGINS_CONFIG = {
+            "netbox_shoal": {
+                "SHOAL_BASE_URL": "http://shoal.example:8088",
+                "SHOAL_API_TOKEN": "",
+                "SHOAL_REQUEST_TIMEOUT": 10,
+            }
+        }
+
+    @mock.patch("netbox_shoal.client.requests.get")
+    def test_get_profiles_success(self, mock_get):
+        mock_get.return_value = FakeResponse(
+            {"profiles": [{"profile": {"ref": "lab-1-ubuntu", "os_family": "ubuntu"}}]}
+        )
+        data, err = client.get_profiles()
+        self.assertIsNone(err)
+        self.assertEqual(data["profiles"][0]["profile"]["ref"], "lab-1-ubuntu")
+        args, kwargs = mock_get.call_args
+        self.assertEqual(args[0], "http://shoal.example:8088/v1/profiles")
+        self.assertIsNone(kwargs["params"])
+
+    def test_get_profiles_without_base_url_returns_error_not_exception(self):
+        settings.PLUGINS_CONFIG["netbox_shoal"]["SHOAL_BASE_URL"] = ""
+        data, err = client.get_profiles()
+        self.assertIsNone(data)
+        self.assertIn("not configured", err)
+
+
 class GetJobsTests(unittest.TestCase):
     def setUp(self):
         settings.PLUGINS_CONFIG = {

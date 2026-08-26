@@ -31,11 +31,15 @@ type RedfishTransport struct {
 	Secrets       secrets.Backend
 	CredentialRef string
 
-	mu     sync.Mutex
-	bmc    redfish.BMC
-	stream redfish.SOLStream
-	cancel context.CancelFunc
+	mu       sync.Mutex
+	bmc      redfish.BMC
+	stream   redfish.SOLStream
+	cancel   context.CancelFunc
+	activity chan struct{}
 }
+
+// Activity implements ActivityReporter.
+func (t *RedfishTransport) Activity() <-chan struct{} { return t.activity }
 
 // Open dials target (a Redfish BMC base URL), opens the SOL stream for
 // SystemID via redfish.BMC.OpenSOL, and adapts the raw byte stream into a
@@ -88,11 +92,14 @@ func (t *RedfishTransport) Open(ctx context.Context, target string) (<-chan stri
 	t.stream = stream
 	scanCtx, cancel := context.WithCancel(ctx)
 	t.cancel = cancel
+	t.activity = make(chan struct{}, 8)
+	dbg := solDebugFile("redfish", target)
 
 	ch := make(chan string, 32)
 	go func() {
 		defer close(ch)
-		sc := bufio.NewScanner(stream)
+		defer closeIfSet(dbg)
+		sc := bufio.NewScanner(&activityReader{r: stream, activity: t.activity, tee: dbg})
 		buf := make([]byte, 0, 64*1024)
 		sc.Buffer(buf, 1024*1024)
 		for sc.Scan() {

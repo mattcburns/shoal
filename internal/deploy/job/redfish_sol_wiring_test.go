@@ -159,6 +159,91 @@ func TestOrchestratorRedfishSOLTransportSelectedByDefault(t *testing.T) {
 	}
 }
 
+func TestStartHTTPSBMCInfersRedfishSOL(t *testing.T) {
+	ctx := context.Background()
+	store, sec, fakeBMC, nb, log := newRedfishSOLTestFixtures(t)
+	watch := &recordingWatch{}
+	orch := job.NewOrchestrator(job.Options{
+		Log: log, Store: store, Secrets: sec,
+		NewBMC:  func(redfish.Config) (redfish.BMC, error) { return fakeBMC, nil },
+		Watches: watch, NetBox: nb, AuthMode: "basic", TLSMode: "insecure",
+		ReconcileFailOrphan: true,
+	})
+	defer orch.Stop()
+
+	_, err := orch.Start(ctx, models.StartJobRequest{
+		DeviceID:    "lab-node-1",
+		BMCEndpoint: "https://172.16.21.202",
+		BMCUsername: "root",
+		BMCPassword: "x",
+		ISOURL:      "http://172.16.20.138:8080/shoal-marker.iso",
+	})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	session := watch.lastSession()
+	if session.Transport != "redfish_sol" {
+		t.Fatalf("transport = %q, want redfish_sol inferred from https BMC", session.Transport)
+	}
+	if session.Target != "https://172.16.21.202" {
+		t.Fatalf("target = %q, want BMC endpoint", session.Target)
+	}
+}
+
+func TestStartUsesNetBoxCredentialRefNotEnvDefaults(t *testing.T) {
+	ctx := context.Background()
+	store := jobstore.NewMemory()
+	sec := secrets.NewMemory()
+	if err := sec.Put(ctx, "bmc-C784MH3", secrets.Credential{Username: "root", Password: "idrac-secret"}); err != nil {
+		t.Fatal(err)
+	}
+	nb := netbox.NewMemory()
+	id, err := nb.UpsertDevice(ctx, models.DeviceIdentity{
+		Name: "R750", Serial: "C784MH3", BMCIP: "172.16.21.202",
+		CredentialRef: "bmc-C784MH3", LifecycleState: models.StateDiscovered,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := nb.SetCredentialRef(ctx, id, "bmc-C784MH3", "172.16.21.202"); err != nil {
+		t.Fatal(err)
+	}
+	fakeBMC := redfish.NewFake()
+	watch := &recordingWatch{}
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	orch := job.NewOrchestrator(job.Options{
+		Log: log, Store: store, Secrets: sec,
+		NewBMC:  func(redfish.Config) (redfish.BMC, error) { return fakeBMC, nil },
+		Watches: watch, NetBox: nb, AuthMode: "basic", TLSMode: "insecure",
+		ReconcileFailOrphan: true,
+		DefaultBMCUsername:  "env-admin",
+		DefaultBMCPassword:  "env-secret",
+	})
+	defer orch.Stop()
+
+	j, err := orch.Start(ctx, models.StartJobRequest{
+		DeviceID:    id,
+		BMCEndpoint: "https://172.16.21.202",
+		ISOURL:      "http://iso/x.iso",
+	})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if j.CredentialRef != "bmc-C784MH3" {
+		t.Fatalf("job credential_ref = %q, want bmc-C784MH3 (not job-*)", j.CredentialRef)
+	}
+	cred, err := sec.Get(ctx, j.CredentialRef)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cred.Username != "root" || cred.Password != "idrac-secret" {
+		t.Fatalf("used %+v, want stored iDRAC secret not SHOAL_BMC_*", cred)
+	}
+	if watch.lastSession().Transport != "redfish_sol" {
+		t.Fatalf("transport = %q, want redfish_sol", watch.lastSession().Transport)
+	}
+}
+
 // TestOrchestratorSerialTransportDefaultsToLibvirt proves that with neither a
 // per-job override nor a config default, behavior is unchanged from before
 // this feature existed.

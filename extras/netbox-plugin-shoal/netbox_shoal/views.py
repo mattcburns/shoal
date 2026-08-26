@@ -28,6 +28,10 @@ from utilities.views import ViewTab, register_model_view
 
 from . import client
 from .defaults import bmc_endpoint as resolve_bmc_endpoint
+from .defaults import iso_url as resolve_iso_url
+from .defaults import serial_transport as resolve_serial_transport
+from .defaults import stall_timeout_ns as resolve_stall_timeout_ns
+from .defaults import system_id as resolve_system_id
 
 PLUGIN_NAME = "netbox_shoal"
 
@@ -60,20 +64,25 @@ def _redirect_back(request, fallback_path):
     return redirect(fallback_path)
 
 
-def _device_bmc_ip(instance):
+def _device_cf(instance):
     cf = getattr(instance, "custom_field_data", None) or {}
     if not isinstance(cf, dict):
         cf = {}
-    ip = (cf.get("bmc_ip") or "").strip()
-    if ip:
-        return ip
     extra = getattr(instance, "cf", None)
-    if extra is None:
-        return ""
-    try:
-        return (extra.get("bmc_ip") or "").strip()
-    except (AttributeError, TypeError):
-        return ""
+    if extra is not None and not cf:
+        try:
+            cf = dict(extra)
+        except (TypeError, ValueError):
+            cf = {}
+    return cf
+
+
+def _device_bmc_ip(instance):
+    return (_device_cf(instance).get("bmc_ip") or "").strip()
+
+
+def _device_credential_ref(instance):
+    return (_device_cf(instance).get("credential_ref") or "").strip()
 
 
 def _role_slug(instance):
@@ -91,14 +100,22 @@ def _start_defaults(instance):
         role_slug=_role_slug(instance),
         default_endpoint=(cfg.get("SHOAL_DEFAULT_BMC_ENDPOINT") or "").strip(),
     )
-    iso_url = (cfg.get("SHOAL_DEFAULT_ISO_URL") or "").strip()
+    role = _role_slug(instance)
+    iso = resolve_iso_url(
+        role_slug=role,
+        default_iso=(cfg.get("SHOAL_DEFAULT_ISO_URL") or "").strip(),
+        real_iso=(cfg.get("SHOAL_REAL_BMC_ISO_URL") or "").strip(),
+    )
     return {
         "device_id": str(instance.pk),
         "serial_target": name,
-        "system_id": name,  # sushy System.Name matches domain name
+        "system_id": resolve_system_id(role, name),
         "bmc_endpoint": bmc_endpoint,
-        "iso_url": iso_url,
+        "iso_url": iso,
         "profile_ref": (cfg.get("SHOAL_DEFAULT_PROFILE_REF") or "spike").strip() or "spike",
+        "serial_transport": resolve_serial_transport(role),
+        "credential_ref": _device_credential_ref(instance),
+        "stall_timeout": resolve_stall_timeout_ns(role),
     }
 
 
@@ -119,7 +136,14 @@ def _handle_control_post(request, instance):
             "iso_url": (request.POST.get("iso_url") or defaults["iso_url"]).strip(),
             "profile_ref": (request.POST.get("profile_ref") or defaults["profile_ref"]).strip(),
         }
-        # Optional credential override (never stored in NetBox). Empty => Shoal env defaults.
+        if defaults.get("serial_transport"):
+            body["serial_transport"] = defaults["serial_transport"]
+        if defaults.get("credential_ref"):
+            body["credential_ref"] = defaults["credential_ref"]
+        if defaults.get("stall_timeout"):
+            body["stall_timeout"] = defaults["stall_timeout"]
+        # Optional credential override (never stored in NetBox). Empty => stored
+        # per-device secret, then SHOAL_BMC_*.
         user = (request.POST.get("bmc_username") or "").strip()
         password = request.POST.get("bmc_password") or ""
         if user:
@@ -150,6 +174,61 @@ def _handle_control_post(request, instance):
         messages.success(
             request,
             "Provisioning job %s started (state=%s). Status auto-refreshes while provisioning."
+            % (job_id[:16], (data or {}).get("state", "?")),
+        )
+        return True
+
+    if action == "deprovision":
+        defaults = _start_defaults(instance)
+        body = {
+            "device_id": defaults["device_id"],
+            "kind": "deprovision",
+            "prep": "wipe_only",
+            "serial_target": (request.POST.get("serial_target") or defaults["serial_target"]).strip(),
+            "system_id": (request.POST.get("system_id") or defaults["system_id"]).strip(),
+            "bmc_endpoint": (request.POST.get("bmc_endpoint") or defaults["bmc_endpoint"]).strip(),
+            "wipe_level": (request.POST.get("wipe_level") or "").strip(),
+        }
+        if defaults.get("serial_transport"):
+            body["serial_transport"] = defaults["serial_transport"]
+        if defaults.get("credential_ref"):
+            body["credential_ref"] = defaults["credential_ref"]
+        if defaults.get("stall_timeout"):
+            body["stall_timeout"] = defaults["stall_timeout"]
+        user = (request.POST.get("bmc_username") or "").strip()
+        password = request.POST.get("bmc_password") or ""
+        if user:
+            body["bmc_username"] = user
+        if password:
+            body["bmc_password"] = password
+        if request.POST.get("approve_destruct") == "on":
+            body["approve_destruct"] = True
+
+        if not body["bmc_endpoint"]:
+            messages.error(request, "BMC endpoint is required (set SHOAL_DEFAULT_BMC_ENDPOINT in plugin config or the form).")
+            return True
+        if not body["wipe_level"]:
+            messages.error(request, "Wipe level (discard or zero) is required to deprovision.")
+            return True
+        if not body.get("approve_destruct"):
+            messages.error(request, "Confirmation is required: deprovision permanently wipes the boot disk.")
+            return True
+
+        # Mirrors start_job: same POST /v1/jobs, kind=deprovision on the wire.
+        data, err = client.start_job(body)
+        if err:
+            job_id = ""
+            if isinstance(data, dict) and isinstance(data.get("job"), dict):
+                job_id = data["job"].get("id") or ""
+            if job_id:
+                messages.warning(request, "Deprovision job %s started but reported an error: %s" % (job_id[:12], err))
+            else:
+                messages.error(request, "Deprovision failed: %s" % err)
+            return True
+        job_id = (data or {}).get("id") or "?"
+        messages.success(
+            request,
+            "Deprovision job %s started (state=%s). Status auto-refreshes while running."
             % (job_id[:16], (data or {}).get("state", "?")),
         )
         return True
@@ -274,6 +353,10 @@ def _status_context(instance, request=None):
     creds, creds_err = client.get_credentials(
         device_id, credential_ref=(cf.get("credential_ref") or "")
     )
+    profiles_data, profiles_err = client.get_profiles()
+    # profiles_err (SHOAL_PROFILE_DIR unset, or Shoal unreachable) just means
+    # the dropdown falls back to "spike" only -- not worth failing the page.
+    profiles = (profiles_data or {}).get("profiles", []) if not profiles_err else []
     if isinstance(creds, dict):
         if not creds.get("bmc_ip") and cf.get("bmc_ip"):
             creds = dict(creds)
@@ -295,6 +378,7 @@ def _status_context(instance, request=None):
         "shoal_credentials": creds or {},
         "shoal_credentials_error": creds_err,
         "shoal_actions_enabled": bool(_cfg().get("SHOAL_ENABLE_ACTIONS", True)),
+        "shoal_profiles": profiles,
     }
 
 

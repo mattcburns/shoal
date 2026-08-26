@@ -21,7 +21,7 @@ func TestDeviceStatusAndEvents(t *testing.T) {
 	store := telemetry.NewMemory()
 	ctx := context.Background()
 	now := time.Now().UTC()
-	_ = jobs.Insert(ctx, models.ProvisioningJob{
+	_ = jobs.Insert(ctx, models.Job{
 		ID: "j1", DeviceID: "n1", State: models.StateProvisioning, Phase: "BOOT", UpdatedAt: &now,
 	})
 	_ = store.WriteEvent(ctx, models.NormalizedEvent{
@@ -75,13 +75,13 @@ func TestDeviceJobs(t *testing.T) {
 	ctx := context.Background()
 	older := time.Now().UTC().Add(-time.Hour)
 	newer := time.Now().UTC()
-	_ = jobs.Insert(ctx, models.ProvisioningJob{
+	_ = jobs.Insert(ctx, models.Job{
 		ID: "j-old", DeviceID: "n2", State: models.StateProvisioned, UpdatedAt: &older,
 	})
-	_ = jobs.Insert(ctx, models.ProvisioningJob{
+	_ = jobs.Insert(ctx, models.Job{
 		ID: "j-new", DeviceID: "n2", State: models.StateFailed, UpdatedAt: &newer,
 	})
-	_ = jobs.Insert(ctx, models.ProvisioningJob{
+	_ = jobs.Insert(ctx, models.Job{
 		ID: "j-other", DeviceID: "other", State: models.StateProvisioned, UpdatedAt: &newer,
 	})
 	s := api.New(config.Config{}, nil).WithJobStore(jobs)
@@ -93,8 +93,8 @@ func TestDeviceJobs(t *testing.T) {
 		t.Fatalf("status %d body=%s", rr.Code, rr.Body.String())
 	}
 	var body struct {
-		DeviceID string                   `json:"device_id"`
-		Jobs     []models.ProvisioningJob `json:"jobs"`
+		DeviceID string       `json:"device_id"`
+		Jobs     []models.Job `json:"jobs"`
 	}
 	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)

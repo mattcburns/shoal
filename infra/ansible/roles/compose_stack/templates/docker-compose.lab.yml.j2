@@ -176,11 +176,24 @@ services:
 {% if (shoal_profile_dir | default('') | length) > 0 %}
       - SHOAL_PROFILE_DIR=/var/lib/shoal/profiles
 {% endif %}
+{% if (shoal_prep_iso_url | default('') | length) > 0 %}
+      # BMC-reachable prep (wipe) live ISO -- server-wide fallback for
+      # kind=deprovision jobs that don't pass prep_iso_url explicitly
+      # (e.g. every NetBox Deprovision click; see PROVISIONING_PROGRESS.md).
+      - SHOAL_PREP_ISO_URL={{ shoal_prep_iso_url }}
+{% endif %}
+{% if (shoal_sol_debug_dir | default('') | length) > 0 %}
+      # Raw SOL byte capture per watch session (debug aid; empty disables).
+      - SHOAL_SOL_DEBUG_DIR=/var/lib/shoal/sol-debug
+{% endif %}
     volumes:
       - {{ shoal_iso_server_dir }}:/srv/iso
       - /var/run/libvirt:/var/run/libvirt
       - /dev:/dev
       - {{ shoal_secrets_dir | default('/var/lib/shoal/secrets') }}:/var/lib/shoal/secrets
+{% if (shoal_sol_debug_dir | default('') | length) > 0 %}
+      - {{ shoal_sol_debug_dir }}:/var/lib/shoal/sol-debug
+{% endif %}
 {% if (shoal_fewshot_dir | default('') | length) > 0 %}
       - {{ shoal_fewshot_dir }}:/var/lib/shoal/fewshot
 {% endif %}

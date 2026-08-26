@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
 	"sort"
 	"strings"
@@ -257,7 +258,7 @@ func (o *Orchestrator) SetWatchRegistrar(w watchport.WatchRegistrar) {
 }
 
 // Get returns a job from the store.
-func (o *Orchestrator) Get(ctx context.Context, jobID string) (models.ProvisioningJob, error) {
+func (o *Orchestrator) Get(ctx context.Context, jobID string) (models.Job, error) {
 	return o.store.Get(ctx, jobID)
 }
 
@@ -270,9 +271,61 @@ func (o *Orchestrator) Get(ctx context.Context, jobID string) (models.Provisioni
 // Optional BuildISO / SHOAL_ISO_DYNAMIC builds and publishes a live image first (Phase 6a).
 // When a DeviceResolver is available (NetBox), device_id is remapped from name/serial
 // to the NetBox numeric primary key so plugin tabs and telemetry share one key.
-func (o *Orchestrator) Start(ctx context.Context, req models.StartJobRequest) (models.ProvisioningJob, error) {
+func (o *Orchestrator) Start(ctx context.Context, req models.StartJobRequest) (models.Job, error) {
+	p, err := o.prepareStart(ctx, req)
+	if err != nil {
+		return models.Job{}, err
+	}
+	return o.runStart(ctx, p)
+}
+
+// StartAsync inserts the job row, then runs the slow BMC bring-up (SOL attach,
+// media insert, boot override, power cycle) in the background and returns as
+// soon as the job is durable and observable via Get.
+//
+// Start blocks until the first stage is actually running -- ~40s against a Dell
+// R750/iDRAC9 -- which is longer than a browser-driven caller wants to hold a
+// request open, and made HTTP clients time out on jobs that were in fact
+// starting fine. Callers that need the process to stay alive until bring-up
+// finishes (the CLI, whose in-process orchestrator dies when the command
+// returns) must keep using Start; callers that poll Get for state -- the HTTP
+// API, and the NetBox Status tab behind it -- should use this.
+//
+// Bring-up failures are not lost: runStart records them via HandleTerminal, so
+// they surface as a terminal job state on the next poll rather than as an error
+// on this call.
+func (o *Orchestrator) StartAsync(ctx context.Context, req models.StartJobRequest) (models.Job, error) {
+	p, err := o.prepareStart(ctx, req)
+	if err != nil {
+		return models.Job{}, err
+	}
+	// Detach cancellation: bring-up must outlive the caller's request.
+	bg := context.WithoutCancel(ctx)
+	go func() {
+		if _, err := o.runStart(bg, p); err != nil {
+			o.log.Error("async start failed", "job_id", p.job.ID, "err", err.Error())
+		}
+	}()
+	return p.job, nil
+}
+
+// preparedStart is the result of prepareStart: a durable job row plus the state
+// runStart needs to bring the BMC up.
+type preparedStart struct {
+	job  models.Job
+	req  models.StartJobRequest
+	cred secrets.Credential
+	rs   *runState
+	// jobCtx is detached from any caller; it lives until Cancel/HandleTerminal.
+	jobCtx context.Context
+}
+
+// prepareStart resolves and validates the request, stores credentials, expands
+// stages and inserts the job row. It performs no BMC bring-up beyond the CD
+// probe, so it returns quickly. On error no job row is left behind.
+func (o *Orchestrator) prepareStart(ctx context.Context, req models.StartJobRequest) (preparedStart, error) {
 	if o.watches == nil {
-		return models.ProvisioningJob{}, fmt.Errorf("job: watch registrar not configured")
+		return preparedStart{}, fmt.Errorf("job: watch registrar not configured")
 	}
 
 	profileRef := req.ProfileRef
@@ -282,42 +335,49 @@ func (o *Orchestrator) Start(ctx context.Context, req models.StartJobRequest) (m
 	req.ProfileRef = profileRef
 
 	if err := o.resolveDeviceID(ctx, &req); err != nil {
-		return models.ProvisioningJob{}, err
+		return preparedStart{}, err
 	}
+	o.applyStartBindings(ctx, &req)
 	o.applyDefaultCredentials(&req)
 
 	// M6: apply profile defaults before validation so profile-only starts work.
 	var prof models.ProvisioningProfile
 	if profileRef != "" && profileRef != "spike" {
 		if o.profiles == nil {
-			return models.ProvisioningJob{}, fmt.Errorf("job: profile %q requires SHOAL_PROFILE_DIR (profile store not configured)", profileRef)
+			return preparedStart{}, fmt.Errorf("job: profile %q requires SHOAL_PROFILE_DIR (profile store not configured)", profileRef)
 		}
 		rec, err := o.profiles.Get(ctx, profileRef)
 		if err != nil {
-			return models.ProvisioningJob{}, fmt.Errorf("job: load profile %q: %w", profileRef, err)
+			return preparedStart{}, fmt.Errorf("job: load profile %q: %w", profileRef, err)
 		}
 		prof = rec.Profile
 		applyProfileDefaults(&req, prof)
 		if err := resolveProfileURLs(&req, prof, o.isoBaseURL); err != nil {
-			return models.ProvisioningJob{}, err
+			return preparedStart{}, err
 		}
 	}
 
 	if err := validate.StartJobRequest(req); err != nil {
-		return models.ProvisioningJob{}, err
+		return preparedStart{}, err
 	}
 	if err := o.checkProfileApproval(ctx, profileRef, req.ApproveDestruct); err != nil {
-		return models.ProvisioningJob{}, err
+		return preparedStart{}, err
 	}
-	if err := o.maybeBuildISO(ctx, &req, profileRef); err != nil {
-		return models.ProvisioningJob{}, err
-	}
-	// Legacy resolve if still empty (iso_base only path when media_url not used).
-	if err := o.resolveISOURL(ctx, &req, profileRef); err != nil {
-		return models.ProvisioningJob{}, err
-	}
-	if req.ISOURL == "" {
-		return models.ProvisioningJob{}, fmt.Errorf("job: iso_url is required")
+	// Kind=deprovision has no os_install stage (see expandStages /
+	// expandDeprovisionStages): no ISO to build or resolve, and iso_url
+	// empty is expected, not an error. resolveISOURL in particular would
+	// otherwise reject the default spike profile with iso_url empty.
+	if req.Kind != models.JobKindDeprovision {
+		if err := o.maybeBuildISO(ctx, &req, profileRef); err != nil {
+			return preparedStart{}, err
+		}
+		// Legacy resolve if still empty (iso_base only path when media_url not used).
+		if err := o.resolveISOURL(ctx, &req, profileRef); err != nil {
+			return preparedStart{}, err
+		}
+		if req.ISOURL == "" {
+			return preparedStart{}, fmt.Errorf("job: iso_url is required")
+		}
 	}
 
 	jobID := newID()
@@ -328,26 +388,26 @@ func (o *Orchestrator) Start(ctx context.Context, req models.StartJobRequest) (m
 			Username: req.BMCUsername,
 			Password: req.BMCPassword,
 		}); err != nil {
-			return models.ProvisioningJob{}, fmt.Errorf("job: store credentials: %w", err)
+			return preparedStart{}, fmt.Errorf("job: store credentials: %w", err)
 		}
 	}
 	cred, err := o.secrets.Get(ctx, credRef)
 	if err != nil {
-		return models.ProvisioningJob{}, fmt.Errorf("job: resolve credentials: %w", err)
+		return preparedStart{}, fmt.Errorf("job: resolve credentials: %w", err)
 	}
 
 	// Probe CD count early so seed_delivery=auto can choose second_media vs config_drive.
 	nCD := o.probeCDCount(ctx, req, cred)
 	stages, err := expandStages(req, nCD)
 	if err != nil {
-		return models.ProvisioningJob{}, err
+		return preparedStart{}, err
 	}
 	strategy := installStrategyFromStages(stages)
 
 	profile := profileRef
 	now := time.Now().UTC()
 	sessionID := "sol-" + jobID
-	job := models.ProvisioningJob{
+	job := models.Job{
 		ID:              jobID,
 		DeviceID:        req.DeviceID,
 		ProfileRef:      profile,
@@ -363,9 +423,10 @@ func (o *Orchestrator) Start(ctx context.Context, req models.StartJobRequest) (m
 		SOLSessionID:    sessionID,
 		InstallStrategy: strategy,
 		Stages:          stages,
+		Kind:            req.Kind,
 	}
 	if err := o.store.Insert(ctx, job); err != nil {
-		return models.ProvisioningJob{}, err
+		return preparedStart{}, err
 	}
 	o.syncNetBoxLifecycle(ctx, req.DeviceID, models.StateProvisioning)
 
@@ -389,26 +450,35 @@ func (o *Orchestrator) Start(ctx context.Context, req models.StartJobRequest) (m
 	o.running[jobID] = rs
 	o.mu.Unlock()
 
-	if err := o.provision(jobCtx, job, req, cred, rs); err != nil {
-		o.log.Error("provision start failed", "job_id", jobID, "err", err.Error())
-		_ = o.HandleTerminal(ctx, jobID, ReasonBMC)
-		j, _ := o.store.Get(ctx, jobID)
+	return preparedStart{job: job, req: req, cred: cred, rs: rs, jobCtx: jobCtx}, nil
+}
+
+// runStart performs BMC bring-up for an already-inserted job and returns the
+// job's current stored state. This is the slow half of a start (SOL attach,
+// media insert, boot override, power cycle). ctx is used only for the failure
+// bookkeeping below -- bring-up itself runs on the job's own detached context --
+// so it is safe to call on a background context.
+func (o *Orchestrator) runStart(ctx context.Context, p preparedStart) (models.Job, error) {
+	if err := o.provision(p.jobCtx, p.job, p.req, p.cred, p.rs); err != nil {
+		o.log.Error("provision start failed", "job_id", p.job.ID, "err", err.Error())
+		_ = o.HandleTerminal(ctx, p.job.ID, ReasonBMC)
+		j, _ := o.store.Get(ctx, p.job.ID)
 		if j.ID == "" {
-			return job, err
+			return p.job, err
 		}
 		return j, err
 	}
 
-	out, err := o.store.Get(ctx, jobID)
+	out, err := o.store.Get(ctx, p.job.ID)
 	if err != nil {
-		return job, nil
+		return p.job, nil
 	}
 	return out, nil
 }
 
 // provision expands stages and starts only the first stage. Later stages start
 // when ApplyMarker sees PREP_DONE (M2 event-driven advance).
-func (o *Orchestrator) provision(ctx context.Context, job models.ProvisioningJob, req models.StartJobRequest, cred secrets.Credential, rs *runState) error {
+func (o *Orchestrator) provision(ctx context.Context, job models.Job, req models.StartJobRequest, cred secrets.Credential, rs *runState) error {
 	stages := job.Stages
 	if len(stages) == 0 {
 		var err error
@@ -431,7 +501,7 @@ func (o *Orchestrator) provision(ctx context.Context, job models.ProvisioningJob
 }
 
 // startStage attaches stage media, boots CD once, and registers SOL watch.
-func (o *Orchestrator) startStage(ctx context.Context, job models.ProvisioningJob, req models.StartJobRequest, cred secrets.Credential, rs *runState, idx int) error {
+func (o *Orchestrator) startStage(ctx context.Context, job models.Job, req models.StartJobRequest, cred secrets.Credential, rs *runState, idx int) error {
 	if idx < 0 || idx >= len(job.Stages) {
 		return fmt.Errorf("job: invalid stage index %d", idx)
 	}
@@ -548,6 +618,13 @@ func (o *Orchestrator) startStage(ctx context.Context, job models.ProvisioningJo
 
 	if err := bmc.InsertVirtualMedia(ctx, primaryURI, mediaURL); err != nil {
 		return fmt.Errorf("insert media: %w", err)
+	}
+	// Real BMCs often boot a different virtual-CD slot than URI-sort picks first.
+	// Mirror the install ISO onto the unused secondary slot so either device works.
+	if seedDelivery != models.SeedDeliverySecondMedia && secondaryURI != "" {
+		if err := bmc.InsertVirtualMedia(ctx, secondaryURI, mediaURL); err != nil {
+			o.log.Warn("secondary CD insert failed (continuing with primary)", "err", err.Error())
+		}
 	}
 	if seedDelivery == models.SeedDeliverySecondMedia {
 		if err := bmc.InsertVirtualMedia(ctx, secondaryURI, seedURL); err != nil {
@@ -846,6 +923,10 @@ func (o *Orchestrator) advanceAfterPrepDone(jobID string) {
 	stages := setStageState(job.Stages, models.JobStageKindPrep, models.JobStageStateDone, "PREP_DONE", "")
 	osIdx := stageIndex(stages, models.JobStageKindOSInstall)
 	if osIdx < 0 {
+		if job.Kind == models.JobKindDeprovision {
+			o.finishDeprovision(ctx, jobID, job, rs, stages)
+			return
+		}
 		o.enqueueTerminal(jobID, ReasonMarkerError)
 		return
 	}
@@ -868,6 +949,67 @@ func (o *Orchestrator) advanceAfterPrepDone(jobID string) {
 		_ = o.store.UpdateStages(ctx, jobID, models.JobStageKindOSInstall, job.InstallStrategy, stages)
 		o.enqueueTerminal(jobID, ReasonBMC)
 	}
+}
+
+// finishDeprovision completes a Kind=deprovision job after PREP_DONE. There is
+// no os_install stage to advance to (docs/deprovision-design.md Key Decision
+// 5) -- but the marker ISO's /init deliberately stays on and heartbeats after
+// PREP_DONE, waiting for a media swap into the next stage that will never
+// come here (see build-marker-iso.sh's prep-mode loop). Key Decision 2:
+// the orchestrator, not the guest, issues the power-off. handleTerminalOnce
+// reads job.Kind to write lifecycle_state=ready instead of provisioned.
+func (o *Orchestrator) finishDeprovision(ctx context.Context, jobID string, job models.Job, rs *runState, stages []models.JobStage) {
+	_ = o.store.UpdateStages(ctx, jobID, models.JobStageKindPrep, job.InstallStrategy, stages)
+	_ = o.store.UpdateProgress(ctx, jobID, "PREP_DONE", intPtr(100), 0, "")
+
+	bmcURL := rs.bmcURL
+	if bmcURL == "" {
+		bmcURL = job.BMCEndpoint
+	}
+	credRef := rs.credential
+	if credRef == "" {
+		credRef = job.CredentialRef
+	}
+	systemID := rs.systemID
+	if systemID == "" {
+		systemID = job.SystemID
+	}
+	if bmcURL != "" {
+		if err := o.powerOffBMC(ctx, bmcURL, credRef, systemID); err != nil {
+			o.log.Warn("deprovision power-off failed", "job_id", jobID, "err", err.Error())
+		}
+	}
+	o.enqueueTerminal(jobID, ReasonDoneOK)
+}
+
+// powerOffBMC issues a hard power-off (ForceOff) via the BMC, mirroring
+// cleanupBMC's connect pattern. Best-effort: handleTerminalOnce's own
+// cleanupBMC/postCheckClean run afterward regardless of this error.
+func (o *Orchestrator) powerOffBMC(ctx context.Context, bmcURL, credRef, systemID string) error {
+	user, pass := "", ""
+	if credRef != "" && o.secrets != nil {
+		if c, err := o.secrets.Get(ctx, credRef); err == nil {
+			user, pass = c.Username, c.Password
+		}
+	}
+	bmc, err := o.newBMC(redfish.Config{
+		BaseURL:        bmcURL,
+		Username:       user,
+		Password:       pass,
+		AuthMode:       o.authMode,
+		TLSMode:        o.tlsMode,
+		CAFile:         o.caFile,
+		RequestTimeout: 20 * time.Second,
+		MaxConcurrent:  1,
+	})
+	if err != nil {
+		return err
+	}
+	if err := bmc.Open(ctx); err != nil {
+		return err
+	}
+	defer func() { _ = bmc.Close(context.Background()) }()
+	return bmc.Power(ctx, systemID, "ForceOff")
 }
 
 // pickCDMediaPair returns primary (boot) and secondary CD-capable media URIs.
@@ -1029,10 +1171,15 @@ func (o *Orchestrator) handleTerminalOnce(ctx context.Context, jobID string, rea
 	var errMsg string
 	switch reason {
 	case ReasonDoneOK:
-		// SOL DONE means the install path succeeded. Cleanup remains mandatory
-		// best-effort, but must not reverse success: process crash, sushy tray
-		// removal, or post-restart secret loss must not mark a finished install failed.
-		to = models.StateProvisioned
+		// SOL DONE means the install (or, for Kind=deprovision, the wipe) path
+		// succeeded. Cleanup remains mandatory best-effort, but must not
+		// reverse success: process crash, sushy tray removal, or post-restart
+		// secret loss must not mark a finished job failed.
+		if job.Kind == models.JobKindDeprovision {
+			to = models.StateReady
+		} else {
+			to = models.StateProvisioned
+		}
 		errMsg = ""
 		if cleanupErr != nil {
 			if cleanupAlreadyClean(cleanupErr) {
@@ -1074,6 +1221,20 @@ func (o *Orchestrator) handleTerminalOnce(ctx context.Context, jobID string, rea
 		errMsg = string(reason)
 	}
 
+	// Ephemeral job-scoped credentials (minted by Start when no persistent
+	// credential_ref was resolved -- see the "job-"+jobID mint in Start) are
+	// never referenced again once this job ends. Delete here, after
+	// cleanupBMC/postCheckClean above have finished using credRef, gated on
+	// an exact match against that minting convention so a persistent
+	// device-scoped ref (e.g. "bmc-C784MH3", sourced from NetBox) can never
+	// be deleted even by a future bug in this check. Runs unconditionally on
+	// every terminal reason, not just success.
+	if credRef == "job-"+jobID && o.secrets != nil {
+		if err := o.secrets.Delete(context.Background(), credRef); err != nil {
+			o.log.Warn("ephemeral credential cleanup failed", "job_id", jobID, "err", err.Error())
+		}
+	}
+
 	// Mark current stage terminal for accurate job status (M1+).
 	if len(job.Stages) > 0 {
 		stageID := job.CurrentStage
@@ -1082,7 +1243,7 @@ func (o *Orchestrator) handleTerminalOnce(ctx context.Context, jobID string, rea
 		}
 		stageState := models.JobStageStateFailed
 		stagePhase := job.Phase
-		if to == models.StateProvisioned {
+		if reason == ReasonDoneOK {
 			stageState = models.JobStageStateDone
 			if stagePhase == "" {
 				stagePhase = "DONE"
@@ -1488,7 +1649,7 @@ func (o *Orchestrator) ReconcileOrphans(ctx context.Context) error {
 // orphanLooksSuccessfullyComplete reports whether a still-PROVISIONING job row
 // already reflects a successful install (DONE marker applied) so restart should
 // not fail the job.
-func orphanLooksSuccessfullyComplete(j models.ProvisioningJob) bool {
+func orphanLooksSuccessfullyComplete(j models.Job) bool {
 	if strings.EqualFold(strings.TrimSpace(j.Phase), "DONE") {
 		return true
 	}
@@ -1662,8 +1823,51 @@ func (p *progressAdapter) stillProvisioning(ctx context.Context, jobID string) b
 	return j.State == models.StateProvisioning
 }
 
+// applyStartBindings fills credential_ref from NetBox and infers redfish_sol
+// for HTTPS BMC endpoints before validation. Explicit request fields win.
+func (o *Orchestrator) applyStartBindings(ctx context.Context, req *models.StartJobRequest) {
+	if strings.TrimSpace(req.CredentialRef) == "" &&
+		strings.TrimSpace(req.BMCUsername) == "" &&
+		strings.TrimSpace(req.BMCPassword) == "" {
+		if id, ok := o.lookupDevice(ctx, req.DeviceID); ok {
+			if r := strings.TrimSpace(id.CredentialRef); r != "" {
+				if _, err := o.secrets.Get(ctx, r); err == nil {
+					req.CredentialRef = r
+				}
+			}
+		}
+	}
+	if strings.TrimSpace(req.SerialTransport) == "" && looksLikeHTTPSBMC(req.BMCEndpoint) {
+		req.SerialTransport = "redfish_sol"
+	}
+}
+
+func (o *Orchestrator) lookupDevice(ctx context.Context, key string) (models.DeviceIdentity, bool) {
+	type getter interface {
+		GetDevice(context.Context, string) (models.DeviceIdentity, error)
+	}
+	g, ok := o.netbox.(getter)
+	if !ok || strings.TrimSpace(key) == "" {
+		return models.DeviceIdentity{}, false
+	}
+	id, err := g.GetDevice(ctx, key)
+	if err != nil {
+		return models.DeviceIdentity{}, false
+	}
+	return id, true
+}
+
+func looksLikeHTTPSBMC(endpoint string) bool {
+	u, err := url.Parse(strings.TrimSpace(endpoint))
+	if err != nil || u.Host == "" {
+		return false
+	}
+	return strings.EqualFold(u.Scheme, "https")
+}
+
 // applyDefaultCredentials fills empty username/password from orchestrator defaults
-// (composition root wires SHOAL_BMC_*). Does not override credential_ref-only starts.
+// (composition root wires SHOAL_BMC_*). Does not override credential_ref-only starts
+// (including refs copied from NetBox in applyStartBindings).
 func (o *Orchestrator) applyDefaultCredentials(req *models.StartJobRequest) {
 	if strings.TrimSpace(req.CredentialRef) != "" {
 		return

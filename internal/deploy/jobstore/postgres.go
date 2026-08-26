@@ -22,7 +22,7 @@ func NewPostgres(db *sql.DB) *Postgres {
 }
 
 // Insert inserts a job row.
-func (p *Postgres) Insert(ctx context.Context, job models.ProvisioningJob) error {
+func (p *Postgres) Insert(ctx context.Context, job models.Job) error {
 	if job.ID == "" {
 		return fmt.Errorf("jobstore: empty job id")
 	}
@@ -38,14 +38,15 @@ func (p *Postgres) Insert(ctx context.Context, job models.ProvisioningJob) error
 INSERT INTO jobs (
   id, device_id, profile_ref, state, attempt, phase, percent, last_marker_seq,
   started_at, updated_at, error, sol_session_id, iso_url, bmc_endpoint,
-  system_id, credential_ref, current_stage, install_strategy, stages_json
-) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)`,
+  system_id, credential_ref, current_stage, install_strategy, stages_json, kind
+) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)`,
 		job.ID, job.DeviceID, job.ProfileRef, string(job.State), job.Attempt,
 		nullString(job.Phase), nullInt(job.Percent), job.LastMarkerSeq,
 		job.StartedAt, job.UpdatedAt, nullString(job.Error), nullString(job.SOLSessionID),
 		nullString(job.ISOURL), nullString(job.BMCEndpoint),
 		nullString(job.SystemID), nullString(job.CredentialRef),
 		nullString(job.CurrentStage), nullString(job.InstallStrategy), nullString(stagesJSON),
+		nullString(job.Kind),
 	)
 	if err != nil {
 		return fmt.Errorf("jobstore: insert: %w", err)
@@ -54,34 +55,34 @@ INSERT INTO jobs (
 }
 
 // Get loads a job by id.
-func (p *Postgres) Get(ctx context.Context, id string) (models.ProvisioningJob, error) {
+func (p *Postgres) Get(ctx context.Context, id string) (models.Job, error) {
 	row := p.db.QueryRowContext(ctx, `
 SELECT id, device_id, profile_ref, state, attempt, phase, percent, last_marker_seq,
        started_at, updated_at, error, sol_session_id, iso_url, bmc_endpoint,
-       system_id, credential_ref, current_stage, install_strategy, stages_json
+       system_id, credential_ref, current_stage, install_strategy, stages_json, kind
 FROM jobs WHERE id = $1`, id)
 	j, err := scanJob(row)
 	if errors.Is(err, sql.ErrNoRows) {
-		return models.ProvisioningJob{}, ErrNotFound
+		return models.Job{}, ErrNotFound
 	}
 	if err != nil {
-		return models.ProvisioningJob{}, fmt.Errorf("jobstore: get: %w", err)
+		return models.Job{}, fmt.Errorf("jobstore: get: %w", err)
 	}
 	return j, nil
 }
 
 // ListByState returns jobs in the given lifecycle state.
-func (p *Postgres) ListByState(ctx context.Context, state models.LifecycleState) ([]models.ProvisioningJob, error) {
+func (p *Postgres) ListByState(ctx context.Context, state models.LifecycleState) ([]models.Job, error) {
 	rows, err := p.db.QueryContext(ctx, `
 SELECT id, device_id, profile_ref, state, attempt, phase, percent, last_marker_seq,
        started_at, updated_at, error, sol_session_id, iso_url, bmc_endpoint,
-       system_id, credential_ref, current_stage, install_strategy, stages_json
+       system_id, credential_ref, current_stage, install_strategy, stages_json, kind
 FROM jobs WHERE state = $1`, string(state))
 	if err != nil {
 		return nil, fmt.Errorf("jobstore: list: %w", err)
 	}
 	defer rows.Close()
-	var out []models.ProvisioningJob
+	var out []models.Job
 	for rows.Next() {
 		j, err := scanJob(rows)
 		if err != nil {
@@ -94,14 +95,14 @@ FROM jobs WHERE state = $1`, string(state))
 
 // ListByDevice returns jobs for deviceID, newest-updated first, optionally
 // filtered by state, capped at limit.
-func (p *Postgres) ListByDevice(ctx context.Context, deviceID string, state models.LifecycleState, limit int) ([]models.ProvisioningJob, error) {
+func (p *Postgres) ListByDevice(ctx context.Context, deviceID string, state models.LifecycleState, limit int) ([]models.Job, error) {
 	if limit <= 0 {
 		limit = 50
 	}
 	query := `
 SELECT id, device_id, profile_ref, state, attempt, phase, percent, last_marker_seq,
        started_at, updated_at, error, sol_session_id, iso_url, bmc_endpoint,
-       system_id, credential_ref, current_stage, install_strategy, stages_json
+       system_id, credential_ref, current_stage, install_strategy, stages_json, kind
 FROM jobs WHERE device_id = $1`
 	args := []any{deviceID}
 	if state != "" {
@@ -116,7 +117,7 @@ FROM jobs WHERE device_id = $1`
 		return nil, fmt.Errorf("jobstore: list by device: %w", err)
 	}
 	defer rows.Close()
-	var out []models.ProvisioningJob
+	var out []models.Job
 	for rows.Next() {
 		j, err := scanJob(rows)
 		if err != nil {
@@ -215,21 +216,21 @@ type scannable interface {
 	Scan(dest ...any) error
 }
 
-func scanJob(row scannable) (models.ProvisioningJob, error) {
-	var j models.ProvisioningJob
+func scanJob(row scannable) (models.Job, error) {
+	var j models.Job
 	var state string
 	var phase, errMsg, solSess, iso, bmc, sysID, credRef sql.NullString
-	var curStage, instStrat, stagesJSON sql.NullString
+	var curStage, instStrat, stagesJSON, kind sql.NullString
 	var percent sql.NullInt64
 	var started, updated sql.NullTime
 	err := row.Scan(
 		&j.ID, &j.DeviceID, &j.ProfileRef, &state, &j.Attempt,
 		&phase, &percent, &j.LastMarkerSeq,
 		&started, &updated, &errMsg, &solSess, &iso, &bmc,
-		&sysID, &credRef, &curStage, &instStrat, &stagesJSON,
+		&sysID, &credRef, &curStage, &instStrat, &stagesJSON, &kind,
 	)
 	if err != nil {
-		return models.ProvisioningJob{}, err
+		return models.Job{}, err
 	}
 	j.State = models.LifecycleState(state)
 	if phase.Valid {
@@ -271,9 +272,12 @@ func scanJob(row scannable) (models.ProvisioningJob, error) {
 	if instStrat.Valid {
 		j.InstallStrategy = instStrat.String
 	}
+	if kind.Valid {
+		j.Kind = kind.String
+	}
 	if stagesJSON.Valid && stagesJSON.String != "" {
 		if err := json.Unmarshal([]byte(stagesJSON.String), &j.Stages); err != nil {
-			return models.ProvisioningJob{}, fmt.Errorf("jobstore: stages_json: %w", err)
+			return models.Job{}, fmt.Errorf("jobstore: stages_json: %w", err)
 		}
 	}
 	return j, nil
