@@ -5,7 +5,6 @@ import (
 	"net/http"
 
 	"github.com/mattcburns/shoal/internal/common/models"
-	"github.com/mattcburns/shoal/internal/common/validate"
 	"github.com/mattcburns/shoal/internal/discover"
 )
 
@@ -27,7 +26,7 @@ func (s *Server) handleDiscoverIngest(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json: " + err.Error()})
 		return
 	}
-	if err := validate.RawAssetInput(in); err != nil {
+	if err := discover.RawAssetInput(in); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}

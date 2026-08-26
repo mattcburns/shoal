@@ -10,7 +10,6 @@ import (
 
 	"github.com/mattcburns/shoal/internal/common/config"
 	"github.com/mattcburns/shoal/internal/common/models"
-	"github.com/mattcburns/shoal/internal/common/validate"
 	"github.com/mattcburns/shoal/internal/core/ai"
 	"github.com/mattcburns/shoal/internal/core/profile"
 )
@@ -143,7 +142,7 @@ func cmdProfileSave(args []string) int {
 		fmt.Fprintf(os.Stderr, "json: %v\n", err)
 		return 1
 	}
-	if err := validate.ProvisioningProfile(p); err != nil {
+	if err := profile.ProvisioningProfile(p); err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		return 1
 	}
