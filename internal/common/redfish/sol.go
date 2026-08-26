@@ -15,8 +15,6 @@ import (
 
 	gofishredfish "github.com/stmcginnis/gofish/redfish"
 
-	"github.com/coder/websocket"
-
 	"github.com/mattcburns/shoal/internal/common/redfish/internal/ipmi"
 )
 
@@ -210,17 +208,10 @@ func (c *client) tryWebSocketSOL(ctx context.Context, vendor VendorID, managers 
 		start := time.Now()
 		add(CaptureDebugStep{Phase: "request", Vendor: string(vendor), Method: http.MethodGet, URL: candURL, Message: "websocket SOL dial (unverified candidate)"})
 		dialCtx, cancelDial := context.WithTimeout(ctx, 3*time.Second)
-		conn, resp, dialErr := websocket.Dial(dialCtx, candURL, &websocket.DialOptions{
-			HTTPClient: httpClient,
-			HTTPHeader: header,
-		})
+		conn, status, dialErr := wsDial(dialCtx, candURL, httpClient, header)
 		cancelDial()
 		elapsed := time.Since(start).Milliseconds()
 		if dialErr != nil {
-			status := 0
-			if resp != nil {
-				status = resp.StatusCode
-			}
 			add(CaptureDebugStep{
 				Phase: "request", Vendor: string(vendor), Method: http.MethodGet, URL: candURL,
 				StatusCode: status, OK: false, Message: sanitizePreview(dialErr.Error()), ElapsedMS: elapsed,
@@ -228,13 +219,17 @@ func (c *client) tryWebSocketSOL(ctx context.Context, vendor VendorID, managers 
 			lastErr = dialErr
 			continue
 		}
-		sniffCtx, cancelSniff := context.WithTimeout(ctx, 500*time.Millisecond)
-		msgType, frame, sniffErr := conn.Read(sniffCtx)
-		cancelSniff()
-		if sniffErr != nil || msgType != websocket.MessageText || !looksLikeSOLText(frame) {
+		_ = conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+		opcode, frame, sniffErr := conn.ReadMessage()
+		_ = conn.SetReadDeadline(time.Time{})
+		if sniffErr != nil || opcode != wsOpText || !looksLikeSOLText(frame) {
 			why := "sniff timeout/silence"
-			if sniffErr == nil && msgType != websocket.MessageText {
-				why = "binary websocket frame"
+			if sniffErr == nil && opcode != wsOpText {
+				if opcode == wsOpClose {
+					why = "websocket closed by server"
+				} else {
+					why = "binary websocket frame"
+				}
 			} else if sniffErr == nil {
 				why = "html or non-SOL text"
 			}
@@ -243,14 +238,14 @@ func (c *client) tryWebSocketSOL(ctx context.Context, vendor VendorID, managers 
 				Message:   "websocket not line-oriented SOL (" + why + "); falling through",
 				ElapsedMS: time.Since(start).Milliseconds(),
 			})
-			_ = conn.Close(websocket.StatusNormalClosure, "")
+			_ = conn.Close()
 			lastErr = fmt.Errorf("websocket sol sniff: %s", why)
 			continue
 		}
 		add(CaptureDebugStep{Phase: "request", Vendor: string(vendor), Method: http.MethodGet, URL: candURL, OK: true, Message: "websocket connected (SOL text)", ElapsedMS: elapsed})
-		rest := websocket.NetConn(context.Background(), conn, websocket.MessageText)
+		rest := conn.Reader()
 		return SOLStream{
-			ReadCloser: &wsSOLCloser{r: io.MultiReader(bytes.NewReader(frame), rest), c: rest},
+			ReadCloser: &wsSOLCloser{r: io.MultiReader(bytes.NewReader(frame), rest), c: conn},
 			Vendor:     vendor,
 			Kind:       SOLConnectWebSocket,
 		}, nil

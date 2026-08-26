@@ -1,9 +1,11 @@
 package redfish
 
 import (
+	"bufio"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -17,8 +19,6 @@ import (
 	"time"
 
 	"golang.org/x/crypto/ssh"
-
-	"github.com/coder/websocket"
 
 	"github.com/mattcburns/shoal/internal/common/redfish/internal/ipmi"
 )
@@ -35,6 +35,55 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
+// wsTestAccept is a minimal hand-rolled stand-in for the server side of the
+// RFC 6455 handshake, mirroring what websocket.Accept used to do: validate
+// the client's Upgrade request, compute Sec-WebSocket-Accept, and hijack the
+// connection to hand back a frame reader/writer. Servers must not mask
+// outgoing frames (RFC 6455 §5.1), so the returned framer has mask=false.
+func wsTestAccept(w http.ResponseWriter, r *http.Request) (*wsFramer, net.Conn, error) {
+	if !strings.EqualFold(r.Header.Get("Upgrade"), "websocket") ||
+		!headerContainsToken(r.Header.Get("Connection"), "upgrade") {
+		http.Error(w, "expected websocket upgrade", http.StatusBadRequest)
+		return nil, nil, fmt.Errorf("wsTestAccept: not a websocket upgrade request")
+	}
+	key := r.Header.Get("Sec-WebSocket-Key")
+	if key == "" {
+		http.Error(w, "missing Sec-WebSocket-Key", http.StatusBadRequest)
+		return nil, nil, fmt.Errorf("wsTestAccept: missing Sec-WebSocket-Key")
+	}
+
+	hj, ok := w.(http.Hijacker)
+	if !ok {
+		http.Error(w, "hijack unsupported", http.StatusInternalServerError)
+		return nil, nil, fmt.Errorf("wsTestAccept: ResponseWriter does not support hijacking")
+	}
+	conn, rw, err := hj.Hijack()
+	if err != nil {
+		return nil, nil, fmt.Errorf("wsTestAccept: hijack: %w", err)
+	}
+
+	resp := "HTTP/1.1 101 Switching Protocols\r\n" +
+		"Upgrade: websocket\r\n" +
+		"Connection: Upgrade\r\n" +
+		"Sec-WebSocket-Accept: " + wsAcceptKey(key) + "\r\n\r\n"
+	if _, err := rw.WriteString(resp); err != nil {
+		_ = conn.Close()
+		return nil, nil, fmt.Errorf("wsTestAccept: write handshake response: %w", err)
+	}
+	if err := rw.Flush(); err != nil {
+		_ = conn.Close()
+		return nil, nil, fmt.Errorf("wsTestAccept: flush handshake response: %w", err)
+	}
+
+	var br *bufio.Reader
+	if rw.Reader != nil {
+		br = rw.Reader
+	} else {
+		br = bufio.NewReader(conn)
+	}
+	return &wsFramer{w: conn, br: br, mask: false}, conn, nil
+}
+
 // --- fake Redfish HTTP server (drives real gofish parsing, not a mock of *client) ---
 
 type fakeSOLServerOpts struct {
@@ -43,8 +92,8 @@ type fakeSOLServerOpts struct {
 	networkProtocolJSON string // body for /redfish/v1/Managers/1/NetworkProtocol
 	oemAttributesJSON   string // body for Dell OEM Attributes
 	wsPaths             []string
-	wsPayload           []byte                // default: SHOAL|…ws-hello
-	wsMessageType       websocket.MessageType // 0 → text
+	wsPayload           []byte // default: SHOAL|…ws-hello
+	wsMessageType       byte   // 0 → wsOpText
 }
 
 func newFakeSOLServer(t *testing.T, opts fakeSOLServerOpts) *httptest.Server {
@@ -111,7 +160,7 @@ func newFakeSOLServer(t *testing.T, opts fakeSOLServerOpts) *httptest.Server {
 	mux.HandleFunc("/redfish/v1/Managers/1/Attributes", oemHandler)
 	wsType := opts.wsMessageType
 	if wsType == 0 {
-		wsType = websocket.MessageText
+		wsType = wsOpText
 	}
 	wsPayload := opts.wsPayload
 	if wsPayload == nil {
@@ -120,16 +169,21 @@ func newFakeSOLServer(t *testing.T, opts fakeSOLServerOpts) *httptest.Server {
 	for _, p := range opts.wsPaths {
 		path := p
 		mux.HandleFunc(path, func(w http.ResponseWriter, r *http.Request) {
-			conn, err := websocket.Accept(w, r, nil)
+			fr, conn, err := wsTestAccept(w, r)
 			if err != nil {
 				return
 			}
-			defer conn.Close(websocket.StatusNormalClosure, "")
-			_ = conn.Write(r.Context(), wsType, wsPayload)
+			defer func() {
+				payload := make([]byte, 2)
+				binary.BigEndian.PutUint16(payload, wsStatusNormalClosure)
+				_ = fr.writeFrame(wsOpClose, payload)
+				_ = conn.Close()
+			}()
+			_ = fr.writeFrame(wsType, wsPayload)
 			// Keep reading so the client's close-handshake frame is answered
 			// promptly instead of forcing the client to wait out its close timeout.
 			for {
-				if _, _, err := conn.Read(r.Context()); err != nil {
+				if _, _, err := fr.ReadMessage(); err != nil {
 					return
 				}
 			}
@@ -789,7 +843,7 @@ func TestOpenSOL_WSBinary_FallsThroughToSSH(t *testing.T) {
 		managerJSON:         managerJSONWithNetworkProtocol(),
 		networkProtocolJSON: networkProtocolJSON(true, sshPort),
 		wsPaths:             []string{"/console"},
-		wsMessageType:       websocket.MessageBinary,
+		wsMessageType:       wsOpBinary,
 		wsPayload:           []byte{0x00, 0x01, 0xff, 0x80, 0x00},
 	})
 	c := openFakeClient(t, srv.URL)
