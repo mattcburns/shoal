@@ -1,5 +1,6 @@
-// Package redfish wraps gofish behind Shoal BMC interfaces.
-// gofish types must not leak outside this package.
+// Package redfish implements a minimal, hand-written Redfish HTTP client
+// behind Shoal BMC interfaces. Internal Redfish JSON-decoding types must not
+// leak outside this package.
 package redfish
 
 import "time"

@@ -48,19 +48,20 @@ These encode the core design decisions. Violating one is a bug, even if tests pa
 5. **SOL is the primary provisioning feedback channel.** Progress comes from the
    `SHOAL|...` serial marker protocol. OCR is only for graphics-only failure
    screens (Phase 6; approach not yet decided), never the progress loop.
-6. **BMC control is Redfish-only via `internal/common/redfish` (gofish-backed).**
-   gofish is the chosen Redfish stack from day one. **gofish types must not leak**
-   outside `internal/common/redfish`. Reuse sessions (or basic auth in lab), cap
-   per-BMC concurrency (~1–2), and back off on throttling (respect `Retry-After`).
+6. **BMC control is Redfish-only via `internal/common/redfish` (a hand-written
+   Redfish HTTP client — no third-party Redfish SDK).** Its internal Redfish
+   JSON-decoding types **must not leak** outside `internal/common/redfish`.
+   Reuse sessions (or basic auth in lab), cap per-BMC concurrency (~1–2), and
+   back off on throttling (respect `Retry-After`).
    Power, Virtual Media, boot override, SEL, sensors, inventory, and screenshots
    **never** use IPMI (no `ipmitool chassis`, no IPMI media, no IPMI inventory).
 
    **SOL is the scoped exception.** `BMC.OpenSOL` may leave HTTP, in this order:
    (1) line-oriented Redfish/OEM WebSocket if it is actually SOL (not HTML5 KVM);
    (2) SSH to the BMC + vendor attach command when SSH is enabled — including when
-   standard `ComputerSystem.SerialConsole` (gofish `HostSerialConsole`) is empty
-   but `NetworkProtocol` / Dell OEM serial-redirection attributes show serial is
-   on; (3) IPMI 2.0 SOL (LAN plus, stdlib client in
+   standard `ComputerSystem.SerialConsole` (the package's own `rfHostSerialConsole`)
+   is empty but `NetworkProtocol` / Dell OEM serial-redirection attributes show
+   serial is on; (3) IPMI 2.0 SOL (LAN plus, stdlib client in
    `internal/common/redfish/internal/ipmi`) as **last resort** when no SSH serial
    path exists. IPMI is a SOL payload, not a second BMC API. Call sites still
    only see `OpenSOL`. IPMI types must not leak into Deploy/Observe.
@@ -92,10 +93,11 @@ These encode the core design decisions. Violating one is a bug, even if tests pa
     library. External modules must be on the architecture doc §7.1 allow-list; adding
     one requires updating §7.1, **`NOTICE`**, and **`docs/third-party-licenses.md`**
     in the same change (see §9.1 for AGPL-compatible licenses and attribution).
-    Current allow-list: `gofish`, `pgx` (default Postgres), optional
+    Current allow-list: `pgx` (default Postgres), optional
     `modernc.org/sqlite` (demo), `staticcheck` (toolchain). Rejected for MVP:
-    Cobra, Gin/Echo/Chi, LiteLLM / provider SDKs, ORMs, greenfield thin Redfish
-    client.
+    Cobra, Gin/Echo/Chi, LiteLLM / provider SDKs, ORMs. Redfish/BMC control uses
+    a hand-written HTTP client (`internal/common/redfish`), not a third-party
+    Redfish SDK — see §7.
 
 ---
 
@@ -127,7 +129,7 @@ shoal/                                    # module: github.com/mattcburns/shoal
       validate/
       redact/
       secrets/
-      redfish/                            # gofish behind Shoal BMC interfaces
+      redfish/                            # hand-written Redfish HTTP client behind Shoal BMC interfaces
       netbox/
       telemetry/
       config/
@@ -438,9 +440,10 @@ in favor of
 
 ## 7. Redfish / BMC Conventions
 
-- All Redfish interaction goes through **`internal/common/redfish`**, which wraps
-  **`github.com/stmcginnis/gofish`**. Call sites depend only on Shoal interfaces
-  (`BMC`, config, domain types) — never import gofish outside that package.
+- All Redfish interaction goes through **`internal/common/redfish`**, a
+  hand-written Redfish HTTP client (no third-party Redfish SDK). Call sites
+  depend only on Shoal interfaces (`BMC`, config, domain types) — never import
+  the package's internal Redfish JSON-decoding types from outside it.
 - Isolate per-vendor quirks in the wrapper/adapters, not in Deploy/Observe call
   sites.
 - **Auth:** lab default **basic** (`SHOAL_REDFISH_AUTH_MODE=basic`, matches
@@ -468,7 +471,7 @@ in favor of
   `docs/real-hardware-sol-runbook.md` and `docs/sol-transports-design.md`.
 - Capture real Redfish responses into the **record/replay corpus**
   (`testdata/redfish/`) when you hit a new vendor/firmware shape, and add a
-  fixture-based test. Pin gofish version in `go.mod`.
+  fixture-based test.
 
 ---
 
@@ -598,7 +601,8 @@ A change is done when:
 - The architecture doc (`docs/design/architecture.md`) is updated if you
   changed architecture, models, prompts, allow-listed deps, or scope.
 - Component boundaries, import rules, and the Golden Rules (§1) are intact —
-  especially: no observe↔deploy imports, no gofish leakage, Core AI-only,
+  especially: no observe↔deploy imports, no `internal/common/redfish` internal
+  type leakage, Core AI-only,
   JobStore pure persistence.
 - If `go.mod` / the `./cmd/shoal` module graph changed: `NOTICE` and
   `docs/third-party-licenses.md` match the runtime deps and licenses remain

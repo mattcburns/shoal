@@ -11,7 +11,6 @@ import (
 	"strings"
 	"time"
 
-	gofishredfish "github.com/stmcginnis/gofish/redfish"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -22,7 +21,7 @@ type sshHint struct {
 	reason   string
 }
 
-func (c *client) sshEligible(sys *gofishredfish.ComputerSystem, managers []*gofishredfish.Manager, vendor VendorID, add func(CaptureDebugStep)) sshHint {
+func (c *client) sshEligible(sys *rfComputerSystem, managers []*rfManager, vendor VendorID, add func(CaptureDebugStep)) sshHint {
 	h := sshHint{port: 22, entryCmd: strings.TrimSpace(sys.SerialConsole.SSH.ConsoleEntryCommand)}
 	if p := sys.SerialConsole.SSH.Port; p > 0 {
 		h.port = p
@@ -38,7 +37,7 @@ func (c *client) sshEligible(sys *gofishredfish.ComputerSystem, managers []*gofi
 		}
 		if m.SerialConsole.ServiceEnabled {
 			for _, ct := range m.SerialConsole.ConnectTypesSupported {
-				if strings.EqualFold(string(ct), string(gofishredfish.SSHSerialConnectTypesSupported)) {
+				if strings.EqualFold(ct, rfSerialConnectTypeSSH) {
 					h.eligible = true
 					if h.reason == "" {
 						h.reason = "manager SerialConsole ConnectTypesSupported=SSH"
@@ -76,12 +75,12 @@ func (c *client) sshEligible(sys *gofishredfish.ComputerSystem, managers []*gofi
 	return h
 }
 
-func (c *client) dellNetworkProtocolSSH(managers []*gofishredfish.Manager, add func(CaptureDebugStep)) (port int, ok bool) {
+func (c *client) dellNetworkProtocolSSH(managers []*rfManager, add func(CaptureDebugStep)) (port int, ok bool) {
 	for _, m := range managers {
 		if m == nil {
 			continue
 		}
-		np, err := m.NetworkProtocol()
+		np, err := c.managerNetworkProtocol(m)
 		if err != nil || np == nil {
 			add(CaptureDebugStep{Phase: "probe", Vendor: string(VendorDell), OK: false, Message: "NetworkProtocol: not enabled (" + errString(err) + ")"})
 			continue
@@ -95,7 +94,7 @@ func (c *client) dellNetworkProtocolSSH(managers []*gofishredfish.Manager, add f
 	return 0, false
 }
 
-func (c *client) dellSerialOEMEnabled(managers []*gofishredfish.Manager, add func(CaptureDebugStep)) bool {
+func (c *client) dellSerialOEMEnabled(managers []*rfManager, add func(CaptureDebugStep)) bool {
 	api, err := c.apiClient()
 	if err != nil {
 		return false

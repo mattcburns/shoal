@@ -13,8 +13,6 @@ import (
 	"time"
 	"unicode/utf8"
 
-	gofishredfish "github.com/stmcginnis/gofish/redfish"
-
 	"github.com/mattcburns/shoal/internal/common/redfish/internal/ipmi"
 )
 
@@ -46,11 +44,6 @@ func (c *client) OpenSOL(ctx context.Context, systemID string) (SOLStream, error
 		dbg = append(dbg, step)
 	}
 
-	api, err := c.apiClient()
-	if err != nil {
-		return SOLStream{}, err
-	}
-
 	sys, err := c.computerSystem(systemID)
 	if err != nil {
 		add(CaptureDebugStep{Phase: "detect", OK: false, Message: "get system: " + err.Error()})
@@ -62,7 +55,7 @@ func (c *client) OpenSOL(ctx context.Context, systemID string) (SOLStream, error
 	})
 
 	var mgrHints []string
-	managers, mErr := api.Service.Managers()
+	managers, mErr := c.managers()
 	if mErr != nil {
 		add(CaptureDebugStep{Phase: "detect", OK: false, Message: "list managers: " + mErr.Error()})
 	} else {
@@ -119,7 +112,7 @@ func (c *client) OpenSOL(ctx context.Context, systemID string) (SOLStream, error
 	return SOLStream{}, &SOLUnsupportedError{Vendor: vendor, ConnectTypes: observed, Debug: dbg}
 }
 
-func (c *client) tryIPMISOL(ctx context.Context, sys *gofishredfish.ComputerSystem, vendor VendorID, add func(CaptureDebugStep)) (SOLStream, error) {
+func (c *client) tryIPMISOL(ctx context.Context, sys *rfComputerSystem, vendor VendorID, add func(CaptureDebugStep)) (SOLStream, error) {
 	host, err := sshHost(c.cfg.BaseURL)
 	if err != nil {
 		return SOLStream{}, err
@@ -152,7 +145,7 @@ func (c *client) tryIPMISOL(ctx context.Context, sys *gofishredfish.ComputerSyst
 
 // observedConnectTypes summarizes enabled serial-console protocols from
 // Redfish's own metadata, for reporting in SOLUnsupportedError.
-func observedConnectTypes(host gofishredfish.HostSerialConsole, managers []*gofishredfish.Manager) []string {
+func observedConnectTypes(host rfHostSerialConsole, managers []*rfManager) []string {
 	var out []string
 	if host.SSH.ServiceEnabled {
 		out = append(out, "SSH")
@@ -180,7 +173,7 @@ func observedConnectTypes(host gofishredfish.HostSerialConsole, managers []*gofi
 // probe-and-record pattern as captureDell/captureSupermicro in screenshot.go.
 // docs/real-hardware-sol-runbook.md tracks closing this gap on real hardware.
 
-func (c *client) tryWebSocketSOL(ctx context.Context, vendor VendorID, managers []*gofishredfish.Manager, add func(CaptureDebugStep)) (SOLStream, error) {
+func (c *client) tryWebSocketSOL(ctx context.Context, vendor VendorID, managers []*rfManager, add func(CaptureDebugStep)) (SOLStream, error) {
 	if !strings.EqualFold(c.cfg.AuthMode, "basic") && c.cfg.AuthMode != "" {
 		add(CaptureDebugStep{
 			Phase: "probe", Vendor: string(vendor), OK: false,
@@ -258,7 +251,7 @@ func (c *client) tryWebSocketSOL(ctx context.Context, vendor VendorID, managers 
 
 // solWSCandidates returns unverified, best-effort candidate WebSocket SOL URLs
 // for a vendor. base is the BMC's Config.BaseURL (http(s)://host[:port]).
-func solWSCandidates(vendor VendorID, base string, managers []*gofishredfish.Manager) []string {
+func solWSCandidates(vendor VendorID, base string, managers []*rfManager) []string {
 	u, err := url.Parse(base)
 	if err != nil {
 		return nil

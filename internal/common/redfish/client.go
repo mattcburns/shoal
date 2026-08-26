@@ -4,26 +4,39 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/stmcginnis/gofish"
-	gofishredfish "github.com/stmcginnis/gofish/redfish"
 )
 
-// client is the gofish-backed BMC implementation.
+// Redfish Boot property enum values this package reads/writes (DMTF
+// BootSourceOverrideEnabled / BootSourceOverrideTarget). Named to give
+// typo-prone bare comparisons/assignments a single, compiler-checked source
+// of truth (gofish's equivalent was a distinct Go type per enum).
+const (
+	bootOverrideOnce       = "Once"
+	bootOverrideContinuous = "Continuous"
+	bootOverrideDisabled   = "Disabled"
+
+	bootTargetCd    = "Cd"
+	bootTargetUsbCd = "UsbCd"
+	bootTargetHdd   = "Hdd"
+)
+
+// client is the hand-written-HTTP-backed BMC implementation.
 type client struct {
 	cfg    Config
 	mu     sync.Mutex
-	api    *gofish.APIClient
+	api    *rfAPI
+	root   rfServiceRoot
 	opened bool
 }
 
-// NewBMC constructs the gofish-backed implementation. Call Open before use.
+// NewBMC constructs the hand-written-HTTP-backed implementation. Call Open before use.
 func NewBMC(cfg Config) (BMC, error) {
 	if cfg.BaseURL == "" {
 		return nil, fmt.Errorf("redfish: empty BaseURL")
@@ -57,22 +70,29 @@ func (c *client) Open(ctx context.Context) error {
 	}
 	httpClient.Timeout = c.cfg.RequestTimeout
 
-	gcfg := gofish.ClientConfig{
-		Endpoint:              c.cfg.BaseURL,
-		Username:              c.cfg.Username,
-		Password:              c.cfg.Password,
-		HTTPClient:            httpClient,
-		BasicAuth:             strings.EqualFold(c.cfg.AuthMode, "basic"),
-		Insecure:              strings.EqualFold(c.cfg.TLSMode, "insecure"),
-		MaxConcurrentRequests: int64(c.cfg.MaxConcurrent),
-		ReuseConnections:      true,
+	basicAuth := strings.EqualFold(c.cfg.AuthMode, "basic")
+	api, err := newRFAPI(ctx, httpClient, c.cfg.BaseURL, c.cfg.Username, c.cfg.Password, basicAuth, c.cfg.MaxConcurrent)
+	if err != nil {
+		return err
 	}
 
-	api, err := gofish.ConnectContext(ctx, gcfg)
-	if err != nil {
+	var root rfServiceRoot
+	if err := api.getJSON("/redfish/v1/", &root); err != nil {
 		return fmt.Errorf("redfish: connect: %w", err)
 	}
+
+	// Session auth: gofish established a Redfish session (POST username/
+	// password to Links.Sessions, reuse the returned X-Auth-Token) whenever
+	// AuthMode wasn't "basic" and a Username was configured; Basic-Auth-only
+	// otherwise leaves the connection unauthenticated, same as gofish.
+	if !basicAuth && c.cfg.Username != "" {
+		if err := api.createSession(root.Links.Sessions.ODataID, c.cfg.Username, c.cfg.Password); err != nil {
+			return fmt.Errorf("redfish: connect: %w", err)
+		}
+	}
+
 	c.api = api
+	c.root = root
 	c.opened = true
 	return nil
 }
@@ -100,19 +120,20 @@ func (c *client) httpClient() (*http.Client, error) {
 	return &http.Client{Transport: transport}, nil
 }
 
-// Close logs out and releases the client.
+// Close logs out of an active session (best-effort; a no-op for Basic-Auth,
+// which has no server-side session to tear down) and releases the client.
 func (c *client) Close(_ context.Context) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.api != nil {
-		c.api.Logout()
-		c.api = nil
+		c.api.logout()
 	}
+	c.api = nil
 	c.opened = false
 	return nil
 }
 
-func (c *client) apiClient() (*gofish.APIClient, error) {
+func (c *client) apiClient() (*rfAPI, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if !c.opened || c.api == nil {
@@ -121,20 +142,46 @@ func (c *client) apiClient() (*gofish.APIClient, error) {
 	return c.api, nil
 }
 
-// ServiceRoot returns service root metadata.
-func (c *client) ServiceRoot(_ context.Context) (ServiceRoot, error) {
+// managers lists Redfish Managers from the service root.
+func (c *client) managers() ([]*rfManager, error) {
 	api, err := c.apiClient()
 	if err != nil {
+		return nil, err
+	}
+	return fetchCollection[rfManager](api, c.root.Managers.ODataID)
+}
+
+// chassisList lists Redfish Chassis from the service root.
+func (c *client) chassisList() ([]*rfChassis, error) {
+	api, err := c.apiClient()
+	if err != nil {
+		return nil, err
+	}
+	return fetchCollection[rfChassis](api, c.root.Chassis.ODataID)
+}
+
+// managerNetworkProtocol fetches a manager's NetworkProtocol resource
+// (mirrors gofish's (*Manager).NetworkProtocol(), a live GET of the linked
+// resource -- not a field already present on the Manager document).
+func (c *client) managerNetworkProtocol(m *rfManager) (*rfNetworkProtocolSettings, error) {
+	api, err := c.apiClient()
+	if err != nil {
+		return nil, err
+	}
+	return fetchOne[rfNetworkProtocolSettings](api, m.NetworkProtocol.ODataID)
+}
+
+// ServiceRoot returns service root metadata.
+func (c *client) ServiceRoot(_ context.Context) (ServiceRoot, error) {
+	if _, err := c.apiClient(); err != nil {
 		return ServiceRoot{}, err
 	}
-	sr := api.Service
-	if sr == nil {
-		return ServiceRoot{}, fmt.Errorf("redfish: nil service root")
-	}
 	return ServiceRoot{
-		Name:           sr.Name,
-		RedfishVersion: sr.RedfishVersion,
-		UUID:           sr.UUID,
+		Name:           c.root.Name,
+		RedfishVersion: c.root.RedfishVersion,
+		UUID:           c.root.UUID,
+		SystemsURL:     c.root.Systems.ODataID,
+		ManagersURL:    c.root.Managers.ODataID,
 	}, nil
 }
 
@@ -144,7 +191,7 @@ func (c *client) ListSystems(_ context.Context) ([]SystemInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	systems, err := api.Service.Systems()
+	systems, err := fetchCollection[rfComputerSystem](api, c.root.Systems.ODataID)
 	if err != nil {
 		return nil, fmt.Errorf("redfish: systems: %w", err)
 	}
@@ -178,7 +225,7 @@ func (c *client) GetSystem(ctx context.Context, systemID string) (SystemInfo, er
 	return SystemInfo{}, fmt.Errorf("redfish: system %q not found", systemID)
 }
 
-func mapSystem(s *gofishredfish.ComputerSystem) SystemInfo {
+func mapSystem(s *rfComputerSystem) SystemInfo {
 	return SystemInfo{
 		ID:           s.ID,
 		Name:         s.Name,
@@ -186,17 +233,17 @@ func mapSystem(s *gofishredfish.ComputerSystem) SystemInfo {
 		Serial:       s.SerialNumber,
 		Model:        s.Model,
 		Manufacturer: s.Manufacturer,
-		PowerState:   string(s.PowerState),
+		PowerState:   s.PowerState,
 		ODataID:      s.ODataID,
 	}
 }
 
-func (c *client) computerSystem(systemID string) (*gofishredfish.ComputerSystem, error) {
+func (c *client) computerSystem(systemID string) (*rfComputerSystem, error) {
 	api, err := c.apiClient()
 	if err != nil {
 		return nil, err
 	}
-	systems, err := api.Service.Systems()
+	systems, err := fetchCollection[rfComputerSystem](api, c.root.Systems.ODataID)
 	if err != nil {
 		return nil, fmt.Errorf("redfish: systems: %w", err)
 	}
@@ -223,10 +270,41 @@ func (c *client) GetBoot(_ context.Context, systemID string) (BootInfo, error) {
 	if err != nil {
 		return BootInfo{}, err
 	}
+	f := sys.bootFields()
 	return BootInfo{
-		OverrideEnabled: string(sys.Boot.BootSourceOverrideEnabled),
-		OverrideTarget:  string(sys.Boot.BootSourceOverrideTarget),
+		OverrideEnabled: f.BootSourceOverrideEnabled,
+		OverrideTarget:  f.BootSourceOverrideTarget,
 	}, nil
+}
+
+// setBoot PATCHes the system's Boot object (mirrors gofish's
+// (*ComputerSystem).SetBoot, which PATCHes {"Boot": b} to the system's own
+// @odata.id). Like gofish, the full Boot object last read from the BMC is
+// sent back with only BootSourceOverrideEnabled/Target mutated, rather than
+// just those two properties -- some BMCs implement this PATCH as a full
+// replace, not a JSON merge-patch, and would otherwise silently reset every
+// other Boot property (BootSourceOverrideMode, BootOrder, ...) to firmware
+// defaults.
+func (c *client) setBoot(sys *rfComputerSystem, enabled, target string) error {
+	api, err := c.apiClient()
+	if err != nil {
+		return err
+	}
+	var boot map[string]any
+	if len(sys.Boot) > 0 {
+		_ = json.Unmarshal(sys.Boot, &boot)
+	}
+	if boot == nil {
+		boot = map[string]any{}
+	}
+	boot["BootSourceOverrideEnabled"] = enabled
+	boot["BootSourceOverrideTarget"] = target
+	resp, err := api.Patch(sys.ODataID, map[string]any{"Boot": boot})
+	if err != nil {
+		return err
+	}
+	_ = resp.Body.Close()
+	return nil
 }
 
 // SetBootOverrideOnceCD sets one-time CD/virtual-CD boot (idempotent).
@@ -258,22 +336,17 @@ func (c *client) SetBootOverrideOnceCD(ctx context.Context, systemID string) err
 			return nil
 		}
 	}
-	primary := gofishredfish.CdBootSourceOverrideTarget
+	primary := bootTargetCd
 	if vendor == VendorDell {
-		primary = gofishredfish.BootSourceOverrideTarget("UsbCd")
+		primary = bootTargetUsbCd
 	}
-	if cur.OverrideEnabled == string(gofishredfish.OnceBootSourceOverrideEnabled) &&
-		(cur.OverrideTarget == string(primary) || cur.OverrideTarget == string(gofishredfish.CdBootSourceOverrideTarget) ||
-			cur.OverrideTarget == "UsbCd") {
+	if cur.OverrideEnabled == bootOverrideOnce &&
+		(cur.OverrideTarget == primary || cur.OverrideTarget == bootTargetCd || cur.OverrideTarget == bootTargetUsbCd) {
 		return nil
 	}
-	boot := sys.Boot
-	boot.BootSourceOverrideEnabled = gofishredfish.OnceBootSourceOverrideEnabled
-	boot.BootSourceOverrideTarget = primary
-	if err := sys.SetBoot(boot); err != nil {
-		if primary != gofishredfish.CdBootSourceOverrideTarget {
-			boot.BootSourceOverrideTarget = gofishredfish.CdBootSourceOverrideTarget
-			if err2 := sys.SetBoot(boot); err2 == nil {
+	if err := c.setBoot(sys, bootOverrideOnce, primary); err != nil {
+		if primary != bootTargetCd {
+			if err2 := c.setBoot(sys, bootOverrideOnce, bootTargetCd); err2 == nil {
 				return nil
 			}
 		}
@@ -293,7 +366,7 @@ func (c *client) dellOneTimeVirtualCD() error {
 	if err != nil {
 		return err
 	}
-	managers, err := api.Service.Managers()
+	managers, err := c.managers()
 	if err != nil {
 		return fmt.Errorf("redfish: managers: %w", err)
 	}
@@ -350,20 +423,13 @@ func (c *client) ClearBootOverride(ctx context.Context, systemID string) error {
 	if err != nil {
 		return err
 	}
-	if (cur.OverrideEnabled == string(gofishredfish.DisabledBootSourceOverrideEnabled) ||
-		cur.OverrideEnabled == "" || cur.OverrideEnabled == "Disabled") &&
-		(cur.OverrideTarget == string(gofishredfish.HddBootSourceOverrideTarget) ||
-			cur.OverrideTarget == "Hdd" || cur.OverrideTarget == "") {
+	if (cur.OverrideEnabled == bootOverrideDisabled || cur.OverrideEnabled == "") &&
+		(cur.OverrideTarget == bootTargetHdd || cur.OverrideTarget == "") {
 		return nil
 	}
-	boot := sys.Boot
-	boot.BootSourceOverrideEnabled = gofishredfish.DisabledBootSourceOverrideEnabled
-	boot.BootSourceOverrideTarget = gofishredfish.HddBootSourceOverrideTarget
-	if err := sys.SetBoot(boot); err != nil {
+	if err := c.setBoot(sys, bootOverrideDisabled, bootTargetHdd); err != nil {
 		// Retry with Continuous/Hdd if Disabled is rejected by some firmwares.
-		boot.BootSourceOverrideEnabled = gofishredfish.ContinuousBootSourceOverrideEnabled
-		boot.BootSourceOverrideTarget = gofishredfish.HddBootSourceOverrideTarget
-		if err2 := sys.SetBoot(boot); err2 != nil {
+		if err2 := c.setBoot(sys, bootOverrideContinuous, bootTargetHdd); err2 != nil {
 			return fmt.Errorf("redfish: clear boot override: %w", err)
 		}
 	}
@@ -384,7 +450,7 @@ func (c *client) ListVirtualMedia(_ context.Context, systemID string) ([]Virtual
 	// Prefer system-attached virtual media.
 	sys, err := c.computerSystem(systemID)
 	if err == nil {
-		vms, vmErr := sys.VirtualMedia()
+		vms, vmErr := fetchCollection[rfVirtualMedia](api, sys.VirtualMedia.ODataID)
 		if vmErr == nil {
 			for _, vm := range vms {
 				out = append(out, mapVM(vm))
@@ -398,14 +464,14 @@ func (c *client) ListVirtualMedia(_ context.Context, systemID string) ([]Virtual
 
 	// Fallback: managers. When systemID is known, only the manager with the
 	// same id/uuid (sushy-tools 1:1 mapping) is used.
-	managers, err := api.Service.Managers()
+	managers, err := c.managers()
 	if err == nil {
 		for _, m := range managers {
 			if systemID != "" && m.ID != systemID && m.UUID != systemID {
 				// Still allow empty systemID (list all) for diagnostics.
 				continue
 			}
-			vms, vmErr := m.VirtualMedia()
+			vms, vmErr := fetchCollection[rfVirtualMedia](api, m.VirtualMedia.ODataID)
 			if vmErr != nil {
 				continue
 			}
@@ -427,10 +493,10 @@ func (c *client) ListVirtualMedia(_ context.Context, systemID string) ([]Virtual
 
 	// Last resort: if systemID was empty or no manager matched, scan all managers.
 	if len(out) == 0 && systemID == "" {
-		managers, err = api.Service.Managers()
+		managers, err = c.managers()
 		if err == nil {
 			for _, m := range managers {
-				vms, vmErr := m.VirtualMedia()
+				vms, vmErr := fetchCollection[rfVirtualMedia](api, m.VirtualMedia.ODataID)
 				if vmErr != nil {
 					continue
 				}
@@ -447,7 +513,7 @@ func (c *client) ListVirtualMedia(_ context.Context, systemID string) ([]Virtual
 	return out, nil
 }
 
-func mapVM(vm *gofishredfish.VirtualMedia) VirtualMedia {
+func mapVM(vm *rfVirtualMedia) VirtualMedia {
 	m := VirtualMedia{
 		URI:      vm.ODataID,
 		Name:     vm.Name,
@@ -456,8 +522,8 @@ func mapVM(vm *gofishredfish.VirtualMedia) VirtualMedia {
 		Inserted: vm.Inserted,
 	}
 	for _, t := range vm.MediaTypes {
-		m.MediaTypes = append(m.MediaTypes, string(t))
-		if t == gofishredfish.CDMediaType || t == gofishredfish.DVDMediaType {
+		m.MediaTypes = append(m.MediaTypes, t)
+		if t == "CD" || t == "DVD" {
 			m.SupportsCD = true
 		}
 	}
@@ -468,16 +534,16 @@ func mapVM(vm *gofishredfish.VirtualMedia) VirtualMedia {
 	return m
 }
 
-func (c *client) virtualMediaByURI(mediaURI string) (*gofishredfish.VirtualMedia, error) {
+func (c *client) virtualMediaByURI(mediaURI string) (*rfVirtualMedia, error) {
 	api, err := c.apiClient()
 	if err != nil {
 		return nil, err
 	}
 	// Search systems
-	systems, err := api.Service.Systems()
+	systems, err := fetchCollection[rfComputerSystem](api, c.root.Systems.ODataID)
 	if err == nil {
 		for _, s := range systems {
-			vms, vmErr := s.VirtualMedia()
+			vms, vmErr := fetchCollection[rfVirtualMedia](api, s.VirtualMedia.ODataID)
 			if vmErr != nil {
 				continue
 			}
@@ -488,10 +554,10 @@ func (c *client) virtualMediaByURI(mediaURI string) (*gofishredfish.VirtualMedia
 			}
 		}
 	}
-	managers, err := api.Service.Managers()
+	managers, err := c.managers()
 	if err == nil {
 		for _, m := range managers {
-			vms, vmErr := m.VirtualMedia()
+			vms, vmErr := fetchCollection[rfVirtualMedia](api, m.VirtualMedia.ODataID)
 			if vmErr != nil {
 				continue
 			}
@@ -503,6 +569,49 @@ func (c *client) virtualMediaByURI(mediaURI string) (*gofishredfish.VirtualMedia
 		}
 	}
 	return nil, fmt.Errorf("redfish: virtual media %q not found", mediaURI)
+}
+
+// insertMedia POSTs to the VirtualMedia resource's InsertMedia action
+// (mirrors gofish's (*VirtualMedia).InsertMedia).
+func (c *client) insertMedia(vm *rfVirtualMedia, imageURL string) error {
+	api, err := c.apiClient()
+	if err != nil {
+		return err
+	}
+	target := vm.Actions.InsertMedia.Target
+	if target == "" {
+		return fmt.Errorf("redfish: virtual media %q does not support InsertMedia", vm.ODataID)
+	}
+	payload := map[string]any{
+		"Image":          imageURL,
+		"Inserted":       true,
+		"WriteProtected": true,
+	}
+	resp, err := api.Post(target, payload)
+	if err != nil {
+		return err
+	}
+	_ = resp.Body.Close()
+	return nil
+}
+
+// ejectMedia POSTs to the VirtualMedia resource's EjectMedia action
+// (mirrors gofish's (*VirtualMedia).EjectMedia).
+func (c *client) ejectMedia(vm *rfVirtualMedia) error {
+	api, err := c.apiClient()
+	if err != nil {
+		return err
+	}
+	target := vm.Actions.EjectMedia.Target
+	if target == "" {
+		return fmt.Errorf("redfish: virtual media %q does not support EjectMedia", vm.ODataID)
+	}
+	resp, err := api.Post(target, struct{}{})
+	if err != nil {
+		return err
+	}
+	_ = resp.Body.Close()
+	return nil
 }
 
 // InsertVirtualMedia inserts an image URL, always ejecting first if already
@@ -523,11 +632,11 @@ func (c *client) InsertVirtualMedia(_ context.Context, mediaURI, imageURL string
 		return err
 	}
 	if vm.Inserted {
-		if err := vm.EjectMedia(); err != nil {
+		if err := c.ejectMedia(vm); err != nil {
 			return fmt.Errorf("redfish: eject before insert: %w", err)
 		}
 	}
-	if err := vm.InsertMedia(imageURL, true, true); err != nil {
+	if err := c.insertMedia(vm, imageURL); err != nil {
 		return fmt.Errorf("redfish: insert media: %w", err)
 	}
 	return nil
@@ -542,7 +651,7 @@ func (c *client) EjectVirtualMedia(_ context.Context, mediaURI string) error {
 	if !vm.Inserted {
 		return nil
 	}
-	if err := vm.EjectMedia(); err != nil {
+	if err := c.ejectMedia(vm); err != nil {
 		return fmt.Errorf("redfish: eject media: %w", err)
 	}
 	return nil
@@ -568,9 +677,31 @@ func (c *client) Reset(ctx context.Context, systemID, resetType string) error {
 	if err != nil {
 		return err
 	}
-	if err := sys.Reset(gofishredfish.ResetType(resetType)); err != nil {
+	// Client-side validation against the system's advertised AllowableValues,
+	// mirroring gofish's ComputerSystem.Reset: an empty/unpopulated list means
+	// the BMC didn't advertise one, so assume the reset type is fine (gofish
+	// does the same).
+	if allowed := sys.Actions.Reset.AllowedResetTypes; len(allowed) > 0 {
+		valid := false
+		for _, a := range allowed {
+			if a == resetType {
+				valid = true
+				break
+			}
+		}
+		if !valid {
+			return fmt.Errorf("redfish: reset type %q is not supported by this service", resetType)
+		}
+	}
+	api, err := c.apiClient()
+	if err != nil {
+		return err
+	}
+	resp, err := api.Post(sys.Actions.Reset.Target, map[string]string{"ResetType": resetType})
+	if err != nil {
 		return fmt.Errorf("redfish: power %s: %w", resetType, err)
 	}
+	_ = resp.Body.Close()
 	return nil
 }
 
