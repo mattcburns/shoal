@@ -408,14 +408,6 @@ func installStrategyIsImageWrite(r models.StartJobRequest) bool {
 	}
 }
 
-// CancelJobRequest requires job_id.
-func CancelJobRequest(r models.CancelJobRequest) error {
-	if strings.TrimSpace(r.JobID) == "" {
-		return fmt.Errorf("validate: job_id is required")
-	}
-	return nil
-}
-
 // DevicePowerResetTypes is the operator allow-list for POST /v1/devices/{id}/power.
 var DevicePowerResetTypes = map[string]struct{}{
 	"On":               {},
