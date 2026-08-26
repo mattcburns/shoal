@@ -1,5 +1,3 @@
-// Package telemetry will hold events/sensor SQL stores.
-// Phase 1 only exposes an optional Postgres ping for /readyz.
 package telemetry
 
 import (
