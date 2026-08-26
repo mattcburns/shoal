@@ -2,13 +2,16 @@
 
 This file is the canonical guide for how to work in this repository. It covers
 project conventions, commands, and style. For **architecture, data models, and
-the phased plan**, the source of truth is
-[`SHOAL_COMPREHENSIVE_DESIGN_AND_IMPLEMENTATION_PLAN.md`](./SHOAL_COMPREHENSIVE_DESIGN_AND_IMPLEMENTATION_PLAN.md)
-(**v2.0.9**, Go stack). When this file and the design doc disagree, fix one of
-them in the same change — they must stay consistent.
+the AI/prompt design**, the source of truth is
+[`docs/design/architecture.md`](./docs/design/architecture.md) (Go stack).
+For current phase status, see
+[`docs/plans/roadmap.md`](./docs/plans/roadmap.md). When this file and the
+architecture doc disagree, fix one of them in the same change — they must
+stay consistent.
 
-> **Read order for any task:** (1) this file, (2) the relevant Chapter 4 section
-> of the design doc for the component you're touching, (3) the code.
+> **Read order for any task:** (1) this file, (2) the relevant §4 component
+> section of `docs/design/architecture.md` for the component you're touching,
+> (3) the code.
 
 **Stack:** the application is **Go only** (module
 `github.com/mattcburns/shoal`). There is no dual-stack app. Lab automation
@@ -68,7 +71,7 @@ These encode the core design decisions. Violating one is a bug, even if tests pa
 8. **Structs + decode/validate for AI and cross-component data.** No Pydantic.
    AI path: schema text → Complete → strip fences → `json.Unmarshal` into `T` →
    `internal/common/validate` → conflict policy. Validate all model output.
-9. **Respect component boundaries and import rules** (design §3–4):
+9. **Respect component boundaries and import rules** (architecture doc §3–4):
    - Core never calls Redfish or writes NetBox.
    - Discover/Observe/Deploy never call an LLM directly.
    - **`internal/observe` must not import `internal/deploy`** and vice versa.
@@ -86,7 +89,7 @@ These encode the core design decisions. Violating one is a bug, even if tests pa
     cleanup run in Deploy `Orchestrator.HandleTerminal` (async), never inline
     on the Observe path.
 12. **Stdlib-first (documented exceptions only).** Prefer the Go standard
-    library. External modules must be on the design doc §7.1 allow-list; adding
+    library. External modules must be on the architecture doc §7.1 allow-list; adding
     one requires updating §7.1, **`NOTICE`**, and **`docs/third-party-licenses.md`**
     in the same change (see §9.1 for AGPL-compatible licenses and attribution).
     Current allow-list: `gofish`, `pgx` (default Postgres), optional
@@ -138,6 +141,8 @@ shoal/                                    # module: github.com/mattcburns/shoal
     build-release.sh                      # multi-platform CGO-free release binaries
   .github/workflows/                      # ci.yml + release.yml (v* tags)
   docs/
+    design/architecture.md                # architecture, data models, AI/prompt design (SoT)
+    plans/roadmap.md                      # phase status at a glance
     third-party-licenses.md               # full texts of runtime Go dep licenses
     operator-macos.md                     # Mac = operator only (Phase 6c)
     phase-6c-plan.md                      # packaging + L0 host profiles checklist
@@ -148,7 +153,6 @@ shoal/                                    # module: github.com/mattcburns/shoal
   LICENSE                                 # AGPLv3 (Shoal)
   NOTICE                                  # third-party inventory + copyrights
   AGENTS.md
-  SHOAL_COMPREHENSIVE_DESIGN_AND_IMPLEMENTATION_PLAN.md
 ```
 
 The lab is driven entirely by Ansible (there is **no Makefile**). Lab config
@@ -175,10 +179,9 @@ cmd/shoal                              # composition root — wires all concrete
 
 ### 3.1 Lab (Ansible)
 
-The lab is driven through **Ansible playbooks** (see design doc §8). There is
-no Makefile. Phase 0 wires the lab; Phase 1+ wires the app. Two Phase 0 lab
-modes are supported: direct host mode and VM-hosted mode with nested
-virtualization.
+The lab is driven through **Ansible playbooks**. There is no Makefile.
+Phase 0 wires the lab; Phase 1+ wires the app. Two Phase 0 lab modes are
+supported: direct host mode and VM-hosted mode with nested virtualization.
 
 One-time setup:
 ```bash
@@ -218,7 +221,7 @@ Ollama `:11434`, telemetry Postgres `:5433`. Shoal app listens on **`:8088`**.
 | macOS | **Not L0** — fail fast; operator docs in `docs/operator-macos.md` |
 
 L1 remains Ubuntu + Docker. Direct-host lab on secureblue/macOS is unsupported.
-See `docs/lab-setup-checklist.md` and design v2.0.6 Phase 6c.
+See `docs/lab-setup-checklist.md` and [`docs/phase-6c-plan.md`](./docs/phase-6c-plan.md).
 
 ### 3.2 App (Go)
 
@@ -306,8 +309,6 @@ go run ./cmd/shoal deploy run \
 | `SHOAL_SOL_DEBUG_DIR` | Raw per-session SOL byte capture (every byte the transports read, teed to a file) — the diagnostic that root-caused the real-hardware boot-override and cold-start bugs (`PROVISIONING_PROGRESS.md`). Empty disables. Lab Ansible default: `/var/lib/shoal/sol-debug` via `shoal_sol_debug_dir` + `env.j2`/compose template. |
 
 
-Full table and Ansible extension points: design doc §8.1.
-
 **Phase 4 Observe:** `shoal observe status|poll|power`, `GET /v1/devices/{id}/status` and
 `…/events`, `POST /v1/devices/{id}/power` (On / ForceOff / ForceRestart; not a job),
 `POST /v1/devices/{id}/poll` (on-demand SEL + sensors + firmware inventory +
@@ -334,8 +335,11 @@ Sole lifecycle writer remains Orchestrator; JobStore stays pure persistence.
 Ubuntu **cloud image-write** (`prepare-ubuntu-cloud-payload.sh` + marker ISO with
 `payload.gz` on ISO root; `install-mode autoinstall` maps to write+reboot).
 Live-server remaster (`SHOAL_UBUNTU_ISO`) is alternate/stretch. **7b/7c deferred**
-(multi-stage + OS matrix = separate design). See design § Phase 7 and
-[`docs/phase-7-plan.md`](./docs/phase-7-plan.md).
+in favor of
+[`docs/multi-stage-provisioning-design.md`](./docs/multi-stage-provisioning-design.md)
+(multi-stage prep + OS matrix). See
+[`docs/phase-7-plan.md`](./docs/phase-7-plan.md) and
+[`docs/design/architecture.md`](./docs/design/architecture.md) §4.4.
 
 ---
 
@@ -370,16 +374,16 @@ Live-server remaster (`SHOAL_UBUNTU_ISO`) is alternate/stretch. **7b/7c deferred
 
 ## 5. Data Models & State
 
-- All shared data models live in `internal/common/models` (see design doc §5):
-  `NormalizedAsset`, `FieldConfidence`, `NormalizationResult`, `NormalizedEvent`
-  (includes `DeviceID`), `LifecycleState`, `ProvisioningJob`,
+- All shared data models live in `internal/common/models` (see architecture
+  doc §5): `NormalizedAsset`, `FieldConfidence`, `NormalizationResult`,
+  `NormalizedEvent` (includes `DeviceID`), `LifecycleState`, `ProvisioningJob`,
   `ProvisioningProfile`, `DeviceStatus`, `WatchSession`, `SOLMarker`, raw
   ingest DTOs, job start/cancel API types.
 - Ports (interfaces) live next to their concern, **not** in `models`:
   `jobport`, `watchport`, `secrets`, `redfish`, `netbox`, `telemetry`.
-- Changing a shared model is a cross-component change: update all consumers and
-  the design doc §5 in the same change.
-- Provisioning lifecycle follows the state machine in design §5.
+- Changing a shared model is a cross-component change: update all consumers
+  and the architecture doc §5 in the same change.
+- Provisioning lifecycle follows the state machine in architecture doc §5.
   **Only Deploy Orchestrator commits lifecycle transitions.** Observe may
   propose progress fields via `jobport`. Transitions must be explicit and logged.
 - Durable jobs live in Postgres (`jobs` table on lab `:5433` /
@@ -404,7 +408,7 @@ Live-server remaster (`SHOAL_UBUNTU_ISO`) is alternate/stretch. **7b/7c deferred
 - Log every AI call: prompt hash/version, **resolved model name**, token counts
   (if available), latency, and output summary. Logs must contain no secrets and
   no full raw photo bytes.
-- **Model selection** (design §6 / v2.0.5):
+- **Model selection** (architecture doc §6):
   - `Complete` → `req.Model` or `SHOAL_AI_MODEL` (lab text: `llama3.2:3b`)
   - `CompleteVision` → `req.Model` or `SHOAL_AI_VISION_MODEL` (lab:
     `deepseek-ocr`); require a real vision/OCR model for photo — do not fall
@@ -485,8 +489,8 @@ Live-server remaster (`SHOAL_UBUNTU_ISO`) is alternate/stretch. **7b/7c deferred
 - **SOL protocol:** producer/consumer/marker parsing against libvirt serial in
   the lab.
 - **Record/replay:** vendor Redfish fixtures for wrapper + reconciliation tests.
-- Know the **lab fidelity gap** (design doc §10): sushy-tools cannot prove SOL
-  transport on real BMCs, vendor Virtual Media quirks, graphics OCR, or realistic
+- Know the **lab fidelity gap**: sushy-tools cannot prove SOL transport on
+  real BMCs, vendor Virtual Media quirks, graphics OCR, or realistic
   SEL/sensor variety. Don't claim those are validated from lab runs alone.
 
 ```bash
@@ -539,8 +543,8 @@ go list -deps -f '{{if not .Standard}}{{.Module.Path}} {{.Module.Version}}{{end}
    AGPL program. Safe defaults for this project: **MIT**, **BSD-2/3-Clause**,
    **ISC**, **Apache-2.0**. Do **not** add GPL-2.0-only, proprietary, or
    "source-available / no commercial use" modules without an explicit human
-   decision and design-doc note.
-2. Update design doc **§7.1** allow-list (already required by Golden Rule 12).
+   decision and architecture-doc note.
+2. Update architecture doc **§7.1** allow-list (already required by Golden Rule 12).
 3. Update **`NOTICE`** (module, version, SPDX, copyright from upstream LICENSE).
 4. Update **`docs/third-party-licenses.md`** with the full upstream LICENSE text
    (and `PATENTS` if the module ships one, e.g. `golang.org/x/*`). Prefer
@@ -564,13 +568,17 @@ source of truth remains `NOTICE` + `docs/third-party-licenses.md`.
 
 - **Branches:** `feature/<phase>-<short-desc>`, `fix/<short-desc>`.
 - **Commits:** Conventional Commits (`feat:`, `fix:`, `refactor:`, `docs:`,
-  `test:`, `chore:`). Keep them scoped and reference the design doc section or
-  phase when relevant. Include a `Co-Authored-By:` trailer identifying the agent.
+  `test:`, `chore:`). Keep them scoped and reference the architecture doc
+  section or phase/plan doc when relevant. Include a `Co-Authored-By:`
+  trailer identifying the agent.
 - **Don't commit unless asked** to by the human driving the work.
-- **PR description:** what changed, which phase/acceptance criteria it advances,
-  how it was tested (note lab vs real-hardware), and any design-doc updates.
-- **New dependencies:** only with design §7.1 allow-list update **and**
-  `NOTICE` + `docs/third-party-licenses.md` updates in the same PR (§9.1).
+- **PR description:** what changed, which phase/acceptance criteria (see the
+  relevant `docs/phase-*-plan.md` or `docs/plans/roadmap.md`) it advances,
+  how it was tested (note lab vs real-hardware), and any architecture-doc
+  updates.
+- **New dependencies:** only with architecture doc §7.1 allow-list update
+  **and** `NOTICE` + `docs/third-party-licenses.md` updates in the same PR
+  (§9.1).
 
 ---
 
@@ -578,15 +586,17 @@ source of truth remains `NOTICE` + `docs/third-party-licenses.md`.
 
 A change is done when:
 
-- It satisfies the acceptance criteria of its phase in the design doc.
+- It satisfies the acceptance criteria of its phase (see the relevant
+  `docs/phase-*-plan.md`, `docs/multi-stage-provisioning-design.md`, or
+  `docs/plans/roadmap.md`).
 - `gofmt` is clean, `go vet ./...` and `staticcheck ./...` pass, and
   `go test ./...` passes (plus integration/e2e tags when relevant).
 - New/changed behavior has tests (unit at minimum; integration/e2e where
   relevant).
 - No secret can reach a log or an LLM (add a redaction test if you touched that
   path).
-- The design doc is updated if you changed architecture, models, prompts, allow-
-  listed deps, or scope.
+- The architecture doc (`docs/design/architecture.md`) is updated if you
+  changed architecture, models, prompts, allow-listed deps, or scope.
 - Component boundaries, import rules, and the Golden Rules (§1) are intact —
   especially: no observe↔deploy imports, no gofish leakage, Core AI-only,
   JobStore pure persistence.
@@ -605,6 +615,6 @@ Phase 2 needs a minimal live image that emits `SHOAL|…` markers over serial.
 - **Alternate:** developer workstation build + copy/rsync/scp into the lab ISO
   dir.
 
-Document both paths (design Appendix I / §8.2). Default serve URL for the spike:
-`http://<lab-host>:8080/<name>.iso`. Do not rely on an in-process ISO server for
-Phase 2 ACs.
+Document both paths (see `docs/design/architecture.md` §4.4.1). Default serve
+URL for the spike: `http://<lab-host>:8080/<name>.iso`. Do not rely on an
+in-process ISO server for Phase 2 ACs.

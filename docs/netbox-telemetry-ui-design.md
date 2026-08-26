@@ -14,7 +14,7 @@ secrets then `SHOAL_BMC_*`; Start provision still uses env defaults when the
 form leaves user/pass blank. **N7** Grafana and richer wizard still open.
 **Date:** July 2026 (status updated August 2026)  
 **Audience:** Human architect + coding agents  
-**Related:** Design SoT `SHOAL_COMPREHENSIVE_DESIGN_AND_IMPLEMENTATION_PLAN.md` (v2.0.9+);
+**Related:** Design SoT [`docs/design/architecture.md`](./design/architecture.md);
 [`docs/multi-stage-provisioning-design.md`](./multi-stage-provisioning-design.md) §16.1 (NetBox remains device identity SoT).
 
 ---

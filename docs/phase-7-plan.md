@@ -1,7 +1,8 @@
 # Phase 7 — Full OS install (BMC + SOL)
 
-Executable checklist for design **v2.0.9** § Phase 7. Design SoT:
-[`SHOAL_COMPREHENSIVE_DESIGN_AND_IMPLEMENTATION_PLAN.md`](../SHOAL_COMPREHENSIVE_DESIGN_AND_IMPLEMENTATION_PLAN.md).
+Executable checklist for Phase 7 (full OS install). Design SoT:
+[`docs/design/architecture.md`](./design/architecture.md) §4.4; phase status:
+[`docs/plans/roadmap.md`](./plans/roadmap.md).
 
 ## Goal
 

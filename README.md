@@ -18,11 +18,12 @@ owns time-series telemetry (events, sensors, job logs) in Postgres and
 exposes it over a small `net/http` API (`:8088`) and a `flag`-based CLI —
 see [`AGENTS.md`](./AGENTS.md) §3.2–3.3 for the command/env reference.
 
-Architecture, data models, and the phased implementation plan are the
-[`AGENTS.md`](./AGENTS.md) working conventions and
-[`SHOAL_COMPREHENSIVE_DESIGN_AND_IMPLEMENTATION_PLAN.md`](./SHOAL_COMPREHENSIVE_DESIGN_AND_IMPLEMENTATION_PLAN.md)
-design doc — read those before making architectural changes; this README
-covers running the app and the lab.
+Working conventions live in [`AGENTS.md`](./AGENTS.md); architecture, data
+models, and AI/prompt design live in
+[`docs/design/architecture.md`](./docs/design/architecture.md); phase status
+is tracked in [`docs/plans/roadmap.md`](./docs/plans/roadmap.md) — read those
+before making architectural changes. This README covers running the app and
+the lab.
 
 ### Running the app
 ```bash
