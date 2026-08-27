@@ -3,10 +3,12 @@ package netbox_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
+	"github.com/mattcburns/shoal/internal/common/directory"
 	"github.com/mattcburns/shoal/internal/common/models"
 	"github.com/mattcburns/shoal/internal/common/netbox"
 )
@@ -325,6 +327,132 @@ func TestClientFindCreate(t *testing.T) {
 	}
 	if id != "42" {
 		t.Fatalf("id %q", id)
+	}
+}
+
+func TestClientListDevicesPaginates(t *testing.T) {
+	var page1URL string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/dcim/devices/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		if r.URL.RawQuery == "page=2" {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"count": 2,
+				"next":  nil,
+				"results": []any{
+					map[string]any{"id": 2, "name": "n2", "serial": "S2"},
+				},
+			})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"count": 2,
+			"next":  page1URL,
+			"results": []any{
+				map[string]any{"id": 1, "name": "n1", "serial": "S1"},
+			},
+		})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	page1URL = srv.URL + "/api/dcim/devices/?page=2"
+
+	c := netbox.New(srv.URL, "tok")
+	got, err := c.ListDevices(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 devices across pages, got %d: %+v", len(got), got)
+	}
+	if got[0].Serial != "S1" || got[1].Serial != "S2" {
+		t.Fatalf("unexpected devices: %+v", got)
+	}
+}
+
+func TestClientGetDeviceNotFound(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/dcim/devices/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.RawQuery != "" {
+			_ = json.NewEncoder(w).Encode(map[string]any{"results": []any{}})
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	c := netbox.New(srv.URL, "tok")
+	_, err := c.GetDevice(context.Background(), "999")
+	if !errors.Is(err, directory.ErrNotFound) {
+		t.Fatalf("expected directory.ErrNotFound, got %v", err)
+	}
+}
+
+func TestClientDeleteDevice(t *testing.T) {
+	var deleted bool
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/dcim/devices/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodDelete {
+			if r.URL.Path == "/api/dcim/devices/5/" {
+				deleted = true
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	c := netbox.New(srv.URL, "tok")
+	if err := c.DeleteDevice(context.Background(), "5"); err != nil {
+		t.Fatal(err)
+	}
+	if !deleted {
+		t.Fatal("expected DELETE to reach server")
+	}
+	if err := c.DeleteDevice(context.Background(), "404"); !errors.Is(err, directory.ErrNotFound) {
+		t.Fatalf("expected directory.ErrNotFound, got %v", err)
+	}
+}
+
+// TestClientDeleteDeviceResolvesSerial ensures DeleteDevice resolves a
+// non-numeric key (serial/name) to the NetBox id first, same as
+// GetDevice/SetLifecycle, instead of sending it straight to the id-keyed
+// DELETE route (which would 404 and be misreported as ErrNotFound even
+// though the device exists).
+func TestClientDeleteDeviceResolvesSerial(t *testing.T) {
+	var deletedPath string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/dcim/devices/", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			if r.URL.Query().Get("serial") == "SN-DEL" {
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"results": []any{map[string]any{"id": 8}},
+				})
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"results": []any{}})
+		case http.MethodDelete:
+			deletedPath = r.URL.Path
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	c := netbox.New(srv.URL, "tok")
+	if err := c.DeleteDevice(context.Background(), "SN-DEL"); err != nil {
+		t.Fatal(err)
+	}
+	if deletedPath != "/api/dcim/devices/8/" {
+		t.Fatalf("expected DELETE to resolved id 8, got path %q", deletedPath)
 	}
 }
 
