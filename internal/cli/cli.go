@@ -10,15 +10,12 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
 	"github.com/mattcburns/shoal/internal/api"
 	"github.com/mattcburns/shoal/internal/common/config"
-	"github.com/mattcburns/shoal/internal/common/directory"
 	"github.com/mattcburns/shoal/internal/common/models"
-	"github.com/mattcburns/shoal/internal/common/netbox"
 	"github.com/mattcburns/shoal/internal/common/redact"
 	"github.com/mattcburns/shoal/internal/common/redfish"
 	"github.com/mattcburns/shoal/internal/common/secrets"
@@ -149,11 +146,17 @@ func cmdServe(args []string) int {
 
 	srvAPI := api.New(cfg, log)
 	secretBackend := openSecrets(cfg)
-	var nbClient *netbox.Client
-	if cfg.NetBoxURL != "" && cfg.NetBoxToken != "" {
-		nbClient = netbox.New(cfg.NetBoxURL, cfg.NetBoxToken)
+	dirStore, err := buildDirectory(cfg, log)
+	if err != nil {
+		// Non-fatal: the device directory backs optional lifecycle/identity
+		// sync (NetBox field, discover upsert); a directory that failed to
+		// open (e.g. an unwritable SHOAL_DEVICE_STORE_DIR) shouldn't take
+		// down the whole server, matching every other optional store below
+		// (fewshot/profile/telemetry all log.Warn and continue).
+		log.Warn("device directory unavailable", "err", err.Error())
+		dirStore = nil
 	}
-	srvAPI.WithDeviceCredentials(deviceCreds{secrets: secretBackend, nb: nbClient})
+	srvAPI.WithDeviceCredentials(deviceCreds{secrets: secretBackend, nb: credentialsNB(cfg, dirStore)})
 	srvAPI.WithDevicePower(devicePower{cfg: cfg, newBMC: redfish.NewBMC})
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -177,11 +180,7 @@ func cmdServe(args []string) int {
 			log.Warn("reconciler init failed", "err", err.Error())
 		} else {
 			rec = r
-			var nb netbox.API
-			if cfg.NetBoxURL != "" && cfg.NetBoxToken != "" {
-				nb = netbox.New(cfg.NetBoxURL, cfg.NetBoxToken)
-			}
-			disc := discover.NewWithFewShot(log, rec, openSecrets(cfg), nb, fsStore)
+			disc := discover.NewWithFewShot(log, rec, openSecrets(cfg), dirStore, fsStore)
 			srvAPI.WithDiscover(disc)
 			log.Info("discover ingest/confirm API enabled")
 		}
@@ -219,10 +218,6 @@ func cmdServe(args []string) int {
 				UseSudo: cfg.SerialSSHSudo,
 			},
 		)
-		var nb netbox.LifecycleWriter
-		if nbClient != nil {
-			nb = nbClient
-		}
 		if cfg.ProfileDir != "" {
 			if st, err := profile.NewFileStore(cfg.ProfileDir); err != nil {
 				log.Warn("profile store unavailable", "err", err.Error())
@@ -252,7 +247,7 @@ func cmdServe(args []string) int {
 			Secrets:                secretBackend,
 			NewBMC:                 redfish.NewBMC,
 			Watches:                watchSvc,
-			NetBox:                 nb,
+			NetBox:                 dirStore,
 			Telemetry:              telemStore,
 			Profiles:               profStore,
 			ISOBaseURL:             cfg.ISOBaseURL,
@@ -324,11 +319,13 @@ func cmdServe(args []string) int {
 	// everything else (/v1/*, /healthz, /readyz, /metrics) falls through to
 	// srvAPI, regardless of registration order.
 	//
-	// internal/common/directory (the CLI-directory-wiring sibling unit's
-	// package) hadn't landed a buildDirectory helper when this was written, so
-	// the device store is opened inline here from SHOAL_DEVICE_STORE_DIR.
+	// Reuses the same dirStore buildDirectory (above, near the top of
+	// cmdServe) already constructed for the API/discover/orchestrator wiring
+	// -- NetBox-backed when configured, the local FileStore otherwise --
+	// rather than opening a second, independent store that would always be
+	// the local FileStore regardless of NetBox configuration.
 	uiCfg := ui.Config{
-		Directory: openDirectory(log),
+		Directory: dirStore,
 		Observe:   obsSvc,
 		Jobs:      store,
 		Profiles:  profStore,
@@ -391,27 +388,6 @@ func openSecrets(cfg config.Config) secrets.Backend {
 		}
 	}
 	return secrets.NewMemory()
-}
-
-// openDirectory opens the built-in web UI's device-identity store from
-// SHOAL_DEVICE_STORE_DIR (defaulting to .shoal/devices so `shoal serve` works
-// out of the box for local/lab use), or SHOAL_DEVICE_STORE_DIR="testdir" style
-// overrides. Read directly here (not via config.Config) because this env var
-// belongs to the CLI-directory-wiring sibling unit's config plumbing, which
-// hadn't landed when this was written; a nil return disables the Devices UI
-// pages (they render a "device directory not configured" message) rather than
-// failing serve startup.
-func openDirectory(log *slog.Logger) directory.Store {
-	dir := strings.TrimSpace(os.Getenv("SHOAL_DEVICE_STORE_DIR"))
-	if dir == "" {
-		dir = ".shoal/devices"
-	}
-	st, err := directory.NewFileStore(dir)
-	if err != nil {
-		log.Warn("device directory store unavailable", "err", err.Error())
-		return nil
-	}
-	return st
 }
 
 // seedPollTargets registers BMC endpoints from durable jobs for SEL/sensor poll.
