@@ -196,6 +196,7 @@ func cmdServe(args []string) int {
 	var profStore profile.Store
 	var orch *job.Orchestrator
 	var obsSvc *observe.Service
+	var pollSvc api.DevicePoll
 
 	store, closer, err := openJobStore(cfg)
 	if err != nil {
@@ -309,7 +310,8 @@ func cmdServe(args []string) int {
 				}
 			}()
 			go poller.Run(ctx)
-			srvAPI.WithDevicePoll(devicePoll{p: poller, cfg: cfg})
+			pollSvc = devicePoll{p: poller, cfg: cfg}
+			srvAPI.WithDevicePoll(pollSvc)
 			log.Info("observe SEL/sensor poller started",
 				"idle", poller.IdleInterval.String(),
 				"watch", poller.WatchInterval.String(),
@@ -339,6 +341,7 @@ func cmdServe(args []string) int {
 		// secrets backend directly).
 		Credentials:        deviceCreds{secrets: secretBackend, nb: credentialsNB(cfg, dirStore)},
 		Power:              devicePower{cfg: cfg, newBMC: redfish.NewBMC},
+		Poll:               pollSvc,
 		DefaultBMCUsername: cfg.BMCUsername,
 		DefaultBMCPassword: cfg.BMCPassword,
 		APIToken:           cfg.APIToken,

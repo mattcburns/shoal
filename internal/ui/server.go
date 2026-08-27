@@ -61,6 +61,12 @@ type Config struct {
 	// Status tab's power-control buttons.
 	Power api.DevicePower
 
+	// Poll runs an on-demand Redfish SEL+sensor poll into telemetry, the
+	// same api.DevicePoll surface internal/api/poll.go's
+	// POST /v1/devices/{id}/poll uses. Used by the Sensors/Firmware tabs'
+	// "Poll BMC" action.
+	Poll api.DevicePoll
+
 	// DefaultBMCUsername/DefaultBMCPassword are the orchestrator-wide
 	// SHOAL_BMC_* lab fallback credentials (config.Config.BMCUsername/
 	// BMCPassword) -- used by the Status tab's power action only when neither
@@ -106,6 +112,8 @@ type Server struct {
 	Credentials api.DeviceCredentials
 	// Power backs the Status tab's power-control buttons. See Config.Power.
 	Power api.DevicePower
+	// Poll backs the Sensors/Firmware tabs' "Poll BMC" action. See Config.Poll.
+	Poll api.DevicePoll
 	// DefaultBMCUsername/DefaultBMCPassword back the Status tab's power
 	// action fallback. See Config.DefaultBMCUsername/DefaultBMCPassword.
 	DefaultBMCUsername string
@@ -133,6 +141,7 @@ func New(cfg Config) *Server {
 		DefaultBMCUsername: cfg.DefaultBMCUsername,
 		DefaultBMCPassword: cfg.DefaultBMCPassword,
 		Power:              cfg.Power,
+		Poll:               cfg.Poll,
 	}
 	s.routes()
 	return s
@@ -170,6 +179,10 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /ui/devices/{id}/events", s.handleDeviceEvents)
 	s.mux.HandleFunc("GET /ui/devices/{id}/jobs", s.handleDeviceJobs)
 	s.mux.HandleFunc("POST /ui/devices/{id}/jobs", s.handleCancelJob)
+	s.mux.HandleFunc("GET /ui/devices/{id}/sensors", s.handleSensorsGet)
+	s.mux.HandleFunc("POST /ui/devices/{id}/sensors", s.handleSensorsPoll)
+	s.mux.HandleFunc("GET /ui/devices/{id}/firmware", s.handleFirmwareGet)
+	s.mux.HandleFunc("POST /ui/devices/{id}/firmware", s.handleFirmwarePoll)
 }
 
 func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
