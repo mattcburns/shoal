@@ -48,12 +48,11 @@ type Config struct {
 	FewShotDir string
 	// ProfileDir is JSON profile store for Phase 5b (empty disables profile load/approve).
 	ProfileDir string
-	// DeviceStoreDir is the local JSON device-directory store (GET/POST
-	// /v1/devices) used when NetBox isn't configured. Empty falls back to
-	// an in-memory directory.Store (non-persistent, mirrors openSecrets'
-	// SHOAL_SECRETS_DIR-unset fallback) rather than disabling the routes,
-	// since Deploy Orchestrator lifecycle writes expect a directory to
-	// always be present.
+	// DeviceStoreDir is the local file-backed device directory store, used
+	// as the device directory (GET/POST /v1/devices, discover upsert,
+	// orchestrator lifecycle writes) when NetBox isn't configured. Empty
+	// means the composition root's default (see buildDirectory in
+	// internal/cli), not "disabled" -- a directory backend is always present.
 	DeviceStoreDir string
 	// APIToken protects /v1/* when non-empty (Bearer). Empty = open (lab MVP default).
 	APIToken string

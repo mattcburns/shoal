@@ -15,9 +15,7 @@ import (
 
 	"github.com/mattcburns/shoal/internal/api"
 	"github.com/mattcburns/shoal/internal/common/config"
-	"github.com/mattcburns/shoal/internal/common/directory"
 	"github.com/mattcburns/shoal/internal/common/models"
-	"github.com/mattcburns/shoal/internal/common/netbox"
 	"github.com/mattcburns/shoal/internal/common/redact"
 	"github.com/mattcburns/shoal/internal/common/redfish"
 	"github.com/mattcburns/shoal/internal/common/secrets"
@@ -33,6 +31,7 @@ import (
 	"github.com/mattcburns/shoal/internal/observe"
 	"github.com/mattcburns/shoal/internal/observe/poll"
 	"github.com/mattcburns/shoal/internal/observe/sol"
+	"github.com/mattcburns/shoal/internal/ui"
 )
 
 // Version is the application version string (overridable via -ldflags).
@@ -147,30 +146,21 @@ func cmdServe(args []string) int {
 
 	srvAPI := api.New(cfg, log)
 	secretBackend := openSecrets(cfg)
-	var nbClient *netbox.Client
-	if cfg.NetBoxURL != "" && cfg.NetBoxToken != "" {
-		nbClient = netbox.New(cfg.NetBoxURL, cfg.NetBoxToken)
+	dirStore, err := buildDirectory(cfg, log)
+	if err != nil {
+		// Non-fatal: the device directory backs optional lifecycle/identity
+		// sync (NetBox field, discover upsert); a directory that failed to
+		// open (e.g. an unwritable SHOAL_DEVICE_STORE_DIR) shouldn't take
+		// down the whole server, matching every other optional store below
+		// (fewshot/profile/telemetry all log.Warn and continue).
+		log.Warn("device directory unavailable", "err", err.Error())
+		dirStore = nil
 	}
-	srvAPI.WithDeviceCredentials(deviceCreds{secrets: secretBackend, nb: nbClient})
+	srvAPI.WithDeviceCredentials(deviceCreds{secrets: secretBackend, nb: credentialsNB(cfg, dirStore)})
 	srvAPI.WithDevicePower(devicePower{cfg: cfg, newBMC: redfish.NewBMC})
-	// Device directory (GET/POST /v1/devices). No NetBox-backed directory.Store
-	// adapter exists yet (that's the "netbox-directory-adapter" sibling unit's
-	// job), so this always wires a local backend: SHOAL_DEVICE_STORE_DIR when
-	// set, else a non-persistent in-memory store so the routes are never
-	// unconfigured. The "cli-directory-wiring" sibling unit may replace this
-	// block with NetBox-aware selection; reconcile at merge time.
-	var dirStore directory.Store
-	if cfg.DeviceStoreDir != "" {
-		if st, err := directory.NewFileStore(cfg.DeviceStoreDir); err != nil {
-			log.Warn("device directory store unavailable", "err", err.Error())
-			dirStore = directory.NewMemory()
-		} else {
-			dirStore = st
-			log.Info("device directory store enabled", "dir", cfg.DeviceStoreDir)
-		}
-	} else {
-		dirStore = directory.NewMemory()
-	}
+	// GET/POST /v1/devices reuses the same dirStore buildDirectory produced
+	// above (NetBox-backed when configured, the local FileStore otherwise) --
+	// the same backend the orchestrator, discover, and the UI all share.
 	srvAPI.WithDirectory(dirStore)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -194,15 +184,18 @@ func cmdServe(args []string) int {
 			log.Warn("reconciler init failed", "err", err.Error())
 		} else {
 			rec = r
-			var nb netbox.API
-			if cfg.NetBoxURL != "" && cfg.NetBoxToken != "" {
-				nb = netbox.New(cfg.NetBoxURL, cfg.NetBoxToken)
-			}
-			disc := discover.NewWithFewShot(log, rec, openSecrets(cfg), nb, fsStore)
+			disc := discover.NewWithFewShot(log, rec, openSecrets(cfg), dirStore, fsStore)
 			srvAPI.WithDiscover(disc)
 			log.Info("discover ingest/confirm API enabled")
 		}
 	}
+
+	// Hoisted so the ui.Server wiring below (after this if/else) can reuse
+	// whichever of these the job-store branch actually built, without the UI
+	// package reaching into api.Server's unexported fields.
+	var profStore profile.Store
+	var orch *job.Orchestrator
+	var obsSvc *observe.Service
 
 	store, closer, err := openJobStore(cfg)
 	if err != nil {
@@ -229,11 +222,6 @@ func cmdServe(args []string) int {
 				UseSudo: cfg.SerialSSHSudo,
 			},
 		)
-		var nb netbox.LifecycleWriter
-		if nbClient != nil {
-			nb = nbClient
-		}
-		var profStore profile.Store
 		if cfg.ProfileDir != "" {
 			if st, err := profile.NewFileStore(cfg.ProfileDir); err != nil {
 				log.Warn("profile store unavailable", "err", err.Error())
@@ -263,7 +251,7 @@ func cmdServe(args []string) int {
 			Secrets:                secretBackend,
 			NewBMC:                 redfish.NewBMC,
 			Watches:                watchSvc,
-			NetBox:                 nb,
+			NetBox:                 dirStore,
 			Telemetry:              telemStore,
 			Profiles:               profStore,
 			ISOBaseURL:             cfg.ISOBaseURL,
@@ -280,7 +268,7 @@ func cmdServe(args []string) int {
 		if cfg.ISOPublishDir != "" && cfg.ISOBaseURL != "" {
 			orchOpts.ISOBuilder = iso.NewScriptBuilder(cfg.ISOBuildScript, log)
 		}
-		orch := job.NewOrchestrator(orchOpts)
+		orch = job.NewOrchestrator(orchOpts)
 		defer orch.Stop()
 		watchSvc.SetProgress(orch.ProgressPort())
 		srvAPI.WithJobCanceler(orch)
@@ -289,7 +277,7 @@ func cmdServe(args []string) int {
 			log.Warn("orphan reconcile", "err", err.Error())
 		}
 
-		obsSvc := observe.New(log, store, telemStore, watchSvc)
+		obsSvc = observe.New(log, store, telemStore, watchSvc)
 		srvAPI.WithObserve(obsSvc)
 		log.Info("observe device status API enabled", "telemetry", telemStore != nil)
 
@@ -329,9 +317,46 @@ func cmdServe(args []string) int {
 		}
 	}
 
+	// Built-in web UI (internal/ui): its own mux/Handler(), mounted as a
+	// sibling of the JSON API under one http.Server. "/ui/" is more specific
+	// than "/" so net/http.ServeMux routes every /ui/* request to uiSrv and
+	// everything else (/v1/*, /healthz, /readyz, /metrics) falls through to
+	// srvAPI, regardless of registration order.
+	//
+	// Reuses the same dirStore buildDirectory (above, near the top of
+	// cmdServe) already constructed for the API/discover/orchestrator wiring
+	// -- NetBox-backed when configured, the local FileStore otherwise --
+	// rather than opening a second, independent store that would always be
+	// the local FileStore regardless of NetBox configuration.
+	uiCfg := ui.Config{
+		Directory: dirStore,
+		Observe:   obsSvc,
+		Jobs:      store,
+		Profiles:  profStore,
+		Secrets:   secretBackend,
+		Power:     devicePower{cfg: cfg, newBMC: redfish.NewBMC},
+		APIToken:  cfg.APIToken,
+		Log:       log,
+	}
+	if orch != nil {
+		// Only assign when non-nil: orch is a *job.Orchestrator, and a nil one
+		// assigned directly into these interface-typed fields would produce a
+		// non-nil api.JobStarter/JobCanceler wrapping a nil pointer -- the
+		// classic typed-nil-in-interface trap. A future page handler doing
+		// `if s.JobStarter != nil { s.JobStarter.StartAsync(...) }` would see a
+		// non-nil interface and call into it, panicking inside
+		// job.Orchestrator's methods instead of skipping the disabled path.
+		uiCfg.JobStarter = orch
+		uiCfg.JobCanceler = orch
+	}
+	uiSrv := ui.New(uiCfg)
+	topMux := http.NewServeMux()
+	topMux.Handle("/", srvAPI.Handler())
+	topMux.Handle("/ui/", uiSrv.Handler())
+
 	httpSrv := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           srvAPI.Handler(),
+		Handler:           topMux,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 

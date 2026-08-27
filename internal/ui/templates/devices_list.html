@@ -1,0 +1,29 @@
+{{define "content"}}
+<h1>Devices</h1>
+<p><a href="/ui/devices/new">Add device</a></p>
+{{if .Error}}<p class="shoal-error">{{.Error}}</p>{{end}}
+{{if not .Devices}}
+<p>No devices yet.</p>
+{{else}}
+<table class="shoal-table">
+  <thead>
+    <tr>
+      <th>Name</th>
+      <th>Serial</th>
+      <th>BMC IP</th>
+      <th>Lifecycle</th>
+    </tr>
+  </thead>
+  <tbody>
+    {{range .Devices}}
+    <tr>
+      <td><a href="/ui/devices/{{.ID}}">{{.Name}}</a></td>
+      <td>{{.Serial}}</td>
+      <td>{{.BMCIP}}</td>
+      <td>{{.LifecycleState}}</td>
+    </tr>
+    {{end}}
+  </tbody>
+</table>
+{{end}}
+{{end}}

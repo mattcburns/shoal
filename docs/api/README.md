@@ -4,9 +4,10 @@ Shoal exposes a small `net/http` API (default `:8088`, `SHOAL_HTTP_ADDR`) for
 Discover (asset ingest), Observe (device status/events/sensors/firmware/job
 log), Deploy (provisioning jobs, on-demand power, on-demand poll), a device
 directory (`GET`/`POST /v1/devices`, backed by `internal/common/directory.Store`
--- currently a local JSON file store or an in-memory fallback; a NetBox-backed
-adapter is planned but not yet wired into `shoal serve`), stored device
-credentials, and saved provisioning profiles. Handlers live in
+-- NetBox when `SHOAL_NETBOX_URL`/`SHOAL_NETBOX_TOKEN` are configured, else a
+local file-backed store; see
+[`../design/device-directory.md`](../design/device-directory.md)), stored
+device credentials, and saved provisioning profiles. Handlers live in
 `internal/api/*.go` and are registered in `internal/api/server.go`.
 
 The full route-by-route reference — methods, path/query parameters, request
@@ -70,6 +71,22 @@ Time-bounded list endpoints also accept `?since=` (RFC3339). An unparseable
 `since` is treated as "no filter" rather than a 400, mirroring how an
 unrecognized `?state=` on `GET /v1/devices/{id}/jobs` matches no rows
 instead of erroring.
+
+## Device directory (`GET`/`POST /v1/devices`)
+
+`GET /v1/devices` and `POST /v1/devices` are backed by
+`internal/common/directory`'s `Store` interface, not directly by NetBox —
+see [`docs/design/device-directory.md`](../design/device-directory.md) for
+the abstraction. Whichever backend is active on this server instance
+(NetBox when `SHOAL_NETBOX_URL`/`SHOAL_NETBOX_TOKEN` are set, else the local
+file store when `SHOAL_DEVICE_STORE_DIR` is set) answers these routes with
+an identically shaped `DeviceIdentity` record — callers do not need to know
+or care which backend is active. `POST /v1/devices` upserts by serial (like
+`directory.Store.UpsertDevice`): a request whose serial matches an existing
+device updates it in place instead of creating a duplicate. Both routes
+return `503` when neither backend is configured, matching the same
+"unconfigured is a 503, not a 500" convention used elsewhere in this API
+(profiles, credentials).
 
 ## JSON naming
 

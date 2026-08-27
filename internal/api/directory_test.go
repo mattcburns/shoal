@@ -13,6 +13,18 @@ import (
 	"github.com/mattcburns/shoal/internal/common/models"
 )
 
+// newTestDirectory returns a fresh, empty directory.Store backed by a
+// t.TempDir() FileStore -- the canonical package has no in-memory
+// implementation, so tests use a scratch-dir-backed store instead.
+func newTestDirectory(t *testing.T) directory.Store {
+	t.Helper()
+	st, err := directory.NewFileStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("directory.NewFileStore: %v", err)
+	}
+	return st
+}
+
 func TestListDevicesWithoutStore(t *testing.T) {
 	s := api.New(config.Config{}, nil)
 	rr := httptest.NewRecorder()
@@ -24,7 +36,7 @@ func TestListDevicesWithoutStore(t *testing.T) {
 }
 
 func TestListDevicesEmptyIsArrayNotNull(t *testing.T) {
-	s := api.New(config.Config{}, nil).WithDirectory(directory.NewMemory())
+	s := api.New(config.Config{}, nil).WithDirectory(newTestDirectory(t))
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/v1/devices", nil)
 	s.Handler().ServeHTTP(rr, req)
@@ -41,7 +53,7 @@ func TestListDevicesEmptyIsArrayNotNull(t *testing.T) {
 }
 
 func TestCreateAndListDevices(t *testing.T) {
-	store := directory.NewMemory()
+	store := newTestDirectory(t)
 	s := api.New(config.Config{}, nil).WithDirectory(store)
 
 	payload, err := json.Marshal(map[string]string{
@@ -90,7 +102,7 @@ func TestCreateAndListDevices(t *testing.T) {
 }
 
 func TestCreateDeviceRejectsClientSetLifecycle(t *testing.T) {
-	store := directory.NewMemory()
+	store := newTestDirectory(t)
 	s := api.New(config.Config{}, nil).WithDirectory(store)
 
 	payload, err := json.Marshal(map[string]string{
@@ -126,7 +138,7 @@ func TestCreateDeviceWithoutStore(t *testing.T) {
 }
 
 func TestCreateDeviceRequiresNameOrSerial(t *testing.T) {
-	s := api.New(config.Config{}, nil).WithDirectory(directory.NewMemory())
+	s := api.New(config.Config{}, nil).WithDirectory(newTestDirectory(t))
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/devices", bytes.NewReader([]byte(`{"vendor":"dell"}`)))
 	s.Handler().ServeHTTP(rr, req)
@@ -136,7 +148,7 @@ func TestCreateDeviceRequiresNameOrSerial(t *testing.T) {
 }
 
 func TestCreateDeviceInvalidJSON(t *testing.T) {
-	s := api.New(config.Config{}, nil).WithDirectory(directory.NewMemory())
+	s := api.New(config.Config{}, nil).WithDirectory(newTestDirectory(t))
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/devices", bytes.NewReader([]byte(`not json`)))
 	s.Handler().ServeHTTP(rr, req)
