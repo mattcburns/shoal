@@ -13,7 +13,6 @@ import (
 
 	"github.com/mattcburns/shoal/internal/common/config"
 	"github.com/mattcburns/shoal/internal/common/models"
-	"github.com/mattcburns/shoal/internal/common/netbox"
 	"github.com/mattcburns/shoal/internal/core/ai"
 	"github.com/mattcburns/shoal/internal/core/fewshot"
 	"github.com/mattcburns/shoal/internal/core/reconcile"
@@ -224,18 +223,25 @@ func openDiscoverService(cfg config.Config, log *slog.Logger) (*discover.Service
 			return nil, err
 		}
 	}
-	// NetBox is fully optional: when unconfigured, pass nil (matching every
-	// other call site in internal/cli -- see cli.go and deploy.go). The
-	// discover.Service nil-checks s.NetBox before use, so ingest/confirm
-	// simply skip the NetBox upsert rather than silently writing into a
-	// non-persistent in-memory fake that would be discarded on process exit.
-	var nb netbox.API
-	if cfg.NetBoxURL != "" && cfg.NetBoxToken != "" {
-		nb = netbox.New(cfg.NetBoxURL, cfg.NetBoxToken)
-	} else {
-		log.Warn("netbox not configured; skipping netbox upsert")
+	// The device directory backend is always a real, working store now: the
+	// NetBox adapter when SHOAL_NETBOX_URL/SHOAL_NETBOX_TOKEN are set,
+	// otherwise the local FileStore (see buildDirectory in directory.go).
+	// Previously, when NetBox was unconfigured, this passed nil rather than
+	// falling back to netbox.NewMemory() -- a non-persistent in-memory fake
+	// that would silently discard every ingest/confirm upsert on process
+	// exit. That's no longer the tradeoff: the FileStore fallback is
+	// persistent, so there's no "unconfigured" nil case left to special-case
+	// here. If even the FileStore fails to open (e.g. an unwritable
+	// SHOAL_DEVICE_STORE_DIR), degrade to nil rather than hard-failing --
+	// discover.Service nil-checks NetBox before use, so ingest/confirm still
+	// normalize and return a result, just without persistence, matching the
+	// old unconfigured-NetBox behavior.
+	dirStore, err := buildDirectory(cfg, log)
+	if err != nil {
+		log.Warn("device directory unavailable", "err", err.Error())
+		dirStore = nil
 	}
-	return discover.NewWithFewShot(log, rec, openSecrets(cfg), nb, fsStore), nil
+	return discover.NewWithFewShot(log, rec, openSecrets(cfg), dirStore, fsStore), nil
 }
 
 func parseCSVRow(raw []byte) (map[string]string, error) {

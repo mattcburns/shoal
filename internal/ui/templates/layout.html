@@ -1,49 +1,23 @@
-<!--
-  PLACEHOLDER layout for standalone build/test of the Events/Jobs tabs unit
-  (see the doc comment at the top of ../server.go). The sibling "UI shell"
-  unit owns the real templates/layout.html; this file should be replaced by
-  that one at merge time. events.html and jobs.html only depend on:
-    - a "content" template block, filled with this page's markup
-    - an optional "head_extra" block (defaults to empty) for the jobs tab's
-      5-second auto-refresh <meta> tag
--->
 <!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Shoal</title>
-{{block "head_extra" .}}{{end}}
-<style>
-  body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; margin: 1.5rem; color: #1a1a1a; }
-  h2, h3 { margin-top: 0; }
-  table { border-collapse: collapse; width: 100%; margin-top: .5rem; }
-  th, td { border: 1px solid #d0d0d0; padding: .35rem .55rem; text-align: left; font-size: .9rem; vertical-align: top; }
-  th { background: #f2f2f2; }
-  tr.active-row { background: #eef5ff; }
-  .banner { padding: .6rem .8rem; border-radius: .25rem; margin: .5rem 0; font-size: .9rem; }
-  .banner.warn { background: #fff3cd; border: 1px solid #ffe69c; }
-  .banner.info { background: #e7f1ff; border: 1px solid #b6d4fe; }
-  .badge { display: inline-block; padding: .1rem .45rem; border-radius: .25rem; font-size: .78rem; background: #e2e2e2; text-transform: lowercase; }
-  .badge.sev-critical, .badge.sev-error { background: #f8d7da; color: #842029; }
-  .badge.sev-warning, .badge.sev-warn { background: #fff3cd; color: #664d03; }
-  .badge.sev-ok, .badge.sev-info, .badge.sev-normal { background: #d1e7dd; color: #0f5132; }
-  .badge.state-provisioning { background: #cfe2ff; color: #084298; }
-  .badge.state-provisioned { background: #d1e7dd; color: #0f5132; }
-  .badge.state-failed { background: #f8d7da; color: #842029; }
-  .job-log {
-    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-    font-size: .8rem; max-height: 20rem; overflow: auto;
-    background: #f8f9fa; padding: .6rem .75rem; white-space: pre-wrap; word-break: break-all;
-    border: 1px solid #ddd; border-radius: .25rem;
-  }
-  .error-cell { color: #b02a37; font-size: .85rem; }
-  .toolbar { display: flex; justify-content: space-between; align-items: center; gap: .75rem; margin-bottom: .5rem; }
-  .toolbar form { display: inline; }
-  .stages small { display: block; }
-</style>
+<link rel="stylesheet" href="/ui/static/style.css">
 </head>
 <body>
+<header class="shoal-nav">
+  <a class="shoal-brand" href="/ui/devices">Shoal</a>
+  <nav>
+    <a href="/ui/devices">Devices</a>
+  </nav>
+  <form class="shoal-logout" method="post" action="/ui/logout">
+    <button type="submit">Log out</button>
+  </form>
+</header>
+<main class="shoal-main">
 {{template "content" .}}
+</main>
 </body>
 </html>

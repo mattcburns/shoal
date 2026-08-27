@@ -4,7 +4,9 @@ info:
   description: |
     Shoal's `net/http` API — Discover (asset ingest), Observe (device status,
     events, sensors, firmware, job log), Deploy (provisioning jobs, power,
-    on-demand poll), device credentials, and saved provisioning profiles.
+    on-demand poll), device credentials, the device directory (list/create,
+    backed by whichever `directory.Store` backend is active — see
+    `docs/design/device-directory.md`), and saved provisioning profiles.
 
     This document is hand-written and lives at `docs/api/openapi.yaml`; there
     is no code generator or build-time dependency on it (see
@@ -323,6 +325,92 @@ paths:
                 $ref: "#/components/schemas/Error"
         "503":
           description: Discover (or its few-shot store) not configured.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /v1/devices:
+    get:
+      tags: [devices]
+      summary: List devices known to the active device directory backend
+      description: |
+        Backed by `directory.Store` (see
+        `docs/design/device-directory.md`) -- whichever backend is active
+        for this server instance: NetBox when `SHOAL_NETBOX_URL` /
+        `SHOAL_NETBOX_TOKEN` are set, else the local file-backed store when
+        `SHOAL_DEVICE_STORE_DIR` is set (a server instance always has one
+        active backend; there is no "neither configured" runtime state,
+        only "this handler wasn't wired one," which the 503 below covers).
+        The two backends return identically shaped `DeviceIdentity` records
+        (verified by a shared conformance test), so a caller does not need
+        to know which backend is active. No `since` cursor applies -- this
+        returns the full device list, page-limited by `limit`.
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: Devices known to the active directory backend.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  devices:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/DeviceIdentity"
+        "502":
+          description: The configured directory backend (e.g. NetBox) failed to respond.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: Device directory not configured on this server instance.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    post:
+      tags: [devices]
+      summary: Register or update a device in the active device directory backend
+      description: |
+        Upserts by serial exactly as `directory.Store.UpsertDevice`
+        documents -- an existing device with a matching serial is updated
+        in place rather than duplicated, though the handler always
+        responds 201 (it doesn't distinguish create-vs-update in the status
+        code). `lifecycle_state` is never client-settable here: every new
+        device starts at `discovered` regardless of what (if anything) the
+        request body sends for that field. Backed by whichever directory
+        backend is active; see the `GET /v1/devices` description above.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateDeviceRequest"
+      responses:
+        "201":
+          description: Device created or updated (matched by serial); response includes the assigned id.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeviceIdentity"
+        "400":
+          description: Invalid JSON, or neither name nor serial was supplied.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "502":
+          description: The configured directory backend (e.g. NetBox) failed to create the device.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: Device directory not configured on this server instance.
           content:
             application/json:
               schema:
@@ -1135,6 +1223,41 @@ components:
           description: Redacted before any LLM call; typically omitted (not persisted by default).
       required: [device_id, event_type, severity, component, message, timestamp]
 
+    DeviceIdentity:
+      type: object
+      description: |
+        Device identity + lifecycle state as returned/accepted by the
+        active `directory.Store` backend (`internal/common/models.DeviceIdentity`).
+        Identical shape regardless of whether NetBox or the local file
+        store is active.
+      properties:
+        id:
+          type: string
+          description: Backend-assigned id (NetBox primary key when NetBox-backed; a generated id when file-store-backed). Omit on POST to create.
+        name:
+          type: string
+        serial:
+          type: string
+        vendor:
+          type: string
+        model:
+          type: string
+        lifecycle_state:
+          type: string
+          enum: [discovered, ready, provisioning, provisioned, failed]
+        credential_ref:
+          type: string
+          description: Opaque secrets-backend key. Never a raw password (Golden Rule 3). Empty until BMC credentials are assigned to this device (e.g. via PUT /v1/devices/{id}/credentials) -- always present in the JSON body (matching the Go struct's lack of `omitempty`), but legitimately empty on a newly created device.
+        bmc_ip:
+          type: string
+          description: Empty until a BMC address is known for this device -- same "always present, may be empty" note as credential_ref.
+      required: [serial, lifecycle_state, credential_ref, bmc_ip]
+      # "required" here means these keys are always present in the JSON body
+      # (the Go struct has no `omitempty` on them), not that their values are
+      # non-empty -- serial is the only field POST /v1/devices actually needs
+      # non-empty to identify/upsert a device; lifecycle_state/credential_ref/
+      # bmc_ip may all be sent as "" on a freshly created device.
+
     DeviceStatus:
       type: object
       properties:
@@ -1345,6 +1468,25 @@ components:
           type: string
           description: Go duration string (e.g. "60m"), for coarse (operator_iso) stage paths.
       required: [ref, needs_approval]
+
+    CreateDeviceRequest:
+      type: object
+      description: |
+        POST /v1/devices request body. Omits lifecycle_state -- it is never
+        client-settable on create. At least one of name or serial is required.
+      properties:
+        name:
+          type: string
+        serial:
+          type: string
+        vendor:
+          type: string
+        model:
+          type: string
+        bmc_ip:
+          type: string
+        credential_ref:
+          type: string
 
     ProfileRecord:
       type: object

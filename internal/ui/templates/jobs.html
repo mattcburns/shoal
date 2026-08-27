@@ -1,8 +1,5 @@
-{{define "head_extra"}}
-{{if .AutoRefresh}}<meta http-equiv="refresh" content="5">{{end}}
-{{end}}
-
 {{define "content"}}
+{{if .AutoRefresh}}<meta http-equiv="refresh" content="5">{{end}}
 <h2>Jobs — device {{.DeviceID}}</h2>
 <div class="toolbar">
   <span>
@@ -43,7 +40,7 @@
     {{else}}
       {{range .Jobs}}
       <tr{{if eq .State "provisioning"}} class="active-row"{{end}}>
-        <td><code title="{{.ID}}">{{truncate .ID 12}}</code></td>
+        <td><code title="{{.ID}}">{{truncate 12 .ID}}</code></td>
         <td><span class="badge state-{{.State}}">{{if .State}}{{.State}}{{else}}—{{end}}</span></td>
         <td><code>{{if .Phase}}{{.Phase}}{{else}}—{{end}}</code></td>
         <td>
@@ -64,20 +61,21 @@
         </td>
         <td>{{if .ProfileRef}}{{.ProfileRef}}{{else}}—{{end}}</td>
         <td>{{if .UpdatedAt}}{{.UpdatedAt.Format "2006-01-02T15:04:05Z07:00"}}{{else}}—{{end}}</td>
-        <td class="error-cell">{{if .Error}}{{truncate .Error 40}}{{end}}</td>
+        <td class="error-cell">{{if .Error}}{{truncate 40 .Error}}{{end}}</td>
       </tr>
       {{end}}
     {{end}}
   </tbody>
 </table>
 
-<h3>Job log{{if .ActiveJob}} — <span class="small">{{if eq .ActiveJob.State "provisioning"}}active{{else}}latest{{end}} {{truncate .ActiveJob.ID 20}}</span>{{end}}</h3>
+<h3>Job log{{if .ActiveJob}} — <span class="small">{{if eq .ActiveJob.State "provisioning"}}active{{else}}latest{{end}} {{truncate 20 .ActiveJob.ID}}</span>{{end}}</h3>
 
 {{if .ActiveJob}}
   {{if eq .ActiveJob.State "provisioning"}}
     {{if .CanCancel}}
     <form method="post" action="/ui/devices/{{.DeviceID}}/jobs">
       <input type="hidden" name="job_id" value="{{.ActiveJob.ID}}">
+      {{if .CSRFToken}}<input type="hidden" name="csrf_token" value="{{.CSRFToken}}">{{end}}
       <button type="submit">Cancel active job</button>
     </form>
     {{end}}

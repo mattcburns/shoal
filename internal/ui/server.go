@@ -1,80 +1,196 @@
-// Package ui provides Shoal's built-in, server-rendered web UI.
-//
-// This unit ("UI: Device Detail Events/Jobs tabs") implements the
-// /ui/devices/{id}/events and /ui/devices/{id}/jobs routes in events.go and
-// jobs.go, mirroring the read paths in internal/api/devices.go's
-// handleDeviceEvents/handleDeviceJobs and internal/api/jobs.go's
-// handleJobLog/handleCancelJob (calling Observe/Jobs/JobCanceler directly,
-// in-process -- never via HTTP).
-//
-// Server, renderPage, and the layout template below are a MINIMAL
-// PLACEHOLDER standing in for the sibling "UI shell" unit's own
-// internal/ui/server.go + templates/layout.html, which were not yet merged
-// when this unit was implemented. They exist only so this package builds
-// and can be exercised standalone (go build/go vet/go test, and a local
-// httptest server for the E2E check). The coordinator should reconcile this
-// file and templates/layout.html against the real shell unit at merge time;
-// events.go, jobs.go, templates/events.html, and templates/jobs.html are
-// this unit's actual deliverable and should not need field-name changes
-// beyond matching whatever the shell's Server struct turns out to call
-// these fields.
-//
-// Assumed shell contract (documented in the task brief):
-//   - Server has fields Observe *observe.Service, Jobs jobstore.Store, and a
-//     JobCanceler-shaped field (named Canceler below; type JobCanceler
-//     mirrors internal/api/jobs.go's JobCanceler interface).
-//   - Cookie-based auth on /ui/* is applied by shell middleware; this
-//     package does not implement or check auth itself.
-//   - A renderPage(w, r, name string, data any) helper executes a base
-//     layout template whose pages fill a {{define "content"}}...{{end}}
-//     block.
 package ui
 
 import (
-	"context"
-	"embed"
+	"bytes"
 	"html/template"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"strings"
-	"sync"
 
+	"github.com/mattcburns/shoal/internal/api"
+	"github.com/mattcburns/shoal/internal/common/directory"
+	"github.com/mattcburns/shoal/internal/core/profile"
 	"github.com/mattcburns/shoal/internal/deploy/jobstore"
 	"github.com/mattcburns/shoal/internal/observe"
 )
 
-//go:embed templates/*.html
-var templateFS embed.FS
+// Config carries every dependency ui.New needs to build a Server. Fields not
+// used by this unit's pages (Devices list/add/edit + shell) are placeholders
+// for units 6-8's device-detail tabs (Status/Events/Jobs/Sensors/Firmware),
+// documented here so the Server struct shape stays stable across those PRs.
+type Config struct {
+	// Directory is the device-identity backend (file-backed or NetBox-backed,
+	// selected at runtime -- never a build tag). Used by the Device List/Add/
+	// Edit/Detail pages this unit implements.
+	Directory directory.Store
 
-// JobCanceler cancels an in-flight job. Mirrors internal/api/jobs.go's
-// JobCanceler interface exactly (internal/deploy/job.Orchestrator satisfies
-// both).
-type JobCanceler interface {
-	Cancel(ctx context.Context, jobID string) error
+	// Observe is the aggregate device-status/event/job-log service
+	// (internal/observe). Placeholder for unit 6/7's Status/Events/Jobs tabs;
+	// unused by this unit.
+	Observe *observe.Service
+
+	// Jobs is the durable job store. Placeholder for unit 7's Jobs tab; unused
+	// by this unit.
+	Jobs jobstore.Store
+
+	// JobStarter starts a provisioning job (Deploy Orchestrator). Placeholder
+	// for a future "start job" UI action; unused by this unit.
+	JobStarter api.JobStarter
+
+	// JobCanceler cancels an in-flight job (Deploy Orchestrator). Placeholder
+	// for a future job-cancel UI action; unused by this unit.
+	JobCanceler api.JobCanceler
+
+	// Profiles is the saved-provisioning-profile store. Placeholder for a
+	// future profile_ref picker on a Provision form; unused by this unit's
+	// plain Add Device form.
+	Profiles profile.Store
+
+	// Credentials resolves/stores BMC credentials, the same api.DeviceCredentials
+	// surface internal/api/credentials.go's GET/PUT /v1/devices/{id}/credentials
+	// uses (Get/Put/Resolve) -- pass the same deviceCreds{...} value cmdServe
+	// already builds for WithDeviceCredentials so both surfaces resolve
+	// credentials identically (NetBox/directory-aware, never a raw secrets
+	// backend directly). Used by the Status tab's credentials-edit action and
+	// by Provision/Power actions that fall back to a device's stored creds.
+	Credentials api.DeviceCredentials
+
+	// Power dials a BMC to apply a Redfish reset (On/ForceOff/ForceRestart),
+	// the same api.DevicePower surface internal/api/power.go uses. Used by the
+	// Status tab's power-control buttons.
+	Power api.DevicePower
+
+	// DefaultBMCUsername/DefaultBMCPassword are the orchestrator-wide
+	// SHOAL_BMC_* lab fallback credentials (config.Config.BMCUsername/
+	// BMCPassword) -- used by the Status tab's power action only when neither
+	// the request nor Credentials.Resolve supplies a username/password,
+	// mirroring job.Options' same-named fields.
+	DefaultBMCUsername string
+	DefaultBMCPassword string
+
+	// APIToken gates /ui/* behind a login cookie when non-empty (compared
+	// against the POSTed password on /ui/login) -- the same value as
+	// SHOAL_API_TOKEN / internal/api's Bearer auth. Empty disables UI auth
+	// entirely, mirroring internal/api/auth.go's "auth disabled when token
+	// unset" behavior. Passed in by the caller (cmdServe); this package never
+	// reads the environment itself.
+	APIToken string
+
+	// Log receives handler/template errors. Defaults to slog.Default() if nil.
+	Log *slog.Logger
 }
 
-// Server holds this package's handler dependencies. See the package doc
-// comment above: this is a placeholder for the sibling shell unit's real
-// Server type, which will likely carry additional fields (Directory, etc.)
-// this unit's handlers do not use.
+// Server is the built-in web UI's HTTP surface: its own http.ServeMux and
+// Handler() method, mounted by internal/cli/cli.go's cmdServe as a sibling of
+// the existing API mux (see cmdServe for how the two are combined under one
+// http.Server).
 type Server struct {
-	Observe  *observe.Service
-	Jobs     jobstore.Store
-	Canceler JobCanceler
-	Log      *slog.Logger
+	mux      *http.ServeMux
+	log      *slog.Logger
+	apiToken string
 
-	mux *http.ServeMux
-
-	mu    sync.RWMutex
-	pages map[string]*template.Template
+	// Directory backs the Device List/Add/Edit/Detail pages. See Config.Directory.
+	Directory directory.Store
+	// Observe is unused by this unit. See Config.Observe.
+	Observe *observe.Service
+	// Jobs is unused by this unit. See Config.Jobs.
+	Jobs jobstore.Store
+	// JobStarter is unused by this unit. See Config.JobStarter.
+	JobStarter api.JobStarter
+	// JobCanceler is unused by this unit. See Config.JobCanceler.
+	JobCanceler api.JobCanceler
+	// Profiles is unused by this unit. See Config.Profiles.
+	Profiles profile.Store
+	// Credentials backs the Status tab's credentials-edit action. See Config.Credentials.
+	Credentials api.DeviceCredentials
+	// Power backs the Status tab's power-control buttons. See Config.Power.
+	Power api.DevicePower
+	// DefaultBMCUsername/DefaultBMCPassword back the Status tab's power
+	// action fallback. See Config.DefaultBMCUsername/DefaultBMCPassword.
+	DefaultBMCUsername string
+	DefaultBMCPassword string
 }
 
-// funcMap is available to every page template.
-var funcMap = template.FuncMap{
-	// truncate cuts s to at most n runes (not bytes), appending an ellipsis
-	// when it does. Rune-based so multi-byte text (e.g. a non-ASCII BMC
-	// error message) is never cut mid-character.
-	"truncate": func(s string, n int) string {
+// New builds a Server with routes registered. This is the single constructor
+// other code (cmdServe, tests) calls.
+func New(cfg Config) *Server {
+	log := cfg.Log
+	if log == nil {
+		log = slog.Default()
+	}
+	s := &Server{
+		mux:                http.NewServeMux(),
+		log:                log,
+		apiToken:           cfg.APIToken,
+		Directory:          cfg.Directory,
+		Observe:            cfg.Observe,
+		Jobs:               cfg.Jobs,
+		JobStarter:         cfg.JobStarter,
+		JobCanceler:        cfg.JobCanceler,
+		Profiles:           cfg.Profiles,
+		Credentials:        cfg.Credentials,
+		DefaultBMCUsername: cfg.DefaultBMCUsername,
+		DefaultBMCPassword: cfg.DefaultBMCPassword,
+		Power:              cfg.Power,
+	}
+	s.routes()
+	return s
+}
+
+// Handler returns the root handler (auth middleware over the routed mux).
+func (s *Server) Handler() http.Handler {
+	return s.withUIAuth(s.mux)
+}
+
+func (s *Server) routes() {
+	staticSub, err := fs.Sub(staticFS, "static")
+	if err != nil {
+		// static/*.css is embedded above; this can only fail if the embed
+		// directive itself is broken, which build would already have caught.
+		panic("ui: static assets: " + err.Error())
+	}
+	s.mux.Handle("GET /ui/static/", http.StripPrefix("/ui/static/", http.FileServerFS(staticSub)))
+
+	s.mux.HandleFunc("GET /ui/login", s.handleLoginForm)
+	s.mux.HandleFunc("POST /ui/login", s.handleLoginSubmit)
+	s.mux.HandleFunc("POST /ui/logout", s.handleLogout)
+
+	s.mux.HandleFunc("GET /ui/{$}", s.handleRoot)
+	s.mux.HandleFunc("GET /ui/devices", s.handleDeviceList)
+	s.mux.HandleFunc("GET /ui/devices/new", s.handleDeviceNewForm)
+	s.mux.HandleFunc("POST /ui/devices/new", s.handleDeviceNewSubmit)
+	// The device detail page is the Status/Provision/Power/Credentials tab
+	// (registerStatusRoutes, status.go) -- it supersedes the bare
+	// identity-only placeholder devices.go originally had for this route.
+	s.registerStatusRoutes()
+	s.mux.HandleFunc("GET /ui/devices/{id}/edit", s.handleDeviceEditForm)
+	s.mux.HandleFunc("POST /ui/devices/{id}/edit", s.handleDeviceEditSubmit)
+	s.mux.HandleFunc("POST /ui/devices/{id}/delete", s.handleDeviceDelete)
+	s.mux.HandleFunc("GET /ui/devices/{id}/events", s.handleDeviceEvents)
+	s.mux.HandleFunc("GET /ui/devices/{id}/jobs", s.handleDeviceJobs)
+	s.mux.HandleFunc("POST /ui/devices/{id}/jobs", s.handleCancelJob)
+}
+
+func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
+	http.Redirect(w, r, "/ui/devices", http.StatusFound)
+}
+
+// renderPage executes the named content template (a file under
+// internal/ui/templates/, e.g. "devices_list.html") inside the shared
+// layout.html chrome and writes the result. name's file must define a
+// `{{define "content"}}...{{end}}` template -- see embed.go's doc comment
+// for the full convention. Units 6-8 call this exact helper (signature and
+// behavior) from their own page handlers.
+// templateFuncs are available to every page template rendered via
+// renderPage. truncate is used by status.html to shorten job ids in
+// button/heading text.
+var templateFuncs = template.FuncMap{
+	// truncate cuts s to at most n runes (not bytes, so multi-byte text --
+	// e.g. a non-ASCII BMC error message -- is never cut mid-character),
+	// appending an ellipsis when it does. Argument order is (n, s) to match
+	// every existing call site (status.html's `truncate 16 .ActiveJob.ID`).
+	"truncate": func(n int, s string) string {
 		r := []rune(s)
 		if len(r) <= n {
 			return s
@@ -87,58 +203,19 @@ var funcMap = template.FuncMap{
 	"lower": strings.ToLower,
 }
 
-// New constructs a placeholder UI server and registers this unit's routes.
-func New(log *slog.Logger) *Server {
-	if log == nil {
-		log = slog.Default()
-	}
-	s := &Server{Log: log, pages: make(map[string]*template.Template)}
-	s.mux = http.NewServeMux()
-	s.routes()
-	return s
-}
-
-// Handler returns the http.Handler serving this unit's routes. The real
-// shell unit is expected to mount its own equivalent server at "/ui/" in
-// internal/cli (out of scope here); this exists so the package can be
-// exercised standalone (see server_test.go).
-func (s *Server) Handler() http.Handler { return s.mux }
-
-func (s *Server) routes() {
-	s.mux.HandleFunc("GET /ui/devices/{id}/events", s.handleDeviceEvents)
-	s.mux.HandleFunc("GET /ui/devices/{id}/jobs", s.handleDeviceJobs)
-	s.mux.HandleFunc("POST /ui/devices/{id}/jobs", s.handleCancelJob)
-}
-
-// page returns the parsed layout+content template set for name (the content
-// file's basename without ".html"), parsing and caching it on first use.
-func (s *Server) page(name string) (*template.Template, error) {
-	s.mu.RLock()
-	t, ok := s.pages[name]
-	s.mu.RUnlock()
-	if ok {
-		return t, nil
-	}
-	t, err := template.New("layout.html").Funcs(funcMap).ParseFS(templateFS, "templates/layout.html", "templates/"+name+".html")
-	if err != nil {
-		return nil, err
-	}
-	s.mu.Lock()
-	s.pages[name] = t
-	s.mu.Unlock()
-	return t, nil
-}
-
-// renderPage executes the named content template inside the shared layout.
 func (s *Server) renderPage(w http.ResponseWriter, r *http.Request, name string, data any) {
-	t, err := s.page(name)
+	tmpl, err := template.New("layout.html").Funcs(templateFuncs).ParseFS(templatesFS, "templates/layout.html", "templates/"+name)
 	if err != nil {
-		s.Log.Error("ui render page", "name", name, "err", err.Error())
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		s.log.Error("ui: render page: parse", "template", name, "err", err.Error())
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	var buf bytes.Buffer
+	if err := tmpl.ExecuteTemplate(&buf, "layout.html", data); err != nil {
+		s.log.Error("ui: render page: execute", "template", name, "err", err.Error())
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := t.ExecuteTemplate(w, "layout.html", data); err != nil {
-		s.Log.Error("ui execute template", "name", name, "err", err.Error())
-	}
+	_, _ = buf.WriteTo(w)
 }

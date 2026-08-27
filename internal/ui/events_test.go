@@ -25,7 +25,7 @@ func TestEventsEmptyState(t *testing.T) {
 	store := jobstore.NewMemory()
 	telem := telemetry.NewMemory()
 	obs := observe.New(testLog(), store, telem, nil)
-	srv := ui.New(testLog())
+	srv := ui.New(ui.Config{Log: testLog()})
 	srv.Observe = obs
 	srv.Jobs = store
 
@@ -59,7 +59,7 @@ func TestEventsWithRows(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed event: %v", err)
 	}
-	srv := ui.New(testLog())
+	srv := ui.New(ui.Config{Log: testLog()})
 	srv.Observe = obs
 	srv.Jobs = store
 
@@ -79,7 +79,7 @@ func TestEventsWithRows(t *testing.T) {
 }
 
 func TestEventsObserveNotConfigured(t *testing.T) {
-	srv := ui.New(testLog())
+	srv := ui.New(ui.Config{Log: testLog()})
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/ui/devices/dev-1/events", nil)
 	srv.Handler().ServeHTTP(rr, req)

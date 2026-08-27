@@ -25,7 +25,7 @@ func (s *Server) handleDeviceEvents(w http.ResponseWriter, r *http.Request) {
 	data := eventsPageData{DeviceID: id}
 	if s.Observe == nil {
 		data.Error = "observe not configured"
-		s.renderPage(w, r, "events", data)
+		s.renderPage(w, r, "events.html", data)
 		return
 	}
 
@@ -42,12 +42,12 @@ func (s *Server) handleDeviceEvents(w http.ResponseWriter, r *http.Request) {
 		if isNotConfiguredErr(err) {
 			data.Error = "observe not configured"
 		} else {
-			s.Log.Error("ui device events", "device_id", id, "err", err.Error())
+			s.log.Error("ui device events", "device_id", id, "err", err.Error())
 			data.Error = "upstream request failed"
 		}
-		s.renderPage(w, r, "events", data)
+		s.renderPage(w, r, "events.html", data)
 		return
 	}
 	data.Events = evs
-	s.renderPage(w, r, "events", data)
+	s.renderPage(w, r, "events.html", data)
 }

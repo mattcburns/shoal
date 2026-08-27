@@ -21,7 +21,7 @@ func TestJobsEmptyState(t *testing.T) {
 	store := jobstore.NewMemory()
 	telem := telemetry.NewMemory()
 	obs := observe.New(testLog(), store, telem, nil)
-	srv := ui.New(testLog())
+	srv := ui.New(ui.Config{Log: testLog()})
 	srv.Observe = obs
 	srv.Jobs = store
 
@@ -41,7 +41,7 @@ func TestJobsEmptyState(t *testing.T) {
 }
 
 func TestJobsStoreNotConfigured(t *testing.T) {
-	srv := ui.New(testLog())
+	srv := ui.New(ui.Config{Log: testLog()})
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/ui/devices/dev-1/jobs", nil)
 	srv.Handler().ServeHTTP(rr, req)
@@ -94,10 +94,10 @@ func TestJobsActiveJobLogAndCancel(t *testing.T) {
 	}
 
 	canceler := &fakeCanceler{}
-	srv := ui.New(testLog())
+	srv := ui.New(ui.Config{Log: testLog()})
 	srv.Observe = obs
 	srv.Jobs = store
-	srv.Canceler = canceler
+	srv.JobCanceler = canceler
 
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/ui/devices/dev-1/jobs", nil)
@@ -136,9 +136,9 @@ func TestJobsActiveJobLogAndCancel(t *testing.T) {
 
 func TestJobsCancelNotFoundSurfacesBanner(t *testing.T) {
 	store := jobstore.NewMemory()
-	srv := ui.New(testLog())
+	srv := ui.New(ui.Config{Log: testLog()})
 	srv.Jobs = store
-	srv.Canceler = &fakeCanceler{err: jobstore.ErrNotFound}
+	srv.JobCanceler = &fakeCanceler{err: jobstore.ErrNotFound}
 
 	form := url.Values{"job_id": {"missing-job"}}
 	req := httptest.NewRequest(http.MethodPost, "/ui/devices/dev-1/jobs", strings.NewReader(form.Encode()))
@@ -173,7 +173,7 @@ func TestJobsCancelNotFoundSurfacesBanner(t *testing.T) {
 func TestJobsLimitClampedTo200(t *testing.T) {
 	store := jobstore.NewMemory()
 	obs := observe.New(testLog(), store, telemetry.NewMemory(), nil)
-	srv := ui.New(testLog())
+	srv := ui.New(ui.Config{Log: testLog()})
 	srv.Observe = obs
 	srv.Jobs = store
 
