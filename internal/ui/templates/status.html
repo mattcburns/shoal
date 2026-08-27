@@ -1,0 +1,273 @@
+{{define "content"}}
+{{if .Provisioning}}<meta http-equiv="refresh" content="5">{{end}}
+
+<h1>Device {{.DeviceID}}{{if .Device}} — {{.Device.Name}}{{end}}</h1>
+<p>
+  <a href="/ui/devices">&larr; All devices</a>
+  &middot;
+  <a href="/ui/devices/{{.DeviceID}}/edit">Edit device</a>
+  {{if .Provisioning}}<span class="badge badge-provisioning">auto-refresh 5s</span>{{end}}
+</p>
+
+{{if .Flash}}
+  <div class="flash {{if eq .FlashLevel "error"}}flash-error{{else}}flash-success{{end}}">{{.Flash}}</div>
+{{end}}
+
+<div class="card">
+  <h2>Provision</h2>
+  <div class="body">
+    {{if .Provisioning}}
+      <p class="muted">A job is already provisioning this device; the form is disabled until it finishes.</p>
+    {{end}}
+    <form method="post" action="/ui/devices/{{.DeviceID}}">
+      <input type="hidden" name="action" value="start">
+      <div class="row">
+        <div class="col">
+          <div class="field">
+            <label for="f_bmc_endpoint">BMC endpoint</label>
+            <input type="text" id="f_bmc_endpoint" name="bmc_endpoint" value="{{.Defaults.BMCEndpoint}}" placeholder="https://bmc-ip or lab sushy URL" {{if .Provisioning}}disabled{{end}} required>
+          </div>
+          <div class="field">
+            <label for="f_iso_url">ISO URL</label>
+            <input type="text" id="f_iso_url" name="iso_url" placeholder="http://.../shoal-marker.iso" {{if .Provisioning}}disabled{{end}}>
+          </div>
+        </div>
+        <div class="col">
+          <div class="field">
+            <label for="f_profile_ref">Profile</label>
+            <select id="f_profile_ref" name="profile_ref" {{if .Provisioning}}disabled{{end}}>
+              <option value="spike" selected>spike (default)</option>
+              {{range .Profiles}}
+                <option value="{{.Profile.Ref}}">{{.Profile.Ref}}{{if .Profile.OSFamily}} ({{.Profile.OSFamily}}){{end}}</option>
+              {{end}}
+            </select>
+          </div>
+          <div class="field">
+            <label for="f_serial_target">Serial / system target</label>
+            <input type="text" id="f_serial_target" name="serial_target" value="{{.Defaults.SerialTarget}}" {{if .Provisioning}}disabled{{end}}>
+            <input type="hidden" name="system_id" value="{{.Defaults.SystemID}}">
+          </div>
+        </div>
+        <div class="col">
+          <div class="field">
+            <label for="f_bmc_username">BMC user (optional)</label>
+            <input type="text" id="f_bmc_username" name="bmc_username" autocomplete="off" placeholder="stored BMC creds, then env" {{if .Provisioning}}disabled{{end}}>
+          </div>
+          <div class="field">
+            <label for="f_bmc_password">BMC password (optional)</label>
+            <input type="password" id="f_bmc_password" name="bmc_password" autocomplete="new-password" placeholder="stored BMC creds, then env" {{if .Provisioning}}disabled{{end}}>
+          </div>
+          <div class="field">
+            <input type="checkbox" id="f_approve_destruct" name="approve_destruct" {{if .Provisioning}}disabled{{end}}>
+            <label style="display:inline" for="f_approve_destruct">Approve destruct steps</label>
+          </div>
+        </div>
+      </div>
+      <button type="submit" class="btn-primary" {{if .Provisioning}}disabled title="A job is already provisioning"{{end}}>Start provision</button>
+    </form>
+    {{if and .ActiveJob (eq .ActiveJob.State "provisioning")}}
+      <form method="post" action="/ui/devices/{{.DeviceID}}" style="display:inline">
+        <input type="hidden" name="action" value="cancel">
+        <input type="hidden" name="job_id" value="{{.ActiveJob.ID}}">
+        <button type="submit" class="btn-danger">Cancel job {{truncate 16 .ActiveJob.ID}}</button>
+      </form>
+    {{end}}
+    <p class="muted">Passwords are never stored anywhere but Shoal's secrets backend. Empty user/pass uses the stored per-device secret, then server-side defaults.</p>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Deprovision this device</h2>
+  <div class="body">
+    <form method="post" action="/ui/devices/{{.DeviceID}}"
+          onsubmit="return confirm('Permanently wipe the boot disk on this device?');">
+      <input type="hidden" name="action" value="deprovision">
+      <div class="row">
+        <div class="col">
+          <div class="field">
+            <label for="d_bmc_endpoint">BMC endpoint</label>
+            <input type="text" id="d_bmc_endpoint" name="bmc_endpoint" value="{{.Defaults.BMCEndpoint}}" required>
+          </div>
+          <div class="field">
+            <label for="d_serial_target">Serial / system target</label>
+            <input type="text" id="d_serial_target" name="serial_target" value="{{.Defaults.SerialTarget}}">
+            <input type="hidden" name="system_id" value="{{.Defaults.SystemID}}">
+          </div>
+        </div>
+        <div class="col">
+          <div class="field">
+            <label for="d_wipe_level">Wipe level</label>
+            <select id="d_wipe_level" name="wipe_level" required>
+              <option value="" selected disabled>Choose…</option>
+              <option value="discard">discard (fast)</option>
+              <option value="zero">zero (dd)</option>
+            </select>
+          </div>
+          <div class="field">
+            <input type="checkbox" id="d_approve_destruct" name="approve_destruct" required>
+            <label style="display:inline" for="d_approve_destruct">This permanently wipes the boot disk. I approve.</label>
+          </div>
+        </div>
+        <div class="col">
+          <div class="field">
+            <label for="d_bmc_username">BMC user (optional)</label>
+            <input type="text" id="d_bmc_username" name="bmc_username" autocomplete="off">
+          </div>
+          <div class="field">
+            <label for="d_bmc_password">BMC password (optional)</label>
+            <input type="password" id="d_bmc_password" name="bmc_password" autocomplete="new-password">
+          </div>
+        </div>
+      </div>
+      <button type="submit" class="btn-danger">Deprovision</button>
+    </form>
+    <p class="muted">
+      The confirm() dialog above is a convenience only. The server independently
+      requires wipe_level and approve_destruct=on on every deprovision POST,
+      regardless of JavaScript, so a scripted or JS-disabled client cannot skip
+      confirmation.
+    </p>
+  </div>
+</div>
+
+<div class="card">
+  <h2>BMC credentials</h2>
+  <div class="body">
+    {{if .CredsErr}}<p class="muted">Could not load credentials: {{.CredsErr}}</p>{{end}}
+    <form method="post" action="/ui/devices/{{.DeviceID}}">
+      <input type="hidden" name="action" value="credentials">
+      <div class="row">
+        <div class="col">
+          <div class="field">
+            <label for="c_username">BMC username</label>
+            <input type="text" id="c_username" name="bmc_username" value="{{.Creds.Username}}" autocomplete="off" required>
+          </div>
+        </div>
+        <div class="col">
+          <div class="field">
+            <label for="c_password">BMC password</label>
+            <input type="password" id="c_password" name="bmc_password" autocomplete="new-password"
+                   placeholder="{{if .Creds.HasPassword}}leave blank to keep{{else}}required{{end}}">
+          </div>
+        </div>
+        <div class="col">
+          <div class="field">
+            <label for="c_bmc_ip">BMC IP (optional)</label>
+            <input type="text" id="c_bmc_ip" name="bmc_ip" value="{{.Creds.BMCIP}}">
+          </div>
+        </div>
+      </div>
+      <button type="submit" class="btn-primary">Save</button>
+    </form>
+    <p class="muted">
+      Ref <code>{{if .Creds.CredentialRef}}{{.Creds.CredentialRef}}{{else}}(assigned on save){{end}}</code> —
+      {{if .Creds.HasPassword}}<span class="badge badge-provisioned">password set</span>{{else}}<span class="badge badge-other">no password</span>{{end}}
+    </p>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Host power</h2>
+  <div class="body">
+    <form method="post" action="/ui/devices/{{.DeviceID}}">
+      <input type="hidden" name="action" value="power">
+      <input type="hidden" name="system_id" value="{{.Defaults.SystemID}}">
+      <div class="row">
+        <div class="col">
+          <div class="field">
+            <label for="p_bmc_endpoint">BMC endpoint</label>
+            <input type="text" id="p_bmc_endpoint" name="bmc_endpoint" value="{{.Defaults.BMCEndpoint}}" required>
+          </div>
+        </div>
+        <div class="col">
+          <div class="field">
+            <label for="p_bmc_username">BMC user (optional)</label>
+            <input type="text" id="p_bmc_username" name="bmc_username" autocomplete="off">
+          </div>
+        </div>
+        <div class="col">
+          <div class="field">
+            <label for="p_bmc_password">BMC password (optional)</label>
+            <input type="password" id="p_bmc_password" name="bmc_password" autocomplete="new-password">
+          </div>
+        </div>
+      </div>
+      <button type="submit" name="reset_type" value="On" class="btn-primary">Power on</button>
+      <button type="submit" name="reset_type" value="ForceOff" class="btn-danger"
+              onclick="return confirm('Force power off this host?');">Force off</button>
+      <button type="submit" name="reset_type" value="ForceRestart" class="btn-danger"
+              onclick="return confirm('Force restart this host?');">Reset</button>
+    </form>
+  </div>
+</div>
+
+<div class="row">
+  <div class="col card">
+    <h2>Shoal Status</h2>
+    <div class="body">
+      {{if .StatusErr}}
+        <p class="muted">Shoal status unavailable: {{.StatusErr}}</p>
+      {{else if not .Status}}
+        <p class="muted">No status for this device yet.</p>
+      {{else}}
+        <table class="attrs">
+          <tr><th>Lifecycle</th><td>
+            {{if eq (print .Status.LifecycleState) "provisioning"}}<span class="badge badge-provisioning">provisioning</span>
+            {{else if eq (print .Status.LifecycleState) "provisioned"}}<span class="badge badge-provisioned">provisioned</span>
+            {{else if eq (print .Status.LifecycleState) "failed"}}<span class="badge badge-failed">failed</span>
+            {{else}}<span class="badge badge-other">{{.Status.LifecycleState}}</span>{{end}}
+          </td></tr>
+          <tr><th>Power</th><td>{{if .Status.PowerState}}{{.Status.PowerState}}{{else}}—{{end}}</td></tr>
+          <tr><th>Active job</th><td>{{if .Status.ActiveJobID}}<code>{{truncate 16 .Status.ActiveJobID}}</code>{{else}}—{{end}}</td></tr>
+          <tr><th>Phase</th><td><code>{{if .Status.Phase}}{{.Status.Phase}}{{else}}—{{end}}</code></td></tr>
+          <tr><th>Progress</th><td>{{if .Status.Percent}}{{.Status.Percent}}%{{else}}—{{end}}</td></tr>
+          <tr><th>Last event</th><td>{{if .Status.LastEvent}}{{.Status.LastEvent}}{{else}}—{{end}}</td></tr>
+          <tr><th>Updated</th><td>{{.Status.UpdatedAt}}</td></tr>
+        </table>
+      {{end}}
+    </div>
+  </div>
+
+  <div class="col card">
+    <h2>Stages{{if .ActiveJob}}{{if .ActiveJob.InstallStrategy}} <span class="badge badge-other">{{.ActiveJob.InstallStrategy}}</span>{{end}}{{end}}</h2>
+    <div class="body">
+      {{if not .ActiveJob}}
+        <p class="muted">No recent jobs for this device.</p>
+      {{else if .ActiveJob.Stages}}
+        <ul class="stages">
+          {{range .ActiveJob.Stages}}
+            <li>
+              {{if eq .State "done"}}<span class="badge badge-provisioned">done</span>
+              {{else if eq .State "running"}}<span class="badge badge-provisioning">running</span>
+              {{else if eq .State "failed"}}<span class="badge badge-failed">failed</span>
+              {{else}}<span class="badge badge-other">{{if .State}}{{.State}}{{else}}pending{{end}}</span>{{end}}
+              <strong>{{if .Kind}}{{.Kind}}{{else}}{{.ID}}{{end}}</strong>
+              {{if .Phase}}<code>{{.Phase}}</code>{{end}}
+              {{if .Strategy}}<span class="muted">{{.Strategy}}</span>{{end}}
+            </li>
+          {{end}}
+        </ul>
+        {{if .ActiveJob.CurrentStage}}<p class="muted">Current stage: <code>{{.ActiveJob.CurrentStage}}</code></p>{{end}}
+      {{else}}
+        <p class="muted">Single-stage job (no expanded stage list).</p>
+      {{end}}
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Job log{{if .ActiveJob}} — <span class="muted">{{truncate 20 .ActiveJob.ID}}</span>{{end}}</h2>
+  <div class="body">
+    {{if .LogErr}}
+      <p class="muted">Log unavailable: {{.LogErr}}</p>
+    {{else if not .ActiveJob}}
+      <p class="muted">No job to show a log for yet.</p>
+    {{else if not .LogLines}}
+      <p class="muted">No log lines yet.</p>
+    {{else}}
+      <div class="log">{{range .LogLines}}{{.TS}}  {{.Line}}
+{{end}}</div>
+    {{end}}
+  </div>
+</div>
+{{end}}

@@ -3,43 +3,28 @@ package ui
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/mattcburns/shoal/internal/api"
 )
 
-// DevicePollRequest/DevicePollResult/DevicePoll mirror internal/api/poll.go's
-// types of the same names exactly, so a "Poll BMC" submission from either
-// the Sensors or Firmware tab runs the same in-process Redfish SEL+sensor
-// poll the HTTP API's POST /v1/devices/{id}/poll uses -- not a second HTTP
-// round trip. Kept as separate types here (rather than importing
-// internal/api, which is owned by a sibling unit in this batch) to avoid a
-// ui -> api package dependency; reconcile with the shell unit at merge time
-// if a single shared type is preferred (e.g. by moving DevicePoll to a
-// neutral package both import).
-type DevicePollRequest struct {
-	BMCEndpoint string
-	BMCUsername string
-	BMCPassword string
-	SystemID    string
-}
-
-// DevicePollResult is the on-demand poll outcome. Password is never
-// included (mirrors internal/api/poll.go's DevicePollResult).
-type DevicePollResult struct {
-	DeviceID        string
-	SELNew          int
-	SensorsWritten  int
-	FirmwareWritten int
-	PowerState      string
-}
-
-// DevicePoll runs one Redfish SEL+sensor poll into telemetry. Any type
-// implementing internal/api's equivalent interface (e.g.
-// internal/cli/poll.go's devicePoll) can be adapted to satisfy this one.
-type DevicePoll interface {
-	Poll(ctx context.Context, deviceID string, req DevicePollRequest) (DevicePollResult, error)
+// logErr logs a handler-side failure with s.log (falling back to
+// slog.Default if unset), the same pattern status.go's
+// redirectUpstreamError uses -- upstream error detail is logged
+// server-side only, never echoed back into a response.
+func (s *Server) logErr(msg string, err error, args ...any) {
+	log := s.log
+	if log == nil {
+		log = slog.Default()
+	}
+	all := make([]any, 0, len(args)+2)
+	all = append(all, "err", err.Error())
+	all = append(all, args...)
+	log.Error(msg, all...)
 }
 
 // pollTimeoutFloor mirrors the ~120s timeout floor documented in
@@ -70,7 +55,11 @@ func (s *Server) handlePollForm(w http.ResponseWriter, r *http.Request, tab stri
 		redirectWithPollResult(w, r, backTo, "", true, "Invalid form submission.")
 		return
 	}
-	req := DevicePollRequest{
+	if !s.verifyCSRF(r) {
+		redirectWithPollResult(w, r, backTo, "", true, "Your session expired; please retry.")
+		return
+	}
+	req := api.DevicePollRequest{
 		BMCEndpoint: strings.TrimSpace(r.PostForm.Get("bmc_endpoint")),
 		BMCUsername: strings.TrimSpace(r.PostForm.Get("bmc_username")),
 		BMCPassword: r.PostForm.Get("bmc_password"),

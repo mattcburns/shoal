@@ -1,0 +1,95 @@
+{{define "content"}}
+{{if .AutoRefresh}}<meta http-equiv="refresh" content="5">{{end}}
+<h2>Jobs — device {{.DeviceID}}</h2>
+<div class="toolbar">
+  <span>
+    {{if .AutoRefresh}}<span class="badge state-provisioning">Auto-refresh 5s while a job is provisioning</span>{{end}}
+  </span>
+  <a href="/ui/devices/{{.DeviceID}}/jobs">Refresh</a>
+</div>
+
+{{if .CancelError}}
+  <div class="banner warn">{{.CancelError}}</div>
+{{end}}
+
+{{if .Error}}
+  <div class="banner warn">Shoal unavailable: {{.Error}}</div>
+{{end}}
+
+<table>
+  <thead>
+    <tr>
+      <th scope="col">ID</th>
+      <th scope="col">State</th>
+      <th scope="col">Phase</th>
+      <th scope="col">Progress</th>
+      <th scope="col">Stages</th>
+      <th scope="col">Profile</th>
+      <th scope="col">Updated</th>
+      <th scope="col">Error</th>
+    </tr>
+  </thead>
+  <tbody>
+    {{if not .Jobs}}
+    <tr><td colspan="8">
+      <div class="banner info">
+        No jobs recorded for this device yet. Start a deploy with this device id
+        to see it here.
+      </div>
+    </td></tr>
+    {{else}}
+      {{range .Jobs}}
+      <tr{{if eq .State "provisioning"}} class="active-row"{{end}}>
+        <td><code title="{{.ID}}">{{truncate 12 .ID}}</code></td>
+        <td><span class="badge state-{{.State}}">{{if .State}}{{.State}}{{else}}—{{end}}</span></td>
+        <td><code>{{if .Phase}}{{.Phase}}{{else}}—{{end}}</code></td>
+        <td>
+          {{if .Percent}}{{.Percent}}%{{else}}—{{end}}
+        </td>
+        <td class="stages">
+          {{if .Stages}}
+            {{range .Stages}}
+              <small>
+                {{if eq .State "done"}}✓{{else if eq .State "running"}}●{{else if eq .State "failed"}}✗{{else}}○{{end}}
+                {{if .Kind}}{{.Kind}}{{else}}{{.ID}}{{end}}
+                {{if .Phase}}<code>{{.Phase}}</code>{{end}}
+              </small>
+            {{end}}
+          {{else if .CurrentStage}}
+            <code>{{.CurrentStage}}</code>
+          {{else}}—{{end}}
+        </td>
+        <td>{{if .ProfileRef}}{{.ProfileRef}}{{else}}—{{end}}</td>
+        <td>{{if .UpdatedAt}}{{.UpdatedAt.Format "2006-01-02T15:04:05Z07:00"}}{{else}}—{{end}}</td>
+        <td class="error-cell">{{if .Error}}{{truncate 40 .Error}}{{end}}</td>
+      </tr>
+      {{end}}
+    {{end}}
+  </tbody>
+</table>
+
+<h3>Job log{{if .ActiveJob}} — <span class="small">{{if eq .ActiveJob.State "provisioning"}}active{{else}}latest{{end}} {{truncate 20 .ActiveJob.ID}}</span>{{end}}</h3>
+
+{{if .ActiveJob}}
+  {{if eq .ActiveJob.State "provisioning"}}
+    {{if .CanCancel}}
+    <form method="post" action="/ui/devices/{{.DeviceID}}/jobs">
+      <input type="hidden" name="job_id" value="{{.ActiveJob.ID}}">
+      {{if .CSRFToken}}<input type="hidden" name="csrf_token" value="{{.CSRFToken}}">{{end}}
+      <button type="submit">Cancel active job</button>
+    </form>
+    {{end}}
+  {{end}}
+{{end}}
+
+{{if .JobLogError}}
+  <div class="banner warn">Log unavailable: {{.JobLogError}}</div>
+{{else if not .ActiveJob}}
+  <div class="banner info">No job selected for log view.</div>
+{{else if not .JobLog}}
+  <div class="banner info">No log lines yet for this job. SOL markers are written as the job progresses.</div>
+{{else}}
+  <div class="job-log">{{range .JobLog}}{{.TS.Format "2006-01-02T15:04:05Z07:00"}}  {{.Line}}
+{{end}}</div>
+{{end}}
+{{end}}

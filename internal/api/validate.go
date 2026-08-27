@@ -54,6 +54,15 @@ func validateDevicePower(resetType, bmcEndpoint string) error {
 	return nil
 }
 
+// validateCreateDevice requires name or serial so a new device record is
+// identifiable/resolvable later via directory.Store.ResolveDeviceID.
+func validateCreateDevice(name, serial string) error {
+	if strings.TrimSpace(name) == "" && strings.TrimSpace(serial) == "" {
+		return fmt.Errorf("validate: name or serial is required")
+	}
+	return nil
+}
+
 // ValidateDevicePower is the exported form of validateDevicePower, for
 // internal/cli's "observe power" command to apply the same reset_type/
 // bmc_endpoint check the HTTP handler (POST /v1/devices/{id}/power) applies,

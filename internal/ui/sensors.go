@@ -24,6 +24,7 @@ type sensorsPageData struct {
 	Error       string
 	PollMessage string
 	PollError   bool
+	CSRFToken   string
 	Sensors     []sensorRow
 }
 
@@ -41,6 +42,7 @@ func (s *Server) handleSensorsGet(w http.ResponseWriter, r *http.Request) {
 	data := sensorsPageData{
 		DeviceID:    id,
 		BMCEndpoint: q.Get("bmc_endpoint"),
+		CSRFToken:   s.csrfToken(r),
 	}
 	applyPollFeedback(&data.PollMessage, &data.PollError, q)
 

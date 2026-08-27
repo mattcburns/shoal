@@ -9,6 +9,7 @@
 <section>
   <h2>Poll BMC</h2>
   <form class="poll-form" method="post" action="/ui/devices/{{.DeviceID}}/sensors">
+    {{if .CSRFToken}}<input type="hidden" name="csrf_token" value="{{.CSRFToken}}">{{end}}
     <div>
       <label for="sensors_bmc_endpoint">BMC endpoint</label>
       <input id="sensors_bmc_endpoint" name="bmc_endpoint" value="{{.BMCEndpoint}}" placeholder="https://10.0.0.5" required>

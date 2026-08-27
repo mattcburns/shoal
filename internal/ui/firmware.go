@@ -23,6 +23,7 @@ type firmwarePageData struct {
 	Error       string
 	PollMessage string
 	PollError   bool
+	CSRFToken   string
 	AsOf        string
 	Firmware    []firmwareRow
 }
@@ -42,6 +43,7 @@ func (s *Server) handleFirmwareGet(w http.ResponseWriter, r *http.Request) {
 	data := firmwarePageData{
 		DeviceID:    id,
 		BMCEndpoint: q.Get("bmc_endpoint"),
+		CSRFToken:   s.csrfToken(r),
 	}
 	applyPollFeedback(&data.PollMessage, &data.PollError, q)
 

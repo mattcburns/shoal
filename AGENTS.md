@@ -98,6 +98,17 @@ These encode the core design decisions. Violating one is a bug, even if tests pa
     Cobra, Gin/Echo/Chi, LiteLLM / provider SDKs, ORMs. Redfish/BMC control uses
     a hand-written HTTP client (`internal/common/redfish`), not a third-party
     Redfish SDK — see §7.
+13. **Exactly one device-directory backend is active per process, always
+    config-gated, both always compiled in.** `internal/common/directory`'s
+    `Store` interface generalizes rule 4 (NetBox stores identity + current
+    `lifecycle_state` only) across two interchangeable implementations: the
+    NetBox adapter (`*netbox.Client`) and a local JSON-file-backed
+    `FileStore` (`SHOAL_DEVICE_STORE_DIR`). Selection is a runtime config
+    gate in `internal/cli`'s `buildDirectory` — NetBox when
+    `SHOAL_NETBOX_URL`/`SHOAL_NETBOX_TOKEN` are set, else the local store —
+    never a build tag; the shipped binary always contains both backends. A
+    shared conformance test (`directory.RunConformance`) keeps both
+    behaviorally identical. See `docs/design/device-directory.md`.
 
 ---
 

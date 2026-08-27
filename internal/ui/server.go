@@ -1,146 +1,234 @@
-// Package ui implements shoal's built-in, server-rendered web UI so
-// operators can inspect/manage devices without NetBox.
-//
-// NOTE: this file is a minimal placeholder for the "UI shell" sibling unit
-// in this batch of parallel work items, which owns internal/ui's real
-// Server (cookie-auth middleware, device list/detail scaffolding, base
-// layout, and a renderPage helper) per the batch's documented contract. It
-// exists only so this unit's Sensors/Firmware tabs compile and are
-// independently testable; reconcile field names/helpers with the shell
-// unit at merge time. In particular the documented `Directory
-// directory.Store` field is intentionally omitted here: internal/common/
-// directory is a sibling unit and does not exist yet in this branch, and
-// the Sensors/Firmware tabs don't need it (they key everything off the
-// {id} path segment).
 package ui
 
 import (
-	"embed"
+	"bytes"
 	"html/template"
+	"io/fs"
 	"log/slog"
 	"net/http"
-	"strconv"
 	"strings"
 
+	"github.com/mattcburns/shoal/internal/api"
+	"github.com/mattcburns/shoal/internal/common/directory"
+	"github.com/mattcburns/shoal/internal/core/profile"
+	"github.com/mattcburns/shoal/internal/deploy/jobstore"
 	"github.com/mattcburns/shoal/internal/observe"
 )
 
-//go:embed templates/*.html
-var templateFS embed.FS
+// Config carries every dependency ui.New needs to build a Server. Fields not
+// used by this unit's pages (Devices list/add/edit + shell) are placeholders
+// for units 6-8's device-detail tabs (Status/Events/Jobs/Sensors/Firmware),
+// documented here so the Server struct shape stays stable across those PRs.
+type Config struct {
+	// Directory is the device-identity backend (file-backed or NetBox-backed,
+	// selected at runtime -- never a build tag). Used by the Device List/Add/
+	// Edit/Detail pages this unit implements.
+	Directory directory.Store
 
-// maxListLimit bounds the ?limit= query param on the sensors/firmware
-// listings. Mirrors internal/api/server.go's maxListLimit (kept as an
-// independent constant rather than importing internal/api, which is owned
-// by a sibling unit in this batch).
-const maxListLimit = 200
-
-// Server is shoal's built-in web UI surface for the Sensors/Firmware device
-// tabs implemented by this unit.
-type Server struct {
-	// Observe backs the Sensors/Firmware tabs' reads. Nil means "not
-	// configured" and is rendered as a banner, not a 5xx.
+	// Observe is the aggregate device-status/event/job-log service
+	// (internal/observe). Placeholder for unit 6/7's Status/Events/Jobs tabs;
+	// unused by this unit.
 	Observe *observe.Service
-	// Poll runs the on-demand "Poll BMC" action in-process, mirroring
-	// internal/api/poll.go's DevicePoll (see poll.go in this package).
-	Poll DevicePoll
-	// Log receives server-side detail for failures that must not reach the
-	// browser verbatim, mirroring internal/api/errors.go's
-	// writeUpstreamError. Defaults to slog.Default() when nil.
-	Log *slog.Logger
 
-	mux   *http.ServeMux
-	pages map[string]*template.Template
+	// Jobs is the durable job store. Placeholder for unit 7's Jobs tab; unused
+	// by this unit.
+	Jobs jobstore.Store
+
+	// JobStarter starts a provisioning job (Deploy Orchestrator). Placeholder
+	// for a future "start job" UI action; unused by this unit.
+	JobStarter api.JobStarter
+
+	// JobCanceler cancels an in-flight job (Deploy Orchestrator). Placeholder
+	// for a future job-cancel UI action; unused by this unit.
+	JobCanceler api.JobCanceler
+
+	// Profiles is the saved-provisioning-profile store. Placeholder for a
+	// future profile_ref picker on a Provision form; unused by this unit's
+	// plain Add Device form.
+	Profiles profile.Store
+
+	// Credentials resolves/stores BMC credentials, the same api.DeviceCredentials
+	// surface internal/api/credentials.go's GET/PUT /v1/devices/{id}/credentials
+	// uses (Get/Put/Resolve) -- pass the same deviceCreds{...} value cmdServe
+	// already builds for WithDeviceCredentials so both surfaces resolve
+	// credentials identically (NetBox/directory-aware, never a raw secrets
+	// backend directly). Used by the Status tab's credentials-edit action and
+	// by Provision/Power actions that fall back to a device's stored creds.
+	Credentials api.DeviceCredentials
+
+	// Power dials a BMC to apply a Redfish reset (On/ForceOff/ForceRestart),
+	// the same api.DevicePower surface internal/api/power.go uses. Used by the
+	// Status tab's power-control buttons.
+	Power api.DevicePower
+
+	// Poll runs an on-demand Redfish SEL+sensor poll into telemetry, the
+	// same api.DevicePoll surface internal/api/poll.go's
+	// POST /v1/devices/{id}/poll uses. Used by the Sensors/Firmware tabs'
+	// "Poll BMC" action.
+	Poll api.DevicePoll
+
+	// DefaultBMCUsername/DefaultBMCPassword are the orchestrator-wide
+	// SHOAL_BMC_* lab fallback credentials (config.Config.BMCUsername/
+	// BMCPassword) -- used by the Status tab's power action only when neither
+	// the request nor Credentials.Resolve supplies a username/password,
+	// mirroring job.Options' same-named fields.
+	DefaultBMCUsername string
+	DefaultBMCPassword string
+
+	// APIToken gates /ui/* behind a login cookie when non-empty (compared
+	// against the POSTed password on /ui/login) -- the same value as
+	// SHOAL_API_TOKEN / internal/api's Bearer auth. Empty disables UI auth
+	// entirely, mirroring internal/api/auth.go's "auth disabled when token
+	// unset" behavior. Passed in by the caller (cmdServe); this package never
+	// reads the environment itself.
+	APIToken string
+
+	// Log receives handler/template errors. Defaults to slog.Default() if nil.
+	Log *slog.Logger
 }
 
-// NewServer constructs a Server with the Sensors/Firmware routes registered.
-func NewServer(obs *observe.Service, poll DevicePoll, log *slog.Logger) *Server {
+// Server is the built-in web UI's HTTP surface: its own http.ServeMux and
+// Handler() method, mounted by internal/cli/cli.go's cmdServe as a sibling of
+// the existing API mux (see cmdServe for how the two are combined under one
+// http.Server).
+type Server struct {
+	mux      *http.ServeMux
+	log      *slog.Logger
+	apiToken string
+
+	// Directory backs the Device List/Add/Edit/Detail pages. See Config.Directory.
+	Directory directory.Store
+	// Observe is unused by this unit. See Config.Observe.
+	Observe *observe.Service
+	// Jobs is unused by this unit. See Config.Jobs.
+	Jobs jobstore.Store
+	// JobStarter is unused by this unit. See Config.JobStarter.
+	JobStarter api.JobStarter
+	// JobCanceler is unused by this unit. See Config.JobCanceler.
+	JobCanceler api.JobCanceler
+	// Profiles is unused by this unit. See Config.Profiles.
+	Profiles profile.Store
+	// Credentials backs the Status tab's credentials-edit action. See Config.Credentials.
+	Credentials api.DeviceCredentials
+	// Power backs the Status tab's power-control buttons. See Config.Power.
+	Power api.DevicePower
+	// Poll backs the Sensors/Firmware tabs' "Poll BMC" action. See Config.Poll.
+	Poll api.DevicePoll
+	// DefaultBMCUsername/DefaultBMCPassword back the Status tab's power
+	// action fallback. See Config.DefaultBMCUsername/DefaultBMCPassword.
+	DefaultBMCUsername string
+	DefaultBMCPassword string
+}
+
+// New builds a Server with routes registered. This is the single constructor
+// other code (cmdServe, tests) calls.
+func New(cfg Config) *Server {
+	log := cfg.Log
 	if log == nil {
 		log = slog.Default()
 	}
 	s := &Server{
-		Observe: obs,
-		Poll:    poll,
-		Log:     log,
-		mux:     http.NewServeMux(),
+		mux:                http.NewServeMux(),
+		log:                log,
+		apiToken:           cfg.APIToken,
+		Directory:          cfg.Directory,
+		Observe:            cfg.Observe,
+		Jobs:               cfg.Jobs,
+		JobStarter:         cfg.JobStarter,
+		JobCanceler:        cfg.JobCanceler,
+		Profiles:           cfg.Profiles,
+		Credentials:        cfg.Credentials,
+		DefaultBMCUsername: cfg.DefaultBMCUsername,
+		DefaultBMCPassword: cfg.DefaultBMCPassword,
+		Power:              cfg.Power,
+		Poll:               cfg.Poll,
 	}
-	s.pages = mustLoadPages()
 	s.routes()
 	return s
 }
 
-// Handler returns the handler for the /ui/devices/{id}/{sensors,firmware}
-// routes this unit owns. Cookie-based auth is applied by the shell's
-// middleware ahead of this handler in the real deployment; this standalone
-// Handler applies none, matching "you don't need to handle auth yourself."
-func (s *Server) Handler() http.Handler { return s.mux }
+// Handler returns the root handler (auth middleware over the routed mux).
+func (s *Server) Handler() http.Handler {
+	return s.withUIAuth(s.mux)
+}
 
 func (s *Server) routes() {
+	staticSub, err := fs.Sub(staticFS, "static")
+	if err != nil {
+		// static/*.css is embedded above; this can only fail if the embed
+		// directive itself is broken, which build would already have caught.
+		panic("ui: static assets: " + err.Error())
+	}
+	s.mux.Handle("GET /ui/static/", http.StripPrefix("/ui/static/", http.FileServerFS(staticSub)))
+
+	s.mux.HandleFunc("GET /ui/login", s.handleLoginForm)
+	s.mux.HandleFunc("POST /ui/login", s.handleLoginSubmit)
+	s.mux.HandleFunc("POST /ui/logout", s.handleLogout)
+
+	s.mux.HandleFunc("GET /ui/{$}", s.handleRoot)
+	s.mux.HandleFunc("GET /ui/devices", s.handleDeviceList)
+	s.mux.HandleFunc("GET /ui/devices/new", s.handleDeviceNewForm)
+	s.mux.HandleFunc("POST /ui/devices/new", s.handleDeviceNewSubmit)
+	// The device detail page is the Status/Provision/Power/Credentials tab
+	// (registerStatusRoutes, status.go) -- it supersedes the bare
+	// identity-only placeholder devices.go originally had for this route.
+	s.registerStatusRoutes()
+	s.mux.HandleFunc("GET /ui/devices/{id}/edit", s.handleDeviceEditForm)
+	s.mux.HandleFunc("POST /ui/devices/{id}/edit", s.handleDeviceEditSubmit)
+	s.mux.HandleFunc("POST /ui/devices/{id}/delete", s.handleDeviceDelete)
+	s.mux.HandleFunc("GET /ui/devices/{id}/events", s.handleDeviceEvents)
+	s.mux.HandleFunc("GET /ui/devices/{id}/jobs", s.handleDeviceJobs)
+	s.mux.HandleFunc("POST /ui/devices/{id}/jobs", s.handleCancelJob)
 	s.mux.HandleFunc("GET /ui/devices/{id}/sensors", s.handleSensorsGet)
 	s.mux.HandleFunc("POST /ui/devices/{id}/sensors", s.handleSensorsPoll)
 	s.mux.HandleFunc("GET /ui/devices/{id}/firmware", s.handleFirmwareGet)
 	s.mux.HandleFunc("POST /ui/devices/{id}/firmware", s.handleFirmwarePoll)
 }
 
-// mustLoadPages parses the shared base layout together with each page's
-// `{{define "content"}}` template into its own independent template set (one
-// per page), so pages don't collide on the "content" template name.
-func mustLoadPages() map[string]*template.Template {
-	pages := map[string]*template.Template{}
-	for _, name := range []string{"sensors.html", "firmware.html"} {
-		base := template.Must(template.New("layout").ParseFS(templateFS, "templates/layout.html"))
-		pages[name] = template.Must(template.Must(base.Clone()).ParseFS(templateFS, "templates/"+name))
-	}
-	return pages
+func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
+	http.Redirect(w, r, "/ui/devices", http.StatusFound)
 }
 
-// renderPage renders name (a key in mustLoadPages) inside the shared base
-// layout, mirroring the documented shell helper
-// `renderPage(w, r, name string, data any)`.
+// renderPage executes the named content template (a file under
+// internal/ui/templates/, e.g. "devices_list.html") inside the shared
+// layout.html chrome and writes the result. name's file must define a
+// `{{define "content"}}...{{end}}` template -- see embed.go's doc comment
+// for the full convention. Units 6-8 call this exact helper (signature and
+// behavior) from their own page handlers.
+// templateFuncs are available to every page template rendered via
+// renderPage. truncate is used by status.html to shorten job ids in
+// button/heading text.
+var templateFuncs = template.FuncMap{
+	// truncate cuts s to at most n runes (not bytes, so multi-byte text --
+	// e.g. a non-ASCII BMC error message -- is never cut mid-character),
+	// appending an ellipsis when it does. Argument order is (n, s) to match
+	// every existing call site (status.html's `truncate 16 .ActiveJob.ID`).
+	"truncate": func(n int, s string) string {
+		r := []rune(s)
+		if len(r) <= n {
+			return s
+		}
+		if n <= 1 {
+			return string(r[:n])
+		}
+		return string(r[:n-1]) + "…"
+	},
+	"lower": strings.ToLower,
+}
+
 func (s *Server) renderPage(w http.ResponseWriter, r *http.Request, name string, data any) {
-	t, ok := s.pages[name]
-	if !ok {
-		http.Error(w, "template not found: "+name, http.StatusInternalServerError)
+	tmpl, err := template.New("layout.html").Funcs(templateFuncs).ParseFS(templatesFS, "templates/layout.html", "templates/"+name)
+	if err != nil {
+		s.log.Error("ui: render page: parse", "template", name, "err", err.Error())
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	var buf bytes.Buffer
+	if err := tmpl.ExecuteTemplate(&buf, "layout.html", data); err != nil {
+		s.log.Error("ui: render page: execute", "template", name, "err", err.Error())
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := t.ExecuteTemplate(w, "layout", data); err != nil {
-		s.logErr("ui render page", err, "page", name, "path", r.URL.Path)
-	}
-}
-
-// logErr logs a failure server-side without leaking it into an HTML
-// response, mirroring internal/api/errors.go's writeUpstreamError.
-func (s *Server) logErr(msg string, err error, args ...any) {
-	log := s.Log
-	if log == nil {
-		log = slog.Default()
-	}
-	all := make([]any, 0, len(args)+2)
-	all = append(all, "err", err.Error())
-	all = append(all, args...)
-	log.Error(msg, all...)
-}
-
-// isNotConfiguredErr mirrors internal/api/errors.go's helper of the same
-// name: it distinguishes "optional dependency isn't wired up" from "a
-// configured dependency failed at call time."
-func isNotConfiguredErr(err error) bool {
-	if err == nil {
-		return false
-	}
-	return strings.Contains(err.Error(), "not configured")
-}
-
-// parseLimit mirrors internal/api/devices.go's helper of the same name.
-func parseLimit(r *http.Request, def, max int) int {
-	limit := def
-	if v := r.URL.Query().Get("limit"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			limit = n
-		}
-	}
-	if limit > max {
-		limit = max
-	}
-	return limit
+	_, _ = buf.WriteTo(w)
 }

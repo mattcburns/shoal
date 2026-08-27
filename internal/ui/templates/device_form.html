@@ -1,0 +1,32 @@
+{{define "content"}}
+<h1>{{if .Editing}}Edit device{{else}}Add device{{end}}</h1>
+{{if .Error}}<p class="shoal-error">{{.Error}}</p>{{end}}
+<form method="post" action="{{.Action}}">
+  {{if .CSRFToken}}<input type="hidden" name="csrf_token" value="{{.CSRFToken}}">{{end}}
+  <label for="name">Name</label>
+  <input type="text" id="name" name="name" value="{{.Device.Name}}" required>
+
+  <label for="serial">Serial</label>
+  <input type="text" id="serial" name="serial" value="{{.Device.Serial}}">
+
+  <label for="vendor">Vendor</label>
+  <input type="text" id="vendor" name="vendor" value="{{.Device.Vendor}}">
+
+  <label for="model">Model</label>
+  <input type="text" id="model" name="model" value="{{.Device.Model}}">
+
+  <label for="bmc_ip">BMC IP</label>
+  <input type="text" id="bmc_ip" name="bmc_ip" value="{{.Device.BMCIP}}">
+
+  <label for="credential_ref">Credential ref</label>
+  <input type="text" id="credential_ref" name="credential_ref" value="{{.Device.CredentialRef}}">
+
+  <button type="submit">Save</button>
+</form>
+{{if .Editing}}
+<form method="post" action="/ui/devices/{{.Device.ID}}/delete" onsubmit="return confirm('Delete this device?');">
+  {{if .CSRFToken}}<input type="hidden" name="csrf_token" value="{{.CSRFToken}}">{{end}}
+  <button type="submit" class="shoal-danger">Delete device</button>
+</form>
+{{end}}
+{{end}}

@@ -11,34 +11,35 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mattcburns/shoal/internal/api"
 	"github.com/mattcburns/shoal/internal/common/telemetry"
 	"github.com/mattcburns/shoal/internal/deploy/jobstore"
 	"github.com/mattcburns/shoal/internal/observe"
 	"github.com/mattcburns/shoal/internal/ui"
 )
 
-// fakePoll is an in-memory ui.DevicePoll used by tests: it records the last
+// fakePoll is an in-memory api.DevicePoll used by tests: it records the last
 // request it received and returns a canned result/error.
 type fakePoll struct {
 	lastDeviceID string
-	lastReq      ui.DevicePollRequest
-	result       ui.DevicePollResult
+	lastReq      api.DevicePollRequest
+	result       api.DevicePollResult
 	err          error
 	called       bool
 }
 
-func (f *fakePoll) Poll(_ context.Context, deviceID string, req ui.DevicePollRequest) (ui.DevicePollResult, error) {
+func (f *fakePoll) Poll(_ context.Context, deviceID string, req api.DevicePollRequest) (api.DevicePollResult, error) {
 	f.called = true
 	f.lastDeviceID = deviceID
 	f.lastReq = req
 	return f.result, f.err
 }
 
-func newTestServer(t *testing.T, store telemetry.Store, poll ui.DevicePoll) *ui.Server {
+func newTestServer(t *testing.T, store telemetry.Store, poll api.DevicePoll) *ui.Server {
 	t.Helper()
 	jobs := jobstore.NewMemory()
 	obs := observe.New(nil, jobs, store, nil)
-	return ui.NewServer(obs, poll, nil)
+	return ui.New(ui.Config{Observe: obs, Poll: poll})
 }
 
 func TestSensorsGetEmptyState(t *testing.T) {
@@ -86,7 +87,7 @@ func TestSensorsGetWithReadings(t *testing.T) {
 func TestSensorsGetObserveNotConfigured(t *testing.T) {
 	jobs := jobstore.NewMemory()
 	obs := observe.New(nil, jobs, nil, nil) // nil telemetry store -> "not configured"
-	s := ui.NewServer(obs, &fakePoll{}, nil)
+	s := ui.New(ui.Config{Observe: obs, Poll: &fakePoll{}})
 
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/ui/devices/dev-1/sensors", nil)
@@ -148,7 +149,7 @@ func TestFirmwareGetWithComponents(t *testing.T) {
 
 func TestPollFormRedirectsAndFillsSensors(t *testing.T) {
 	store := telemetry.NewMemory()
-	poll := &fakePoll{result: ui.DevicePollResult{
+	poll := &fakePoll{result: api.DevicePollResult{
 		DeviceID: "dev-1", SELNew: 2, SensorsWritten: 5, FirmwareWritten: 3, PowerState: "On",
 	}}
 	s := newTestServer(t, store, poll)

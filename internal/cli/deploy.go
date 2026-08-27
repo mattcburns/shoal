@@ -231,9 +231,13 @@ func cmdDeployRun(args []string) int {
 			UseSudo: cfg.SerialSSHSudo,
 		},
 	)
-	var nb netbox.LifecycleWriter
-	if cfg.NetBoxURL != "" && cfg.NetBoxToken != "" {
-		nb = netbox.New(cfg.NetBoxURL, cfg.NetBoxToken)
+	dirStore, err := buildDirectory(cfg, log)
+	if err != nil {
+		// Non-fatal: NetBox sync is best-effort (see Orchestrator's
+		// syncNetBoxLifecycle), so a device directory that failed to open
+		// shouldn't block a deploy run that doesn't otherwise need it.
+		log.Warn("device directory unavailable", "err", err.Error())
+		dirStore = nil
 	}
 	var profStore profile.Store
 	if cfg.ProfileDir != "" {
@@ -262,7 +266,7 @@ func cmdDeployRun(args []string) int {
 		Store:      store,
 		Secrets:    secretBackend,
 		Watches:    watchSvc,
-		NetBox:     nb,
+		NetBox:     dirStore,
 		Telemetry:  telemStore,
 		Profiles:   profStore,
 		ISOBuilder: isoBuilder,
@@ -412,15 +416,18 @@ func cmdDeployCancel(args []string) int {
 			UseSudo: cfg.SerialSSHSudo,
 		},
 	)
-	var nb netbox.LifecycleWriter
-	if cfg.NetBoxURL != "" && cfg.NetBoxToken != "" {
-		nb = netbox.New(cfg.NetBoxURL, cfg.NetBoxToken)
+	dirStore, err := buildDirectory(cfg, log)
+	if err != nil {
+		// Non-fatal -- see cmdDeployRun's identical handling above: NetBox
+		// sync is best-effort, so Cancel shouldn't be blocked by it.
+		log.Warn("device directory unavailable", "err", err.Error())
+		dirStore = nil
 	}
 	orch := job.NewOrchestrator(buildOrchestratorOptions(cfg, log, deployOrchestratorDeps{
 		Store:   store,
 		Secrets: secretBackend,
 		Watches: watchSvc,
-		NetBox:  nb,
+		NetBox:  dirStore,
 		// Telemetry/Profiles/ISOBuilder intentionally nil -- see
 		// deployOrchestratorDeps' doc comment: Cancel never Starts a job and
 		// never attaches a new SOL watch in this process.
@@ -543,9 +550,11 @@ func cmdDeployDeprovision(args []string) int {
 			UseSudo: cfg.SerialSSHSudo,
 		},
 	)
-	var nb netbox.LifecycleWriter
-	if cfg.NetBoxURL != "" && cfg.NetBoxToken != "" {
-		nb = netbox.New(cfg.NetBoxURL, cfg.NetBoxToken)
+	dirStore, err := buildDirectory(cfg, log)
+	if err != nil {
+		// Non-fatal -- see cmdDeployRun's identical handling above.
+		log.Warn("device directory unavailable", "err", err.Error())
+		dirStore = nil
 	}
 	// Optional job_log writer for NetBox Jobs tab (same DSN as JobStore).
 	var telemStore telemetry.Store
@@ -561,7 +570,7 @@ func cmdDeployDeprovision(args []string) int {
 		Store:     store,
 		Secrets:   secretBackend,
 		Watches:   watchSvc,
-		NetBox:    nb,
+		NetBox:    dirStore,
 		Telemetry: telemStore,
 		// Profiles/ISOBuilder intentionally nil -- see deployOrchestratorDeps'
 		// doc comment: a deprovision request carries no ProfileRef/ISOURL for

@@ -1,9 +1,18 @@
 # NetBox integration
 
-NetBox is an optional system of record for device identity and lifecycle
-state. Shoal runs fully without it: every code path that touches NetBox is
-gated on configuration and nil-checked downstream, so an unconfigured NetBox
-is a normal, expected state -- not an error.
+NetBox is one of two interchangeable backends for Shoal's device directory
+(device identity + lifecycle state) -- the other is a local JSON-file-backed
+store for deployments that don't run NetBox. Exactly one backend is active
+per process, selected at startup by configuration. The abstraction that
+makes them interchangeable (`internal/common/directory`'s `Store` interface,
+the selection rule, and the local backend) is described in
+[`device-directory.md`](./device-directory.md); **this document covers only
+NetBox-specific details** -- the three narrow interfaces `internal/common/netbox`
+exposes, its REST-backed implementation, and its config gate. Shoal runs
+fully without NetBox configured: every code path that touches it is gated on
+configuration and nil-checked downstream, so an unconfigured NetBox is a
+normal, expected state -- not an error, and (when `SHOAL_DEVICE_STORE_DIR` is
+set) not even a loss of device-directory functionality.
 
 This document describes the Go-side integration (`internal/common/netbox`)
 and its consumers. It does not describe the separate Python NetBox plugin;
@@ -46,6 +55,15 @@ Two implementations satisfy all three interfaces:
 `var _ API = (*Client)(nil)` style assertions in `client.go` keep both
 implementations honest against all three interfaces.
 
+`*Client` also gains `ListDevices` and `DeleteDevice` methods so that it
+satisfies the wider `directory.Store` interface (`ListDevices`, `GetDevice`,
+`UpsertDevice`, `SetLifecycle`, `ResolveDeviceID`, `DeleteDevice`) described
+in `device-directory.md`, alongside the local `FileStore` backend. The three
+narrow interfaces above are unchanged and still exist -- `Store` is a
+superset, not a replacement, so existing consumers that only need
+`netbox.API` or `netbox.LifecycleWriter` keep depending on those narrower
+shapes.
+
 ## Config-gated construction
 
 NetBox integration is entirely optional and is enabled by two environment
@@ -57,25 +75,36 @@ variables, read via `internal/common/config`:
 
 `internal/cli` is the composition root for NetBox construction (per
 AGENTS.md, `internal/cli` and `cmd/shoal` are the only places allowed to
-construct concrete types and inject interfaces). The pattern, repeated at
-every call site (`cli.go`'s `cmdServe`, `deploy.go`'s `cmdDeployRun` /
-`cmdDeployCancel` / `cmdDeployDeprovision`, `discover.go`'s
-`openDiscoverService`):
+construct concrete types and inject interfaces). This used to be a pattern
+repeated ad hoc at every call site (`cli.go`'s `cmdServe`, `deploy.go`'s
+`cmdDeployRun` / `cmdDeployCancel` / `cmdDeployDeprovision`, `discover.go`'s
+`openDiscoverService`); it is now centralized in a single `buildDirectory`
+helper (see `device-directory.md`) that every call site uses instead of
+constructing `netbox.New(...)` directly:
 
 ```go
-var nb netbox.API // or netbox.LifecycleWriter, depending on the consumer
-if cfg.NetBoxURL != "" && cfg.NetBoxToken != "" {
-    nb = netbox.New(cfg.NetBoxURL, cfg.NetBoxToken)
+func buildDirectory(cfg *config.Config, log *slog.Logger) directory.Store {
+    if cfg.NetBoxURL != "" && cfg.NetBoxToken != "" {
+        return netbox.New(cfg.NetBoxURL, cfg.NetBoxToken)
+    }
+    if cfg.DeviceStoreDir != "" {
+        return directory.NewFileStore(cfg.DeviceStoreDir)
+    }
+    return nil
 }
-// nb stays nil when NetBox is unconfigured; never netbox.NewMemory() --
-// that fake exists for tests only.
+// The nil case is passed straight through to the consumer's constructor,
+// same as before centralization; never netbox.NewMemory() -- that fake
+// exists for tests only.
 ```
 
-The unconfigured branch passes a `nil` interface value straight through to
-the consumer's constructor. There is deliberately no in-memory fallback in
-any production call site -- a silent, non-persistent fake would let writes
-appear to succeed while being discarded on process exit, which is worse
-than clearly skipping the step.
+The unconfigured branch (neither NetBox nor a local store directory set)
+passes a `nil` interface value straight through to the consumer's
+constructor. There is deliberately no in-memory fallback in any production
+call site -- a silent, non-persistent fake would let writes appear to
+succeed while being discarded on process exit, which is worse than clearly
+skipping the step. NetBox configuration takes precedence when both NetBox
+and `SHOAL_DEVICE_STORE_DIR` are set -- see `device-directory.md`'s
+"Config-gated selection" section for the full precedence rule.
 
 ## Degradation when unconfigured
 
@@ -95,8 +124,11 @@ or warning line at startup -- it is never surfaced as a request error to a
 CLI caller or HTTP client.
 
 `internal/api` does not import `internal/common/netbox` at all; the HTTP
-API layer is unaware NetBox exists. NetBox wiring is confined to the
-composition root (`internal/cli`) and the two consumers above.
+API layer is unaware NetBox exists. `internal/api`'s device-directory routes
+(`GET /v1/devices`, `POST /v1/devices` -- see `docs/api/openapi.yaml`) depend
+only on `directory.Store`, never on `*netbox.Client` directly. NetBox wiring
+proper is confined to the composition root (`internal/cli`) and the two
+consumers above.
 
 ## Relationship to `extras/netbox-plugin-shoal`
 

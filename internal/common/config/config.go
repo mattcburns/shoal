@@ -48,6 +48,12 @@ type Config struct {
 	FewShotDir string
 	// ProfileDir is JSON profile store for Phase 5b (empty disables profile load/approve).
 	ProfileDir string
+	// DeviceStoreDir is the local file-backed device directory store, used
+	// as the device directory (GET/POST /v1/devices, discover upsert,
+	// orchestrator lifecycle writes) when NetBox isn't configured. Empty
+	// means the composition root's default (see buildDirectory in
+	// internal/cli), not "disabled" -- a directory backend is always present.
+	DeviceStoreDir string
 	// APIToken protects /v1/* when non-empty (Bearer). Empty = open (lab MVP default).
 	APIToken string
 	// PollIdleInterval is the background SEL/sensor poll period when no SOL watch is active.
@@ -88,6 +94,7 @@ func Load() (Config, error) {
 		SerialTransport:      strings.ToLower(envOr("SHOAL_SERIAL_TRANSPORT", "libvirt")),
 		FewShotDir:           os.Getenv("SHOAL_FEWSHOT_DIR"),
 		ProfileDir:           os.Getenv("SHOAL_PROFILE_DIR"),
+		DeviceStoreDir:       os.Getenv("SHOAL_DEVICE_STORE_DIR"),
 		APIToken:             os.Getenv("SHOAL_API_TOKEN"),
 	}
 	idle, err := envDuration("SHOAL_POLL_IDLE_INTERVAL", 5*time.Minute)
