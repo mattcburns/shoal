@@ -9,7 +9,6 @@ import (
 
 	"github.com/mattcburns/shoal/internal/api"
 	"github.com/mattcburns/shoal/internal/common/directory"
-	"github.com/mattcburns/shoal/internal/common/secrets"
 	"github.com/mattcburns/shoal/internal/core/profile"
 	"github.com/mattcburns/shoal/internal/deploy/jobstore"
 	"github.com/mattcburns/shoal/internal/observe"
@@ -47,17 +46,27 @@ type Config struct {
 	// plain Add Device form.
 	Profiles profile.Store
 
-	// Secrets resolves/stores BMC credentials (credential_ref -> username/
-	// password). Placeholder for a future credentials-edit UI action; unused
-	// by this unit (the Add/Edit Device form only writes credential_ref, an
-	// opaque string, never a raw secret).
-	Secrets secrets.Backend
+	// Credentials resolves/stores BMC credentials, the same api.DeviceCredentials
+	// surface internal/api/credentials.go's GET/PUT /v1/devices/{id}/credentials
+	// uses (Get/Put/Resolve) -- pass the same deviceCreds{...} value cmdServe
+	// already builds for WithDeviceCredentials so both surfaces resolve
+	// credentials identically (NetBox/directory-aware, never a raw secrets
+	// backend directly). Used by the Status tab's credentials-edit action and
+	// by Provision/Power actions that fall back to a device's stored creds.
+	Credentials api.DeviceCredentials
 
 	// Power dials a BMC to apply a Redfish reset (On/ForceOff/ForceRestart),
-	// the same api.DevicePower surface internal/api/power.go uses. Placeholder
-	// for operator power-control buttons on the device detail page in a later
-	// unit; unused by this unit.
+	// the same api.DevicePower surface internal/api/power.go uses. Used by the
+	// Status tab's power-control buttons.
 	Power api.DevicePower
+
+	// DefaultBMCUsername/DefaultBMCPassword are the orchestrator-wide
+	// SHOAL_BMC_* lab fallback credentials (config.Config.BMCUsername/
+	// BMCPassword) -- used by the Status tab's power action only when neither
+	// the request nor Credentials.Resolve supplies a username/password,
+	// mirroring job.Options' same-named fields.
+	DefaultBMCUsername string
+	DefaultBMCPassword string
 
 	// APIToken gates /ui/* behind a login cookie when non-empty (compared
 	// against the POSTed password on /ui/login) -- the same value as
@@ -92,10 +101,14 @@ type Server struct {
 	JobCanceler api.JobCanceler
 	// Profiles is unused by this unit. See Config.Profiles.
 	Profiles profile.Store
-	// Secrets is unused by this unit. See Config.Secrets.
-	Secrets secrets.Backend
-	// Power is unused by this unit. See Config.Power.
+	// Credentials backs the Status tab's credentials-edit action. See Config.Credentials.
+	Credentials api.DeviceCredentials
+	// Power backs the Status tab's power-control buttons. See Config.Power.
 	Power api.DevicePower
+	// DefaultBMCUsername/DefaultBMCPassword back the Status tab's power
+	// action fallback. See Config.DefaultBMCUsername/DefaultBMCPassword.
+	DefaultBMCUsername string
+	DefaultBMCPassword string
 }
 
 // New builds a Server with routes registered. This is the single constructor
@@ -106,17 +119,19 @@ func New(cfg Config) *Server {
 		log = slog.Default()
 	}
 	s := &Server{
-		mux:         http.NewServeMux(),
-		log:         log,
-		apiToken:    cfg.APIToken,
-		Directory:   cfg.Directory,
-		Observe:     cfg.Observe,
-		Jobs:        cfg.Jobs,
-		JobStarter:  cfg.JobStarter,
-		JobCanceler: cfg.JobCanceler,
-		Profiles:    cfg.Profiles,
-		Secrets:     cfg.Secrets,
-		Power:       cfg.Power,
+		mux:                http.NewServeMux(),
+		log:                log,
+		apiToken:           cfg.APIToken,
+		Directory:          cfg.Directory,
+		Observe:            cfg.Observe,
+		Jobs:               cfg.Jobs,
+		JobStarter:         cfg.JobStarter,
+		JobCanceler:        cfg.JobCanceler,
+		Profiles:           cfg.Profiles,
+		Credentials:        cfg.Credentials,
+		DefaultBMCUsername: cfg.DefaultBMCUsername,
+		DefaultBMCPassword: cfg.DefaultBMCPassword,
+		Power:              cfg.Power,
 	}
 	s.routes()
 	return s
@@ -144,7 +159,10 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /ui/devices", s.handleDeviceList)
 	s.mux.HandleFunc("GET /ui/devices/new", s.handleDeviceNewForm)
 	s.mux.HandleFunc("POST /ui/devices/new", s.handleDeviceNewSubmit)
-	s.mux.HandleFunc("GET /ui/devices/{id}", s.handleDeviceDetail)
+	// The device detail page is the Status/Provision/Power/Credentials tab
+	// (registerStatusRoutes, status.go) -- it supersedes the bare
+	// identity-only placeholder devices.go originally had for this route.
+	s.registerStatusRoutes()
 	s.mux.HandleFunc("GET /ui/devices/{id}/edit", s.handleDeviceEditForm)
 	s.mux.HandleFunc("POST /ui/devices/{id}/edit", s.handleDeviceEditSubmit)
 	s.mux.HandleFunc("POST /ui/devices/{id}/delete", s.handleDeviceDelete)
@@ -160,8 +178,20 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 // `{{define "content"}}...{{end}}` template -- see embed.go's doc comment
 // for the full convention. Units 6-8 call this exact helper (signature and
 // behavior) from their own page handlers.
+// templateFuncs are available to every page template rendered via
+// renderPage. truncate is used by status.html to shorten job ids in
+// button/heading text.
+var templateFuncs = template.FuncMap{
+	"truncate": func(n int, s string) string {
+		if len(s) <= n {
+			return s
+		}
+		return s[:n]
+	},
+}
+
 func (s *Server) renderPage(w http.ResponseWriter, r *http.Request, name string, data any) {
-	tmpl, err := template.ParseFS(templatesFS, "templates/layout.html", "templates/"+name)
+	tmpl, err := template.New("layout.html").Funcs(templateFuncs).ParseFS(templatesFS, "templates/layout.html", "templates/"+name)
 	if err != nil {
 		s.log.Error("ui: render page: parse", "template", name, "err", err.Error())
 		http.Error(w, "internal server error", http.StatusInternalServerError)

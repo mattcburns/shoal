@@ -333,10 +333,16 @@ func cmdServe(args []string) int {
 		Observe:   obsSvc,
 		Jobs:      store,
 		Profiles:  profStore,
-		Secrets:   secretBackend,
-		Power:     devicePower{cfg: cfg, newBMC: redfish.NewBMC},
-		APIToken:  cfg.APIToken,
-		Log:       log,
+		// Same deviceCreds value passed to srvAPI.WithDeviceCredentials above,
+		// so the UI's credentials-edit action and the JSON API resolve BMC
+		// credentials identically (NetBox/directory-aware, never a raw
+		// secrets backend directly).
+		Credentials:        deviceCreds{secrets: secretBackend, nb: credentialsNB(cfg, dirStore)},
+		Power:              devicePower{cfg: cfg, newBMC: redfish.NewBMC},
+		DefaultBMCUsername: cfg.BMCUsername,
+		DefaultBMCPassword: cfg.BMCPassword,
+		APIToken:           cfg.APIToken,
+		Log:                log,
 	}
 	if orch != nil {
 		// Only assign when non-nil: orch is a *job.Orchestrator, and a nil one

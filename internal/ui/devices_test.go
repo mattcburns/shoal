@@ -93,11 +93,20 @@ func TestDeviceAddListEditDeleteFlow(t *testing.T) {
 		t.Fatalf("delete: got %d, want 302", delRec.Code)
 	}
 
+	// The device detail route is the Status/Provision tab (status.go), which
+	// deliberately renders 200 with an empty/no-data state for an id it
+	// doesn't recognize -- e.g. so an operator can still start a job for a
+	// device the directory hasn't seen yet -- rather than 404ing, mirroring
+	// this repo's existing "spike jobs without NetBox rows still start"
+	// pattern. It must not still show the just-deleted device's identity.
 	getReq := httptest.NewRequest(http.MethodGet, "/ui/devices/"+id, nil)
 	getRec := httptest.NewRecorder()
 	s.Handler().ServeHTTP(getRec, getReq)
-	if getRec.Code != http.StatusNotFound {
-		t.Fatalf("get after delete: got %d, want 404", getRec.Code)
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("get after delete: got %d, want 200 (empty status page)", getRec.Code)
+	}
+	if strings.Contains(getRec.Body.String(), "lab-node-1-renamed") {
+		t.Fatalf("get after delete: still shows deleted device's identity: %s", getRec.Body.String())
 	}
 }
 
@@ -115,13 +124,18 @@ func TestDeviceNewRequiresName(t *testing.T) {
 	}
 }
 
-func TestDeviceDetailNotFound(t *testing.T) {
+// TestDeviceDetailUnknownIDRendersEmptyState: the detail route is the
+// Status/Provision tab (status.go's registerStatusRoutes), which
+// intentionally renders 200 for an id the directory doesn't recognize
+// (rather than 404) so an operator can still start a job for a device the
+// directory hasn't seen yet.
+func TestDeviceDetailUnknownIDRendersEmptyState(t *testing.T) {
 	s := newTestServer(t)
 	req := httptest.NewRequest(http.MethodGet, "/ui/devices/does-not-exist", nil)
 	rec := httptest.NewRecorder()
 	s.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("got %d, want 404", rec.Code)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got %d, want 200 (empty status page)", rec.Code)
 	}
 }
 

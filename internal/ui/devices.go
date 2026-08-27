@@ -27,11 +27,6 @@ type deviceFormData struct {
 	CSRFToken string
 }
 
-// deviceDetailData is the device_detail.html template's data.
-type deviceDetailData struct {
-	Device models.DeviceIdentity
-}
-
 func (s *Server) handleDeviceList(w http.ResponseWriter, r *http.Request) {
 	if s.Directory == nil {
 		s.renderPage(w, r, "devices_list.html", deviceListData{Error: "device directory not configured"})
@@ -102,15 +97,6 @@ func (s *Server) handleDeviceNewSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.Redirect(w, r, "/ui/devices/"+id, http.StatusFound)
-}
-
-func (s *Server) handleDeviceDetail(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	d, ok := s.loadDevice(w, r, id)
-	if !ok {
-		return
-	}
-	s.renderPage(w, r, "device_detail.html", deviceDetailData{Device: d})
 }
 
 func (s *Server) handleDeviceEditForm(w http.ResponseWriter, r *http.Request) {
