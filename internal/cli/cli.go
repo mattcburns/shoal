@@ -16,7 +16,6 @@ import (
 	"github.com/mattcburns/shoal/internal/api"
 	"github.com/mattcburns/shoal/internal/common/config"
 	"github.com/mattcburns/shoal/internal/common/models"
-	"github.com/mattcburns/shoal/internal/common/netbox"
 	"github.com/mattcburns/shoal/internal/common/redact"
 	"github.com/mattcburns/shoal/internal/common/redfish"
 	"github.com/mattcburns/shoal/internal/common/secrets"
@@ -146,11 +145,17 @@ func cmdServe(args []string) int {
 
 	srvAPI := api.New(cfg, log)
 	secretBackend := openSecrets(cfg)
-	var nbClient *netbox.Client
-	if cfg.NetBoxURL != "" && cfg.NetBoxToken != "" {
-		nbClient = netbox.New(cfg.NetBoxURL, cfg.NetBoxToken)
+	dirStore, err := buildDirectory(cfg, log)
+	if err != nil {
+		// Non-fatal: the device directory backs optional lifecycle/identity
+		// sync (NetBox field, discover upsert); a directory that failed to
+		// open (e.g. an unwritable SHOAL_DEVICE_STORE_DIR) shouldn't take
+		// down the whole server, matching every other optional store below
+		// (fewshot/profile/telemetry all log.Warn and continue).
+		log.Warn("device directory unavailable", "err", err.Error())
+		dirStore = nil
 	}
-	srvAPI.WithDeviceCredentials(deviceCreds{secrets: secretBackend, nb: nbClient})
+	srvAPI.WithDeviceCredentials(deviceCreds{secrets: secretBackend, nb: credentialsNB(cfg, dirStore)})
 	srvAPI.WithDevicePower(devicePower{cfg: cfg, newBMC: redfish.NewBMC})
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -174,11 +179,7 @@ func cmdServe(args []string) int {
 			log.Warn("reconciler init failed", "err", err.Error())
 		} else {
 			rec = r
-			var nb netbox.API
-			if cfg.NetBoxURL != "" && cfg.NetBoxToken != "" {
-				nb = netbox.New(cfg.NetBoxURL, cfg.NetBoxToken)
-			}
-			disc := discover.NewWithFewShot(log, rec, openSecrets(cfg), nb, fsStore)
+			disc := discover.NewWithFewShot(log, rec, openSecrets(cfg), dirStore, fsStore)
 			srvAPI.WithDiscover(disc)
 			log.Info("discover ingest/confirm API enabled")
 		}
@@ -209,10 +210,6 @@ func cmdServe(args []string) int {
 				UseSudo: cfg.SerialSSHSudo,
 			},
 		)
-		var nb netbox.LifecycleWriter
-		if nbClient != nil {
-			nb = nbClient
-		}
 		var profStore profile.Store
 		if cfg.ProfileDir != "" {
 			if st, err := profile.NewFileStore(cfg.ProfileDir); err != nil {
@@ -243,7 +240,7 @@ func cmdServe(args []string) int {
 			Secrets:                secretBackend,
 			NewBMC:                 redfish.NewBMC,
 			Watches:                watchSvc,
-			NetBox:                 nb,
+			NetBox:                 dirStore,
 			Telemetry:              telemStore,
 			Profiles:               profStore,
 			ISOBaseURL:             cfg.ISOBaseURL,
