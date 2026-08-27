@@ -49,8 +49,10 @@ type Config struct {
 	// ProfileDir is JSON profile store for Phase 5b (empty disables profile load/approve).
 	ProfileDir string
 	// DeviceStoreDir is the local file-backed device directory store, used
-	// as the device directory when NetBox isn't configured (empty = use the
-	// composition root's default, e.g. ./data/devices).
+	// as the device directory (GET/POST /v1/devices, discover upsert,
+	// orchestrator lifecycle writes) when NetBox isn't configured. Empty
+	// means the composition root's default (see buildDirectory in
+	// internal/cli), not "disabled" -- a directory backend is always present.
 	DeviceStoreDir string
 	// APIToken protects /v1/* when non-empty (Bearer). Empty = open (lab MVP default).
 	APIToken string

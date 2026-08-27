@@ -158,6 +158,10 @@ func cmdServe(args []string) int {
 	}
 	srvAPI.WithDeviceCredentials(deviceCreds{secrets: secretBackend, nb: credentialsNB(cfg, dirStore)})
 	srvAPI.WithDevicePower(devicePower{cfg: cfg, newBMC: redfish.NewBMC})
+	// GET/POST /v1/devices reuses the same dirStore buildDirectory produced
+	// above (NetBox-backed when configured, the local FileStore otherwise) --
+	// the same backend the orchestrator, discover, and the UI all share.
+	srvAPI.WithDirectory(dirStore)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 

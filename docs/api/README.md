@@ -2,10 +2,13 @@
 
 Shoal exposes a small `net/http` API (default `:8088`, `SHOAL_HTTP_ADDR`) for
 Discover (asset ingest), Observe (device status/events/sensors/firmware/job
-log), Deploy (provisioning jobs, on-demand power, on-demand poll), stored
-device credentials, the device directory (list/create), and saved
-provisioning profiles. Handlers live in `internal/api/*.go` and are
-registered in `internal/api/server.go`.
+log), Deploy (provisioning jobs, on-demand power, on-demand poll), a device
+directory (`GET`/`POST /v1/devices`, backed by `internal/common/directory.Store`
+-- NetBox when `SHOAL_NETBOX_URL`/`SHOAL_NETBOX_TOKEN` are configured, else a
+local file-backed store; see
+[`../design/device-directory.md`](../design/device-directory.md)), stored
+device credentials, and saved provisioning profiles. Handlers live in
+`internal/api/*.go` and are registered in `internal/api/server.go`.
 
 The full route-by-route reference — methods, path/query parameters, request
 and response bodies, and status codes — is in [`openapi.yaml`](./openapi.yaml)
@@ -60,7 +63,9 @@ List endpoints (`GET /v1/jobs/{id}/log`, `GET /v1/devices`,
 `?limit=`. Values above the server-side maximum of **200** are clamped to
 200 — a caller cannot force an unbounded scan or response. Defaults vary by
 endpoint (see `openapi.yaml` for the exact default per route); most default
-to 50, while the sensors and firmware endpoints default to the 200 maximum.
+to 50, while `GET /v1/devices` and the sensors/firmware endpoints default to
+the 200 maximum (there's no `since` cursor to page against, so a full list
+is preferred up to that cap).
 
 Time-bounded list endpoints also accept `?since=` (RFC3339). An unparseable
 `since` is treated as "no filter" rather than a 400, mirroring how an
@@ -82,12 +87,6 @@ device updates it in place instead of creating a duplicate. Both routes
 return `503` when neither backend is configured, matching the same
 "unconfigured is a 503, not a 500" convention used elsewhere in this API
 (profiles, credentials).
-
-> **Note:** these two routes are specified here to match the device-directory
-> design as planned; if the sibling PR that implements
-> `internal/api`'s device-directory handlers merged with a different
-> request/response shape or error code, treat that PR's code and docs as
-> authoritative and update this section (and `openapi.yaml`) to match.
 
 ## JSON naming
 

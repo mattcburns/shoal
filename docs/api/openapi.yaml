@@ -339,14 +339,18 @@ paths:
         `docs/design/device-directory.md`) -- whichever backend is active
         for this server instance: NetBox when `SHOAL_NETBOX_URL` /
         `SHOAL_NETBOX_TOKEN` are set, else the local file-backed store when
-        `SHOAL_DEVICE_STORE_DIR` is set. The two backends return identically
-        shaped `DeviceIdentity` records (verified by a shared conformance
-        test), so a caller does not need to know which backend is active.
+        `SHOAL_DEVICE_STORE_DIR` is set (a server instance always has one
+        active backend; there is no "neither configured" runtime state,
+        only "this handler wasn't wired one," which the 503 below covers).
+        The two backends return identically shaped `DeviceIdentity` records
+        (verified by a shared conformance test), so a caller does not need
+        to know which backend is active. No `since` cursor applies -- this
+        returns the full device list, page-limited by `limit`.
       parameters:
         - $ref: "#/components/parameters/Limit"
       responses:
         "200":
-          description: Devices known to the directory store.
+          description: Devices known to the active directory backend.
           content:
             application/json:
               schema:
@@ -357,59 +361,56 @@ paths:
                     items:
                       $ref: "#/components/schemas/DeviceIdentity"
         "502":
-          description: A configured directory backend (e.g. NetBox) failed to respond.
+          description: The configured directory backend (e.g. NetBox) failed to respond.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
         "503":
-          description: No device directory backend configured (neither NetBox nor SHOAL_DEVICE_STORE_DIR set).
+          description: Device directory not configured on this server instance.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
     post:
       tags: [devices]
-      summary: Create or update a device in the active device directory backend
+      summary: Register or update a device in the active device directory backend
       description: |
-        Upserts by serial (falling back to name) exactly as
-        `directory.Store.UpsertDevice` documents -- an existing device with
-        a matching serial is updated in place rather than duplicated.
-        Backed by whichever directory backend is active; see the `GET
-        /v1/devices` description above.
+        Upserts by serial exactly as `directory.Store.UpsertDevice`
+        documents -- an existing device with a matching serial is updated
+        in place rather than duplicated, though the handler always
+        responds 201 (it doesn't distinguish create-vs-update in the status
+        code). `lifecycle_state` is never client-settable here: every new
+        device starts at `discovered` regardless of what (if anything) the
+        request body sends for that field. Backed by whichever directory
+        backend is active; see the `GET /v1/devices` description above.
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/DeviceIdentity"
+              $ref: "#/components/schemas/CreateDeviceRequest"
       responses:
         "201":
-          description: New device created. Response is the stored record, including the backend-assigned id.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/DeviceIdentity"
-        "200":
-          description: Existing device (matched by serial) updated in place. Response is the stored record. Same convention as PUT /v1/devices/{id}/credentials returning 200 for both create and update.
+          description: Device created or updated (matched by serial); response includes the assigned id.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/DeviceIdentity"
         "400":
-          description: Invalid JSON, or missing required field (serial).
+          description: Invalid JSON, or neither name nor serial was supplied.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
         "502":
-          description: A configured directory backend (e.g. NetBox) rejected or failed the write.
+          description: The configured directory backend (e.g. NetBox) failed to create the device.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
         "503":
-          description: No device directory backend configured (neither NetBox nor SHOAL_DEVICE_STORE_DIR set).
+          description: Device directory not configured on this server instance.
           content:
             application/json:
               schema:
@@ -1467,6 +1468,25 @@ components:
           type: string
           description: Go duration string (e.g. "60m"), for coarse (operator_iso) stage paths.
       required: [ref, needs_approval]
+
+    CreateDeviceRequest:
+      type: object
+      description: |
+        POST /v1/devices request body. Omits lifecycle_state -- it is never
+        client-settable on create. At least one of name or serial is required.
+      properties:
+        name:
+          type: string
+        serial:
+          type: string
+        vendor:
+          type: string
+        model:
+          type: string
+        bmc_ip:
+          type: string
+        credential_ref:
+          type: string
 
     ProfileRecord:
       type: object
