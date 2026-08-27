@@ -124,9 +124,18 @@ func TestClientResolveDeviceID(t *testing.T) {
 	if err != nil || got != "3" {
 		t.Fatalf("got %q err %v", got, err)
 	}
+	// A numeric key that matches nothing by serial/name is assumed to
+	// already be a valid NetBox pk and passed through unchanged.
+	got, err = c.ResolveDeviceID(context.Background(), "42")
+	if err != nil || got != "42" {
+		t.Fatalf("numeric passthrough %q %v", got, err)
+	}
+	// A non-numeric key that matches nothing by serial/name genuinely
+	// doesn't resolve to a device -- report that instead of silently
+	// handing back a value that can only fail later, differently.
 	got, err = c.ResolveDeviceID(context.Background(), "no-such")
-	if err != nil || got != "no-such" {
-		t.Fatalf("passthrough %q %v", got, err)
+	if !errors.Is(err, directory.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound for unresolvable non-numeric key, got %q %v", got, err)
 	}
 }
 

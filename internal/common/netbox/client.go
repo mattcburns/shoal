@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -113,9 +114,10 @@ func (c *Client) findByName(ctx context.Context, name string) (string, error) {
 	return fmt.Sprintf("%d", out.Results[0].ID), nil
 }
 
-// ResolveDeviceID implements DeviceResolver.
-// Order: serial match, name match, then return key unchanged (numeric id or
-// free-form lab key when NetBox has no row yet).
+// ResolveDeviceID implements DeviceResolver and directory.Store.
+// Order: serial match, name match, then (only if key already looks like a
+// NetBox numeric id) return it unchanged. Anything else that matches
+// nothing returns directory.ErrNotFound.
 func (c *Client) ResolveDeviceID(ctx context.Context, key string) (string, error) {
 	if c.BaseURL == "" || c.Token == "" {
 		return "", fmt.Errorf("netbox: missing url or token")
@@ -134,7 +136,17 @@ func (c *Client) ResolveDeviceID(ctx context.Context, key string) (string, error
 	} else if id != "" {
 		return id, nil
 	}
-	return key, nil
+	// A key that already looks like a NetBox numeric id is passed through
+	// unchanged (it may be a valid pk this method was never asked to verify
+	// against serial/name) -- this is the long-standing behavior orchestrator
+	// callers rely on. Anything else (a typo'd or unknown serial/name/key)
+	// genuinely doesn't resolve to a device, so report that rather than
+	// silently handing back a value that will only fail later, differently,
+	// at whatever endpoint the caller passes it to next.
+	if looksLikeNetBoxID(key) {
+		return key, nil
+	}
+	return "", directory.ErrNotFound
 }
 
 func looksLikeNetBoxID(key string) bool {
@@ -521,7 +533,16 @@ func (c *Client) ensureDeviceType(ctx context.Context, mfgID int, model string) 
 	if strings.TrimSpace(model) == "" {
 		model = "shoal-node"
 	}
-	q := url.Values{"model": {model}}
+	// NetBox's actual uniqueness constraint on device types is the
+	// (manufacturer, model) pair, not model alone -- filtering by model only
+	// would let this lookup return a different manufacturer's device type
+	// that happens to share the same model string, silently reusing it
+	// (and its manufacturer) instead of creating/finding the right one for
+	// mfgID. This matters on every UpsertDevice update: a device's vendor
+	// changing while its derived model string stays the same (e.g. an empty
+	// Model field, so model defaults to "shoal-"+name) must not pin the
+	// device to its previous manufacturer.
+	q := url.Values{"model": {model}, "manufacturer_id": {strconv.Itoa(mfgID)}}
 	var out struct {
 		Results []struct {
 			ID int `json:"id"`
