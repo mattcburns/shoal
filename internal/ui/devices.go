@@ -85,6 +85,9 @@ func (s *Server) handleDeviceNewSubmit(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+	// Matches POST /v1/devices' handleCreateDevice: lifecycle_state is never
+	// client-settable on create, every new device starts at discovered.
+	d.LifecycleState = models.StateDiscovered
 	id, err := s.Directory.UpsertDevice(r.Context(), d)
 	if err != nil {
 		s.log.Error("ui: create device", "err", err.Error())
