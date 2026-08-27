@@ -1,0 +1,36 @@
+{{define "layout"}}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Shoal — Device {{.DeviceID}}</title>
+<style>
+  body { font-family: system-ui, -apple-system, sans-serif; margin: 2rem auto; max-width: 60rem; color: #1a1a1a; }
+  h1 { font-size: 1.4rem; }
+  h2 { font-size: 1.1rem; margin-top: 2rem; }
+  table { border-collapse: collapse; width: 100%; margin-top: 0.75rem; }
+  th, td { border: 1px solid #ccc; padding: 0.4rem 0.6rem; text-align: left; font-size: 0.9rem; }
+  th { background: #f2f2f2; }
+  form.poll-form { display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: flex-end; margin: 0.75rem 0; }
+  form.poll-form label { display: block; font-size: 0.8rem; color: #444; margin-bottom: 0.2rem; }
+  form.poll-form input { padding: 0.3rem; }
+  .banner { padding: 0.6rem 1rem; margin: 0.75rem 0; border-radius: 4px; }
+  .banner-error { background: #fdecea; color: #611a15; border: 1px solid #f5c6cb; }
+  .banner-ok { background: #eaf7ea; color: #1e4620; border: 1px solid #c3e6cb; }
+  .banner-info { background: #eaf1fb; color: #1a3c6e; border: 1px solid #c3d7ee; }
+  .tabs { margin: 0.5rem 0 1.5rem; }
+  .tabs a { margin-right: 1rem; }
+  .muted { color: #666; font-weight: normal; }
+  code { background: #f2f2f2; padding: 0 0.25rem; }
+</style>
+</head>
+<body>
+<h1>Device <code>{{.DeviceID}}</code></h1>
+<nav class="tabs">
+  <a href="/ui/devices/{{.DeviceID}}/sensors">Sensors</a>
+  <a href="/ui/devices/{{.DeviceID}}/firmware">Firmware</a>
+  <a href="?">Reload</a>
+</nav>
+{{template "content" .}}
+</body>
+</html>
+{{end}}

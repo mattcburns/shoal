@@ -1,0 +1,59 @@
+{{define "content"}}
+{{if .Error}}
+  <div class="banner banner-error">{{.Error}}</div>
+{{end}}
+{{if .PollMessage}}
+  <div class="banner {{if .PollError}}banner-error{{else}}banner-ok{{end}}">{{.PollMessage}}</div>
+{{end}}
+
+<section>
+  <h2>Poll BMC</h2>
+  <form class="poll-form" method="post" action="/ui/devices/{{.DeviceID}}/sensors">
+    <div>
+      <label for="sensors_bmc_endpoint">BMC endpoint</label>
+      <input id="sensors_bmc_endpoint" name="bmc_endpoint" value="{{.BMCEndpoint}}" placeholder="https://10.0.0.5" required>
+    </div>
+    <div>
+      <label for="sensors_bmc_username">BMC user (optional)</label>
+      <input id="sensors_bmc_username" name="bmc_username" autocomplete="off" placeholder="stored credentials, then env">
+    </div>
+    <div>
+      <label for="sensors_bmc_password">BMC password (optional)</label>
+      <input id="sensors_bmc_password" name="bmc_password" type="password" autocomplete="new-password" placeholder="stored credentials, then env">
+    </div>
+    <div>
+      <button type="submit">Poll now</button>
+    </div>
+  </form>
+  <p class="muted">
+    Runs <code>POST /v1/devices/{{.DeviceID}}/poll</code> (Redfish SEL + sensors), the same
+    on-demand poll path the API uses. May take up to two minutes on real hardware.
+  </p>
+</section>
+
+<section>
+  <h2>Sensor readings</h2>
+  {{if not .Sensors}}
+    <div class="banner banner-info">
+      No sensor readings yet — poll the BMC above, or wait for the background poller.
+      An empty table is valid (some BMCs report no sensors).
+    </div>
+  {{end}}
+  <table>
+    <thead>
+      <tr><th>Sensor</th><th>Value</th><th>Unit</th><th>Note</th><th>Time</th></tr>
+    </thead>
+    <tbody>
+      {{range .Sensors}}
+        <tr>
+          <td>{{.Sensor}}</td>
+          <td>{{if .Value}}{{.Value}}{{else}}—{{end}}</td>
+          <td>{{.Unit}}</td>
+          <td>{{.Note}}</td>
+          <td>{{.TS}}</td>
+        </tr>
+      {{end}}
+    </tbody>
+  </table>
+</section>
+{{end}}
