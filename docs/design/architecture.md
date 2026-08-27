@@ -1204,7 +1204,11 @@ only.
 
 **NetBox Integration:** SoT for device identity + current `lifecycle_state`
 only. Custom fields: `shoal_lifecycle_state`, `shoal_credential_ref`. No
-time-series in NetBox.
+time-series in NetBox. NetBox is one of two interchangeable
+`internal/common/directory.Store` backends (the other a local file-backed
+store for NetBox-less deployments) — see
+[`device-directory.md`](./device-directory.md) for the abstraction; this
+section's identity/lifecycle-only scope applies to either backend.
 
 ---
 
