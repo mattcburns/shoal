@@ -50,6 +50,14 @@ the API above server-side. It's baked into the lab's NetBox image by default
 [`docs/design/netbox-telemetry-ui-design.md`](docs/design/netbox-telemetry-ui-design.md)
 for the design and its own README for plugin development.
 
+### Built-in web UI
+Shoal also includes its own server-rendered web UI at `/ui/*` — no NetBox
+required, always compiled in. It's the simplest option for a single-operator
+lab with no NetBox instance; see
+[`docs/README.md`](docs/README.md#built-in-web-ui) for how to enable it
+(`SHOAL_DEVICE_STORE_DIR`, `SHOAL_API_TOKEN` as the login), when to use it
+over the NetBox plugin, and its current implementation status.
+
 ---
 
 This repository also contains the **lab automation** used to develop and

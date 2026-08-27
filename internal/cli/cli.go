@@ -10,11 +10,13 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/mattcburns/shoal/internal/api"
 	"github.com/mattcburns/shoal/internal/common/config"
+	"github.com/mattcburns/shoal/internal/common/directory"
 	"github.com/mattcburns/shoal/internal/common/models"
 	"github.com/mattcburns/shoal/internal/common/netbox"
 	"github.com/mattcburns/shoal/internal/common/redact"
@@ -32,6 +34,7 @@ import (
 	"github.com/mattcburns/shoal/internal/observe"
 	"github.com/mattcburns/shoal/internal/observe/poll"
 	"github.com/mattcburns/shoal/internal/observe/sol"
+	"github.com/mattcburns/shoal/internal/ui"
 )
 
 // Version is the application version string (overridable via -ldflags).
@@ -184,6 +187,13 @@ func cmdServe(args []string) int {
 		}
 	}
 
+	// Hoisted so the ui.Server wiring below (after this if/else) can reuse
+	// whichever of these the job-store branch actually built, without the UI
+	// package reaching into api.Server's unexported fields.
+	var profStore profile.Store
+	var orch *job.Orchestrator
+	var obsSvc *observe.Service
+
 	store, closer, err := openJobStore(cfg)
 	if err != nil {
 		log.Warn("job store unavailable for API", "err", err.Error())
@@ -213,7 +223,6 @@ func cmdServe(args []string) int {
 		if nbClient != nil {
 			nb = nbClient
 		}
-		var profStore profile.Store
 		if cfg.ProfileDir != "" {
 			if st, err := profile.NewFileStore(cfg.ProfileDir); err != nil {
 				log.Warn("profile store unavailable", "err", err.Error())
@@ -260,7 +269,7 @@ func cmdServe(args []string) int {
 		if cfg.ISOPublishDir != "" && cfg.ISOBaseURL != "" {
 			orchOpts.ISOBuilder = iso.NewScriptBuilder(cfg.ISOBuildScript, log)
 		}
-		orch := job.NewOrchestrator(orchOpts)
+		orch = job.NewOrchestrator(orchOpts)
 		defer orch.Stop()
 		watchSvc.SetProgress(orch.ProgressPort())
 		srvAPI.WithJobCanceler(orch)
@@ -269,7 +278,7 @@ func cmdServe(args []string) int {
 			log.Warn("orphan reconcile", "err", err.Error())
 		}
 
-		obsSvc := observe.New(log, store, telemStore, watchSvc)
+		obsSvc = observe.New(log, store, telemStore, watchSvc)
 		srvAPI.WithObserve(obsSvc)
 		log.Info("observe device status API enabled", "telemetry", telemStore != nil)
 
@@ -309,9 +318,44 @@ func cmdServe(args []string) int {
 		}
 	}
 
+	// Built-in web UI (internal/ui): its own mux/Handler(), mounted as a
+	// sibling of the JSON API under one http.Server. "/ui/" is more specific
+	// than "/" so net/http.ServeMux routes every /ui/* request to uiSrv and
+	// everything else (/v1/*, /healthz, /readyz, /metrics) falls through to
+	// srvAPI, regardless of registration order.
+	//
+	// internal/common/directory (the CLI-directory-wiring sibling unit's
+	// package) hadn't landed a buildDirectory helper when this was written, so
+	// the device store is opened inline here from SHOAL_DEVICE_STORE_DIR.
+	uiCfg := ui.Config{
+		Directory: openDirectory(log),
+		Observe:   obsSvc,
+		Jobs:      store,
+		Profiles:  profStore,
+		Secrets:   secretBackend,
+		Power:     devicePower{cfg: cfg, newBMC: redfish.NewBMC},
+		APIToken:  cfg.APIToken,
+		Log:       log,
+	}
+	if orch != nil {
+		// Only assign when non-nil: orch is a *job.Orchestrator, and a nil one
+		// assigned directly into these interface-typed fields would produce a
+		// non-nil api.JobStarter/JobCanceler wrapping a nil pointer -- the
+		// classic typed-nil-in-interface trap. A future page handler doing
+		// `if s.JobStarter != nil { s.JobStarter.StartAsync(...) }` would see a
+		// non-nil interface and call into it, panicking inside
+		// job.Orchestrator's methods instead of skipping the disabled path.
+		uiCfg.JobStarter = orch
+		uiCfg.JobCanceler = orch
+	}
+	uiSrv := ui.New(uiCfg)
+	topMux := http.NewServeMux()
+	topMux.Handle("/", srvAPI.Handler())
+	topMux.Handle("/ui/", uiSrv.Handler())
+
 	httpSrv := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           srvAPI.Handler(),
+		Handler:           topMux,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
@@ -347,6 +391,27 @@ func openSecrets(cfg config.Config) secrets.Backend {
 		}
 	}
 	return secrets.NewMemory()
+}
+
+// openDirectory opens the built-in web UI's device-identity store from
+// SHOAL_DEVICE_STORE_DIR (defaulting to .shoal/devices so `shoal serve` works
+// out of the box for local/lab use), or SHOAL_DEVICE_STORE_DIR="testdir" style
+// overrides. Read directly here (not via config.Config) because this env var
+// belongs to the CLI-directory-wiring sibling unit's config plumbing, which
+// hadn't landed when this was written; a nil return disables the Devices UI
+// pages (they render a "device directory not configured" message) rather than
+// failing serve startup.
+func openDirectory(log *slog.Logger) directory.Store {
+	dir := strings.TrimSpace(os.Getenv("SHOAL_DEVICE_STORE_DIR"))
+	if dir == "" {
+		dir = ".shoal/devices"
+	}
+	st, err := directory.NewFileStore(dir)
+	if err != nil {
+		log.Warn("device directory store unavailable", "err", err.Error())
+		return nil
+	}
+	return st
 }
 
 // seedPollTargets registers BMC endpoints from durable jobs for SEL/sensor poll.
