@@ -66,6 +66,11 @@ type statusPageData struct {
 
 	Flash      string
 	FlashLevel string
+
+	// CSRFToken is embedded as a hidden field in every write form on this
+	// page (Provision/Cancel/Deprovision/Credentials/Power); see
+	// auth.go's csrfToken/verifyCSRF (same convention as devices.go's forms).
+	CSRFToken string
 }
 
 func (s *Server) handleDeviceStatusPage(w http.ResponseWriter, r *http.Request) {
@@ -75,6 +80,7 @@ func (s *Server) handleDeviceStatusPage(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	data := s.buildStatusPage(r.Context(), id)
+	data.CSRFToken = s.csrfToken(r)
 	data.Flash = r.URL.Query().Get("msg")
 	data.FlashLevel = r.URL.Query().Get("level")
 	s.renderPage(w, r, "status.html", data)
@@ -220,6 +226,10 @@ func (s *Server) handleDeviceStatusPost(w http.ResponseWriter, r *http.Request) 
 	}
 	if err := r.ParseForm(); err != nil {
 		s.redirectFlash(w, r, id, "error", "invalid form")
+		return
+	}
+	if !s.verifyCSRF(r) {
+		s.redirectFlash(w, r, id, "error", "your session expired; please retry")
 		return
 	}
 	switch strings.TrimSpace(r.PostForm.Get("action")) {

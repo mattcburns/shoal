@@ -20,6 +20,7 @@ import (
 	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -94,6 +95,8 @@ func (f fakePower) Power(_ context.Context, deviceID string, req api.DevicePower
 	return api.DevicePowerResult{DeviceID: deviceID, ResetType: req.ResetType, PowerState: "On"}, nil
 }
 
+var csrfTokenRe = regexp.MustCompile(`name="csrf_token" value="([0-9a-f]+)"`)
+
 func TestStatusTabE2E(t *testing.T) {
 	// job.StartJobRequest requires prep_iso_url when prep=wipe_only unless
 	// SHOAL_PREP_ISO_URL is set; the deprovision form (like the NetBox
@@ -165,6 +168,15 @@ func TestStatusTabE2E(t *testing.T) {
 		}
 	}
 
+	// Every write form on the page embeds the same per-session CSRF token;
+	// extract it once and attach it to every POST below, mirroring what a
+	// real browser submit does automatically via the hidden form field.
+	csrfMatch := csrfTokenRe.FindStringSubmatch(bs)
+	if csrfMatch == nil {
+		t.Fatalf("status page missing csrf_token hidden field: %s", bs)
+	}
+	csrfToken := csrfMatch[1]
+
 	// POST start job.
 	resp, err = client.PostForm(ts.URL+"/ui/devices/dev1", url.Values{
 		"action":        {"start"},
@@ -172,6 +184,7 @@ func TestStatusTabE2E(t *testing.T) {
 		"iso_url":       {"http://example/iso"},
 		"profile_ref":   {"spike"},
 		"serial_target": {"shoal-node-1"},
+		"csrf_token":    {csrfToken},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -187,8 +200,9 @@ func TestStatusTabE2E(t *testing.T) {
 
 	// POST cancel.
 	resp, err = client.PostForm(ts.URL+"/ui/devices/dev1", url.Values{
-		"action": {"cancel"},
-		"job_id": {"job-123"},
+		"action":     {"cancel"},
+		"job_id":     {"job-123"},
+		"csrf_token": {csrfToken},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -204,6 +218,7 @@ func TestStatusTabE2E(t *testing.T) {
 		"action":       {"deprovision"},
 		"bmc_endpoint": {"https://192.168.1.50"},
 		"wipe_level":   {"discard"},
+		"csrf_token":   {csrfToken},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -220,6 +235,7 @@ func TestStatusTabE2E(t *testing.T) {
 		"bmc_endpoint":     {"https://192.168.1.50"},
 		"wipe_level":       {"discard"},
 		"approve_destruct": {"on"},
+		"csrf_token":       {csrfToken},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -235,6 +251,7 @@ func TestStatusTabE2E(t *testing.T) {
 		"action":       {"credentials"},
 		"bmc_username": {"admin"},
 		"bmc_password": {"newpass"},
+		"csrf_token":   {csrfToken},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -250,6 +267,7 @@ func TestStatusTabE2E(t *testing.T) {
 		"action":       {"power"},
 		"reset_type":   {"On"},
 		"bmc_endpoint": {"https://192.168.1.50"},
+		"csrf_token":   {csrfToken},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -267,6 +285,7 @@ func TestStatusTabE2E(t *testing.T) {
 		"action":       {"power"},
 		"reset_type":   {"On"},
 		"bmc_endpoint": {"https://10.255.255.1"},
+		"csrf_token":   {csrfToken},
 	})
 	if err != nil {
 		t.Fatal(err)
