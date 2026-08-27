@@ -71,13 +71,6 @@ func (f *fakeStarter) StartAsync(_ context.Context, req models.StartJobRequest) 
 	return models.Job{ID: "job-123", DeviceID: req.DeviceID, State: models.StateProvisioning}, nil
 }
 
-type fakeCanceler struct{ called string }
-
-func (f *fakeCanceler) Cancel(_ context.Context, jobID string) error {
-	f.called = jobID
-	return nil
-}
-
 type fakeCreds struct{}
 
 func (fakeCreds) Get(_ context.Context, deviceID, _ string) (api.DeviceCredentialsView, error) {
@@ -201,8 +194,8 @@ func TestStatusTabE2E(t *testing.T) {
 		t.Fatal(err)
 	}
 	resp.Body.Close()
-	if canceler.called != "job-123" {
-		t.Fatalf("cancel not called with expected id: %q", canceler.called)
+	if canceler.calledWith != "job-123" {
+		t.Fatalf("cancel not called with expected id: %q", canceler.calledWith)
 	}
 
 	// POST deprovision without approve_destruct -> rejected server-side even

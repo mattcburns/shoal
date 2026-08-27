@@ -1,0 +1,46 @@
+{{define "content"}}
+<h2>Events — device {{.DeviceID}}</h2>
+<div class="toolbar">
+  <span></span>
+  <a href="/ui/devices/{{.DeviceID}}/events">Refresh</a>
+</div>
+
+{{if .Error}}
+  <div class="banner warn">Shoal unavailable: {{.Error}}</div>
+{{end}}
+
+<table>
+  <thead>
+    <tr>
+      <th scope="col">Time</th>
+      <th scope="col">Severity</th>
+      <th scope="col">Type</th>
+      <th scope="col">Component</th>
+      <th scope="col">Message</th>
+    </tr>
+  </thead>
+  <tbody>
+    {{if not .Events}}
+    <tr><td colspan="5">
+      <div class="banner info">
+        No events yet — has Observe polled this device? On nested/simulated
+        hardware an empty SEL is normal; rich events need a real BMC or seeded
+        telemetry.
+      </div>
+    </td></tr>
+    {{else}}
+      {{range .Events}}
+      <tr>
+        <td>{{if .Timestamp.IsZero}}—{{else}}{{.Timestamp.Format "2006-01-02T15:04:05Z07:00"}}{{end}}</td>
+        <td>
+          {{if .Severity}}<span class="badge sev-{{lower .Severity}}">{{.Severity}}</span>{{else}}—{{end}}
+        </td>
+        <td>{{if .EventType}}{{.EventType}}{{else}}—{{end}}</td>
+        <td>{{if .Component}}{{.Component}}{{else}}—{{end}}</td>
+        <td>{{if .Message}}{{.Message}}{{else}}—{{end}}</td>
+      </tr>
+      {{end}}
+    {{end}}
+  </tbody>
+</table>
+{{end}}

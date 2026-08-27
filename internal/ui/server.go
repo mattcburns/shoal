@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/mattcburns/shoal/internal/api"
 	"github.com/mattcburns/shoal/internal/common/directory"
@@ -166,6 +167,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /ui/devices/{id}/edit", s.handleDeviceEditForm)
 	s.mux.HandleFunc("POST /ui/devices/{id}/edit", s.handleDeviceEditSubmit)
 	s.mux.HandleFunc("POST /ui/devices/{id}/delete", s.handleDeviceDelete)
+	s.mux.HandleFunc("GET /ui/devices/{id}/events", s.handleDeviceEvents)
+	s.mux.HandleFunc("GET /ui/devices/{id}/jobs", s.handleDeviceJobs)
+	s.mux.HandleFunc("POST /ui/devices/{id}/jobs", s.handleCancelJob)
 }
 
 func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
@@ -182,12 +186,21 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 // renderPage. truncate is used by status.html to shorten job ids in
 // button/heading text.
 var templateFuncs = template.FuncMap{
+	// truncate cuts s to at most n runes (not bytes, so multi-byte text --
+	// e.g. a non-ASCII BMC error message -- is never cut mid-character),
+	// appending an ellipsis when it does. Argument order is (n, s) to match
+	// every existing call site (status.html's `truncate 16 .ActiveJob.ID`).
 	"truncate": func(n int, s string) string {
-		if len(s) <= n {
+		r := []rune(s)
+		if len(r) <= n {
 			return s
 		}
-		return s[:n]
+		if n <= 1 {
+			return string(r[:n])
+		}
+		return string(r[:n-1]) + "…"
 	},
+	"lower": strings.ToLower,
 }
 
 func (s *Server) renderPage(w http.ResponseWriter, r *http.Request, name string, data any) {
