@@ -328,6 +328,81 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /v1/devices:
+    get:
+      tags: [devices]
+      summary: List devices known to the device directory
+      description: |
+        Backed by the configured directory backend: currently a local JSON
+        file store (SHOAL_DEVICE_STORE_DIR) or, when that's unset, a
+        non-persistent in-memory store. A NetBox-backed adapter is planned
+        but not yet wired into `shoal serve`. No `since` cursor applies --
+        this returns the full device list, page-limited by `limit`.
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: Devices, in id order.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  devices:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/DeviceIdentity"
+        "502":
+          description: The configured directory backend failed to list devices.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: Device directory not configured on this server instance.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    post:
+      tags: [devices]
+      summary: Register a new device identity record
+      description: |
+        `lifecycle_state` is never client-settable here -- every new device
+        starts at `discovered` regardless of what (if anything) the request
+        body sends for that field; the server always sets it.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateDeviceRequest"
+      responses:
+        "201":
+          description: Device created; response includes the assigned id.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeviceIdentity"
+        "400":
+          description: Invalid JSON, or neither name nor serial was supplied.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "502":
+          description: The configured directory backend failed to create the device.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: Device directory not configured on this server instance.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /v1/devices/{id}/status:
     get:
       tags: [devices]
@@ -1345,6 +1420,50 @@ components:
           type: string
           description: Go duration string (e.g. "60m"), for coarse (operator_iso) stage paths.
       required: [ref, needs_approval]
+
+    DeviceIdentity:
+      type: object
+      description: A device directory record (internal/common/models.DeviceIdentity).
+      properties:
+        id:
+          type: string
+          description: Assigned by the directory backend on create; empty/omitted on a create request.
+        name:
+          type: string
+        serial:
+          type: string
+        vendor:
+          type: string
+        model:
+          type: string
+        lifecycle_state:
+          type: string
+          enum: [discovered, ready, provisioning, provisioned, failed]
+        credential_ref:
+          type: string
+          description: Secrets-backend key; never a raw password.
+        bmc_ip:
+          type: string
+      required: [serial, lifecycle_state, credential_ref, bmc_ip]
+
+    CreateDeviceRequest:
+      type: object
+      description: |
+        POST /v1/devices request body. Omits lifecycle_state -- it is never
+        client-settable on create. At least one of name or serial is required.
+      properties:
+        name:
+          type: string
+        serial:
+          type: string
+        vendor:
+          type: string
+        model:
+          type: string
+        bmc_ip:
+          type: string
+        credential_ref:
+          type: string
 
     ProfileRecord:
       type: object

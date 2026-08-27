@@ -2,8 +2,11 @@
 
 Shoal exposes a small `net/http` API (default `:8088`, `SHOAL_HTTP_ADDR`) for
 Discover (asset ingest), Observe (device status/events/sensors/firmware/job
-log), Deploy (provisioning jobs, on-demand power, on-demand poll), stored
-device credentials, and saved provisioning profiles. Handlers live in
+log), Deploy (provisioning jobs, on-demand power, on-demand poll), a device
+directory (`GET`/`POST /v1/devices`, backed by `internal/common/directory.Store`
+-- currently a local JSON file store or an in-memory fallback; a NetBox-backed
+adapter is planned but not yet wired into `shoal serve`), stored device
+credentials, and saved provisioning profiles. Handlers live in
 `internal/api/*.go` and are registered in `internal/api/server.go`.
 
 The full route-by-route reference — methods, path/query parameters, request
@@ -53,13 +56,15 @@ internal error text (DSNs, stack fragments, etc.) in an API response.
 
 ## Pagination
 
-List endpoints (`GET /v1/jobs/{id}/log`, `GET /v1/devices/{id}/events`,
-`GET /v1/devices/{id}/jobs`, `GET /v1/devices/{id}/sensors`,
-`GET /v1/devices/{id}/firmware`) accept `?limit=`. Values above the
-server-side maximum of **200** are clamped to 200 — a caller cannot force an
-unbounded scan or response. Defaults vary by endpoint (see `openapi.yaml`
-for the exact default per route); most default to 50, while the sensors and
-firmware endpoints default to the 200 maximum.
+List endpoints (`GET /v1/jobs/{id}/log`, `GET /v1/devices`,
+`GET /v1/devices/{id}/events`, `GET /v1/devices/{id}/jobs`,
+`GET /v1/devices/{id}/sensors`, `GET /v1/devices/{id}/firmware`) accept
+`?limit=`. Values above the server-side maximum of **200** are clamped to
+200 — a caller cannot force an unbounded scan or response. Defaults vary by
+endpoint (see `openapi.yaml` for the exact default per route); most default
+to 50, while `GET /v1/devices` and the sensors/firmware endpoints default to
+the 200 maximum (there's no `since` cursor to page against, so a full list
+is preferred up to that cap).
 
 Time-bounded list endpoints also accept `?since=` (RFC3339). An unparseable
 `since` is treated as "no filter" rather than a 400, mirroring how an

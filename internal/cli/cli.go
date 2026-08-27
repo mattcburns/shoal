@@ -15,6 +15,7 @@ import (
 
 	"github.com/mattcburns/shoal/internal/api"
 	"github.com/mattcburns/shoal/internal/common/config"
+	"github.com/mattcburns/shoal/internal/common/directory"
 	"github.com/mattcburns/shoal/internal/common/models"
 	"github.com/mattcburns/shoal/internal/common/netbox"
 	"github.com/mattcburns/shoal/internal/common/redact"
@@ -152,6 +153,25 @@ func cmdServe(args []string) int {
 	}
 	srvAPI.WithDeviceCredentials(deviceCreds{secrets: secretBackend, nb: nbClient})
 	srvAPI.WithDevicePower(devicePower{cfg: cfg, newBMC: redfish.NewBMC})
+	// Device directory (GET/POST /v1/devices). No NetBox-backed directory.Store
+	// adapter exists yet (that's the "netbox-directory-adapter" sibling unit's
+	// job), so this always wires a local backend: SHOAL_DEVICE_STORE_DIR when
+	// set, else a non-persistent in-memory store so the routes are never
+	// unconfigured. The "cli-directory-wiring" sibling unit may replace this
+	// block with NetBox-aware selection; reconcile at merge time.
+	var dirStore directory.Store
+	if cfg.DeviceStoreDir != "" {
+		if st, err := directory.NewFileStore(cfg.DeviceStoreDir); err != nil {
+			log.Warn("device directory store unavailable", "err", err.Error())
+			dirStore = directory.NewMemory()
+		} else {
+			dirStore = st
+			log.Info("device directory store enabled", "dir", cfg.DeviceStoreDir)
+		}
+	} else {
+		dirStore = directory.NewMemory()
+	}
+	srvAPI.WithDirectory(dirStore)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
