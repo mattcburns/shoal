@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"context"
 	"fmt"
 	"log/slog"
 	"os"
@@ -9,7 +8,6 @@ import (
 
 	"github.com/mattcburns/shoal/internal/common/config"
 	"github.com/mattcburns/shoal/internal/common/directory"
-	"github.com/mattcburns/shoal/internal/common/models"
 	"github.com/mattcburns/shoal/internal/common/netbox"
 )
 
@@ -49,7 +47,7 @@ func defaultDeviceStoreDir() string {
 // internal/deploy/job.
 func buildDirectory(cfg config.Config, log *slog.Logger) (directory.Store, error) {
 	if cfg.NetBoxURL != "" && cfg.NetBoxToken != "" {
-		return netboxStoreAdapter{netbox.New(cfg.NetBoxURL, cfg.NetBoxToken)}, nil
+		return netbox.New(cfg.NetBoxURL, cfg.NetBoxToken), nil
 	}
 	dir := cfg.DeviceStoreDir
 	if dir == "" {
@@ -63,39 +61,6 @@ func buildDirectory(cfg config.Config, log *slog.Logger) (directory.Store, error
 		log.Info("local device store enabled", "dir", dir)
 	}
 	return st, nil
-}
-
-// netboxStoreAdapter adapts *netbox.Client to the full directory.Store
-// interface.
-//
-// COORDINATION NOTE: as of this branch, *netbox.Client implements
-// UpsertDevice/GetDevice/SetLifecycle/ResolveDeviceID (promoted below via
-// embedding) but not yet ListDevices/DeleteDevice -- those are expected to
-// land on netbox.Client itself from the sibling "netbox-directory-adapter"
-// work unit. Once they do, *netbox.Client will satisfy directory.Store on
-// its own and this adapter (and the wrapping call in buildDirectory above)
-// should be deleted in favor of using netbox.New(...) directly.
-//
-// KNOWN LIMITATION until that lands: every current call site in this repo
-// only ever needs UpsertDevice/GetDevice/SetLifecycle/ResolveDeviceID (via
-// netbox.API/LifecycleWriter/DeviceResolver), never the full Store
-// interface, so the stub errors below are unreachable today. But dirStore's
-// *static* type is directory.Store at every call site, so any future
-// generic caller (e.g. a `/v1/devices` listing endpoint written against
-// Store directly) that invokes ListDevices/DeleteDevice while NetBox is
-// configured gets a hard error here even though the FileStore backend
-// fully supports both -- an asymmetry between backends behind the same
-// interface that should go away once the sibling unit lands.
-type netboxStoreAdapter struct {
-	*netbox.Client
-}
-
-func (netboxStoreAdapter) ListDevices(_ context.Context) ([]models.DeviceIdentity, error) {
-	return nil, fmt.Errorf("netbox: ListDevices not yet implemented (pending netbox-directory-adapter unit)")
-}
-
-func (netboxStoreAdapter) DeleteDevice(_ context.Context, _ string) error {
-	return fmt.Errorf("netbox: DeleteDevice not yet implemented (pending netbox-directory-adapter unit)")
 }
 
 // credentialsNB returns the deviceNB-shaped view (see credentials.go) of

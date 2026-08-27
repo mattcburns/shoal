@@ -19,11 +19,53 @@ Architecture and feature designs — some implemented, some proposed.
 - [`design/netbox-telemetry-ui-design.md`](design/netbox-telemetry-ui-design.md) — NetBox plugin integration for visual telemetry, events, and job context (backend APIs + device page tabs).
 - [`design/sol-transports-design.md`](design/sol-transports-design.md) — real-hardware Serial-over-LAN transports (Dell iDRAC SSH attach and stdlib IPMI SOL).
 - [`design/netbox-integration.md`](design/netbox-integration.md) — NetBox as an optional integration: the consumer interfaces and how the app degrades when it's unconfigured.
+- [`design/device-directory.md`](design/device-directory.md) — the `directory.Store` abstraction (NetBox adapter vs. local file-backed store), config-gated backend selection, and the conformance test that keeps both behaviorally verified.
 
 ## API
 
 - [`api/README.md`](api/README.md) — HTTP API conventions (auth, error envelope, pagination).
 - [`api/openapi.yaml`](api/openapi.yaml) — hand-written OpenAPI 3.0 spec for every `/v1/*` route.
+
+## Built-in web UI
+
+Shoal includes a server-rendered web UI (`internal/ui`, Go `html/template` +
+`//go:embed` — no JS framework, no new dependency) served at `/ui/*`
+alongside the existing `/v1/*` JSON API. Like the device-directory
+abstraction above, this is delivered by a sibling unit landing in the same
+batch as this doc — if `/ui/*` 404s on your build, that unit hasn't merged
+yet; this section describes its intended shape. Once merged, it's always
+compiled into the binary; nothing needs to be enabled to make `/ui/*`
+respond.
+
+Two things make it useful:
+
+- **`SHOAL_DEVICE_STORE_DIR`** — points the UI's device list/add/edit/delete
+  pages at the local file-backed `directory.Store` backend when no NetBox
+  instance is configured (see
+  [`design/device-directory.md`](design/device-directory.md)). Without
+  either this or NetBox configured, there's no device directory backend for
+  the UI to read or write.
+- **`SHOAL_API_TOKEN`** — doubles as the UI's login password. The UI signs
+  in with a signed-cookie session; there is no separate UI credential to
+  configure or a new secret to manage. If `SHOAL_API_TOKEN` is empty, the
+  same "auth disabled" behavior that applies to `/v1/*`
+  (see [`api/README.md`](api/README.md#authentication)) applies to the UI
+  login.
+
+Per-device pages mirror the tabs the `extras/netbox-plugin-shoal` NetBox
+plugin already shows on a NetBox device page — Status/Provisioning/Power/
+Credentials, Events, Jobs, Sensors, Firmware — but rendered natively by
+Shoal, calling the same in-process Go service objects `internal/api`'s
+handlers call (not proxying to `/v1/*` over HTTP).
+
+**Built-in UI vs. the NetBox plugin:** use the built-in UI when you want
+zero extra infrastructure — a simple, single-operator lab that has no
+NetBox instance (or doesn't want Shoal wired into one). Use the NetBox
+plugin when you already run NetBox for DCIM/IPAM and want Shoal's
+provisioning/telemetry surfaced inside the tool your fleet inventory
+already lives in, alongside every other device record. Both read the same
+underlying data through the same service layer; neither is more
+"authoritative" than the other.
 
 ## Plans
 

@@ -31,6 +31,7 @@ import (
 	"github.com/mattcburns/shoal/internal/observe"
 	"github.com/mattcburns/shoal/internal/observe/poll"
 	"github.com/mattcburns/shoal/internal/observe/sol"
+	"github.com/mattcburns/shoal/internal/ui"
 )
 
 // Version is the application version string (overridable via -ldflags).
@@ -185,6 +186,13 @@ func cmdServe(args []string) int {
 		}
 	}
 
+	// Hoisted so the ui.Server wiring below (after this if/else) can reuse
+	// whichever of these the job-store branch actually built, without the UI
+	// package reaching into api.Server's unexported fields.
+	var profStore profile.Store
+	var orch *job.Orchestrator
+	var obsSvc *observe.Service
+
 	store, closer, err := openJobStore(cfg)
 	if err != nil {
 		log.Warn("job store unavailable for API", "err", err.Error())
@@ -210,7 +218,6 @@ func cmdServe(args []string) int {
 				UseSudo: cfg.SerialSSHSudo,
 			},
 		)
-		var profStore profile.Store
 		if cfg.ProfileDir != "" {
 			if st, err := profile.NewFileStore(cfg.ProfileDir); err != nil {
 				log.Warn("profile store unavailable", "err", err.Error())
@@ -257,7 +264,7 @@ func cmdServe(args []string) int {
 		if cfg.ISOPublishDir != "" && cfg.ISOBaseURL != "" {
 			orchOpts.ISOBuilder = iso.NewScriptBuilder(cfg.ISOBuildScript, log)
 		}
-		orch := job.NewOrchestrator(orchOpts)
+		orch = job.NewOrchestrator(orchOpts)
 		defer orch.Stop()
 		watchSvc.SetProgress(orch.ProgressPort())
 		srvAPI.WithJobCanceler(orch)
@@ -266,7 +273,7 @@ func cmdServe(args []string) int {
 			log.Warn("orphan reconcile", "err", err.Error())
 		}
 
-		obsSvc := observe.New(log, store, telemStore, watchSvc)
+		obsSvc = observe.New(log, store, telemStore, watchSvc)
 		srvAPI.WithObserve(obsSvc)
 		log.Info("observe device status API enabled", "telemetry", telemStore != nil)
 
@@ -306,9 +313,46 @@ func cmdServe(args []string) int {
 		}
 	}
 
+	// Built-in web UI (internal/ui): its own mux/Handler(), mounted as a
+	// sibling of the JSON API under one http.Server. "/ui/" is more specific
+	// than "/" so net/http.ServeMux routes every /ui/* request to uiSrv and
+	// everything else (/v1/*, /healthz, /readyz, /metrics) falls through to
+	// srvAPI, regardless of registration order.
+	//
+	// Reuses the same dirStore buildDirectory (above, near the top of
+	// cmdServe) already constructed for the API/discover/orchestrator wiring
+	// -- NetBox-backed when configured, the local FileStore otherwise --
+	// rather than opening a second, independent store that would always be
+	// the local FileStore regardless of NetBox configuration.
+	uiCfg := ui.Config{
+		Directory: dirStore,
+		Observe:   obsSvc,
+		Jobs:      store,
+		Profiles:  profStore,
+		Secrets:   secretBackend,
+		Power:     devicePower{cfg: cfg, newBMC: redfish.NewBMC},
+		APIToken:  cfg.APIToken,
+		Log:       log,
+	}
+	if orch != nil {
+		// Only assign when non-nil: orch is a *job.Orchestrator, and a nil one
+		// assigned directly into these interface-typed fields would produce a
+		// non-nil api.JobStarter/JobCanceler wrapping a nil pointer -- the
+		// classic typed-nil-in-interface trap. A future page handler doing
+		// `if s.JobStarter != nil { s.JobStarter.StartAsync(...) }` would see a
+		// non-nil interface and call into it, panicking inside
+		// job.Orchestrator's methods instead of skipping the disabled path.
+		uiCfg.JobStarter = orch
+		uiCfg.JobCanceler = orch
+	}
+	uiSrv := ui.New(uiCfg)
+	topMux := http.NewServeMux()
+	topMux.Handle("/", srvAPI.Handler())
+	topMux.Handle("/ui/", uiSrv.Handler())
+
 	httpSrv := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           srvAPI.Handler(),
+		Handler:           topMux,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
