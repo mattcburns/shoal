@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Shoal — Log in</title>
+<link rel="stylesheet" href="/ui/static/style.css">
+</head>
+<body>
+<main class="shoal-login">
+  <h1>Shoal</h1>
+  {{if .Error}}<p class="shoal-error">{{.Error}}</p>{{end}}
+  <form method="post" action="/ui/login">
+    <label for="password">Password</label>
+    <input type="password" id="password" name="password" autofocus required>
+    {{if .Next}}<input type="hidden" name="next" value="{{.Next}}">{{end}}
+    <button type="submit">Log in</button>
+  </form>
+</main>
+</body>
+</html>
