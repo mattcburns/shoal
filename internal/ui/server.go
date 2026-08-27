@@ -1,223 +1,186 @@
-// Package ui implements Shoal's built-in server-rendered web UI (no JS
-// framework) so operators can manage devices/provisioning without NetBox.
-//
-// PLACEHOLDER SHELL: this file, layout.html, and the login/session/auth
-// middleware below are scaffolding written against the documented contract
-// from the parallel "UI shell" work unit, which had not landed in this
-// worktree at the time this package was written (see the batch coordinator
-// notes). The real shell PR owns Server's final shape, layout.html, a device
-// list/nav page, and real session auth; at merge time this file should be
-// replaced by that PR's version, keeping only the registerStatusRoutes call
-// (see status.go) and the Server fields this unit reads/writes:
-//
-//	Directory, Observe, Jobs, JobStarter, JobCanceler, Profiles, Credentials, Power
-//
-// Everything else in this file (the login form, the in-memory session
-// cookie, the layout template) exists solely so `go build`/`go test` and the
-// E2E recipe in this unit's task description can run standalone.
 package ui
 
 import (
-	"context"
-	"crypto/rand"
-	"crypto/subtle"
-	"embed"
-	"encoding/hex"
+	"bytes"
 	"html/template"
+	"io/fs"
 	"log/slog"
 	"net/http"
-	"strings"
-	"sync"
-	"time"
 
 	"github.com/mattcburns/shoal/internal/api"
-	"github.com/mattcburns/shoal/internal/common/models"
+	"github.com/mattcburns/shoal/internal/common/directory"
 	"github.com/mattcburns/shoal/internal/core/profile"
 	"github.com/mattcburns/shoal/internal/deploy/jobstore"
 	"github.com/mattcburns/shoal/internal/observe"
 )
 
-//go:embed templates/*.html
-var templatesFS embed.FS
+// Config carries every dependency ui.New needs to build a Server. Fields not
+// used by this unit's pages (Devices list/add/edit + shell) are placeholders
+// for units 6-8's device-detail tabs (Status/Events/Jobs/Sensors/Firmware),
+// documented here so the Server struct shape stays stable across those PRs.
+type Config struct {
+	// Directory is the device-identity backend (file-backed or NetBox-backed,
+	// selected at runtime -- never a build tag). Used by the Device List/Add/
+	// Edit/Detail pages this unit implements.
+	Directory directory.Store
 
-// DeviceDirectory is the subset of internal/common/directory.Store this page
-// needs (GetDevice, to prefill BMC endpoint / credential_ref / lifecycle
-// defaults the way the NetBox plugin reads device custom fields). Defined
-// locally, matching models.DeviceIdentity, because internal/common/directory
-// is owned by a sibling unit and does not exist in this worktree; swap in the
-// real directory.Store at merge time (its GetDevice signature matches).
-type DeviceDirectory interface {
-	GetDevice(ctx context.Context, id string) (models.DeviceIdentity, error)
-}
+	// Observe is the aggregate device-status/event/job-log service
+	// (internal/observe). Placeholder for unit 6/7's Status/Events/Jobs tabs;
+	// unused by this unit.
+	Observe *observe.Service
 
-// Server is the /ui/* HTTP surface. Field names/types mirror what
-// internal/api/jobs.go, power.go, and credentials.go already call
-// JobStarter/JobCanceler/DevicePower/DeviceCredentials so this package reuses
-// those exact interfaces (and their request/response structs) rather than
-// redeclaring them.
-type Server struct {
-	Directory   DeviceDirectory
-	Observe     *observe.Service
-	Jobs        jobstore.Store
-	JobStarter  api.JobStarter
+	// Jobs is the durable job store. Placeholder for unit 7's Jobs tab; unused
+	// by this unit.
+	Jobs jobstore.Store
+
+	// JobStarter starts a provisioning job (Deploy Orchestrator). Placeholder
+	// for a future "start job" UI action; unused by this unit.
+	JobStarter api.JobStarter
+
+	// JobCanceler cancels an in-flight job (Deploy Orchestrator). Placeholder
+	// for a future job-cancel UI action; unused by this unit.
 	JobCanceler api.JobCanceler
-	Profiles    profile.Store
-	Credentials api.DeviceCredentials
-	Power       api.DevicePower
 
-	// DefaultBMCUsername/DefaultBMCPassword mirror the orchestrator-wide
-	// SHOAL_BMC_* env fallback internal/api/power.go applies when a request
-	// and the stored credential are both empty. Optional; leave zero to skip.
+	// Profiles is the saved-provisioning-profile store. Placeholder for a
+	// future profile_ref picker on a Provision form; unused by this unit's
+	// plain Add Device form.
+	Profiles profile.Store
+
+	// Credentials resolves/stores BMC credentials, the same api.DeviceCredentials
+	// surface internal/api/credentials.go's GET/PUT /v1/devices/{id}/credentials
+	// uses (Get/Put/Resolve) -- pass the same deviceCreds{...} value cmdServe
+	// already builds for WithDeviceCredentials so both surfaces resolve
+	// credentials identically (NetBox/directory-aware, never a raw secrets
+	// backend directly). Used by the Status tab's credentials-edit action and
+	// by Provision/Power actions that fall back to a device's stored creds.
+	Credentials api.DeviceCredentials
+
+	// Power dials a BMC to apply a Redfish reset (On/ForceOff/ForceRestart),
+	// the same api.DevicePower surface internal/api/power.go uses. Used by the
+	// Status tab's power-control buttons.
+	Power api.DevicePower
+
+	// DefaultBMCUsername/DefaultBMCPassword are the orchestrator-wide
+	// SHOAL_BMC_* lab fallback credentials (config.Config.BMCUsername/
+	// BMCPassword) -- used by the Status tab's power action only when neither
+	// the request nor Credentials.Resolve supplies a username/password,
+	// mirroring job.Options' same-named fields.
 	DefaultBMCUsername string
 	DefaultBMCPassword string
 
-	// AuthToken gates /ui/login (placeholder session auth; see package doc).
-	// Defaults to SHOAL_API_TOKEN's value when constructed via New. Empty
-	// disables login (every request is treated as authenticated) — fine for
-	// a lab default, matching api.withAPIAuth's "empty = open" behavior.
-	AuthToken string
+	// APIToken gates /ui/* behind a login cookie when non-empty (compared
+	// against the POSTed password on /ui/login) -- the same value as
+	// SHOAL_API_TOKEN / internal/api's Bearer auth. Empty disables UI auth
+	// entirely, mirroring internal/api/auth.go's "auth disabled when token
+	// unset" behavior. Passed in by the caller (cmdServe); this package never
+	// reads the environment itself.
+	APIToken string
 
+	// Log receives handler/template errors. Defaults to slog.Default() if nil.
 	Log *slog.Logger
-
-	mux      *http.ServeMux
-	tmplOnce sync.Once
-	tmplBase *template.Template
-
-	sessMu sync.Mutex
-	sess   map[string]struct{}
 }
 
-// New constructs a UI Server and registers routes.
-func New(log *slog.Logger) *Server {
+// Server is the built-in web UI's HTTP surface: its own http.ServeMux and
+// Handler() method, mounted by internal/cli/cli.go's cmdServe as a sibling of
+// the existing API mux (see cmdServe for how the two are combined under one
+// http.Server).
+type Server struct {
+	mux      *http.ServeMux
+	log      *slog.Logger
+	apiToken string
+
+	// Directory backs the Device List/Add/Edit/Detail pages. See Config.Directory.
+	Directory directory.Store
+	// Observe is unused by this unit. See Config.Observe.
+	Observe *observe.Service
+	// Jobs is unused by this unit. See Config.Jobs.
+	Jobs jobstore.Store
+	// JobStarter is unused by this unit. See Config.JobStarter.
+	JobStarter api.JobStarter
+	// JobCanceler is unused by this unit. See Config.JobCanceler.
+	JobCanceler api.JobCanceler
+	// Profiles is unused by this unit. See Config.Profiles.
+	Profiles profile.Store
+	// Credentials backs the Status tab's credentials-edit action. See Config.Credentials.
+	Credentials api.DeviceCredentials
+	// Power backs the Status tab's power-control buttons. See Config.Power.
+	Power api.DevicePower
+	// DefaultBMCUsername/DefaultBMCPassword back the Status tab's power
+	// action fallback. See Config.DefaultBMCUsername/DefaultBMCPassword.
+	DefaultBMCUsername string
+	DefaultBMCPassword string
+}
+
+// New builds a Server with routes registered. This is the single constructor
+// other code (cmdServe, tests) calls.
+func New(cfg Config) *Server {
+	log := cfg.Log
 	if log == nil {
 		log = slog.Default()
 	}
 	s := &Server{
-		Log:  log,
-		mux:  http.NewServeMux(),
-		sess: make(map[string]struct{}),
+		mux:                http.NewServeMux(),
+		log:                log,
+		apiToken:           cfg.APIToken,
+		Directory:          cfg.Directory,
+		Observe:            cfg.Observe,
+		Jobs:               cfg.Jobs,
+		JobStarter:         cfg.JobStarter,
+		JobCanceler:        cfg.JobCanceler,
+		Profiles:           cfg.Profiles,
+		Credentials:        cfg.Credentials,
+		DefaultBMCUsername: cfg.DefaultBMCUsername,
+		DefaultBMCPassword: cfg.DefaultBMCPassword,
+		Power:              cfg.Power,
 	}
 	s.routes()
 	return s
 }
 
-// Handler returns the root /ui/* handler with session-cookie auth applied.
+// Handler returns the root handler (auth middleware over the routed mux).
 func (s *Server) Handler() http.Handler {
-	return s.withSessionAuth(s.mux)
+	return s.withUIAuth(s.mux)
 }
 
 func (s *Server) routes() {
+	staticSub, err := fs.Sub(staticFS, "static")
+	if err != nil {
+		// static/*.css is embedded above; this can only fail if the embed
+		// directive itself is broken, which build would already have caught.
+		panic("ui: static assets: " + err.Error())
+	}
+	s.mux.Handle("GET /ui/static/", http.StripPrefix("/ui/static/", http.FileServerFS(staticSub)))
+
 	s.mux.HandleFunc("GET /ui/login", s.handleLoginForm)
 	s.mux.HandleFunc("POST /ui/login", s.handleLoginSubmit)
+	s.mux.HandleFunc("POST /ui/logout", s.handleLogout)
+
+	s.mux.HandleFunc("GET /ui/{$}", s.handleRoot)
+	s.mux.HandleFunc("GET /ui/devices", s.handleDeviceList)
+	s.mux.HandleFunc("GET /ui/devices/new", s.handleDeviceNewForm)
+	s.mux.HandleFunc("POST /ui/devices/new", s.handleDeviceNewSubmit)
+	// The device detail page is the Status/Provision/Power/Credentials tab
+	// (registerStatusRoutes, status.go) -- it supersedes the bare
+	// identity-only placeholder devices.go originally had for this route.
 	s.registerStatusRoutes()
+	s.mux.HandleFunc("GET /ui/devices/{id}/edit", s.handleDeviceEditForm)
+	s.mux.HandleFunc("POST /ui/devices/{id}/edit", s.handleDeviceEditSubmit)
+	s.mux.HandleFunc("POST /ui/devices/{id}/delete", s.handleDeviceDelete)
 }
 
-// --- placeholder session auth (see package doc) ---
-
-const sessionCookie = "shoal_ui_session"
-
-func (s *Server) withSessionAuth(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.TrimSpace(s.AuthToken) == "" {
-			next.ServeHTTP(w, r)
-			return
-		}
-		if r.URL.Path == "/ui/login" {
-			next.ServeHTTP(w, r)
-			return
-		}
-		c, err := r.Cookie(sessionCookie)
-		if err != nil || !s.validSession(c.Value) {
-			http.Redirect(w, r, "/ui/login?next="+template.URLQueryEscaper(r.URL.RequestURI()), http.StatusSeeOther)
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
+func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
+	http.Redirect(w, r, "/ui/devices", http.StatusFound)
 }
 
-func (s *Server) validSession(tok string) bool {
-	if tok == "" {
-		return false
-	}
-	s.sessMu.Lock()
-	defer s.sessMu.Unlock()
-	_, ok := s.sess[tok]
-	return ok
-}
-
-func (s *Server) newSession() string {
-	b := make([]byte, 24)
-	_, _ = rand.Read(b)
-	tok := hex.EncodeToString(b)
-	s.sessMu.Lock()
-	s.sess[tok] = struct{}{}
-	s.sessMu.Unlock()
-	return tok
-}
-
-func (s *Server) handleLoginForm(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = w.Write([]byte(`<!doctype html><html><body>
-<h1>Shoal login</h1>
-<form method="post" action="/ui/login">
-<input type="hidden" name="next" value="` + template.HTMLEscapeString(r.URL.Query().Get("next")) + `">
-<input type="password" name="password" placeholder="API token" autofocus>
-<button type="submit">Sign in</button>
-</form>
-</body></html>`))
-}
-
-func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
-	_ = r.ParseForm()
-	pass := r.PostForm.Get("password")
-	if strings.TrimSpace(s.AuthToken) == "" || subtle.ConstantTimeCompare([]byte(pass), []byte(s.AuthToken)) != 1 {
-		w.WriteHeader(http.StatusUnauthorized)
-		_, _ = w.Write([]byte("invalid credentials"))
-		return
-	}
-	tok := s.newSession()
-	http.SetCookie(w, &http.Cookie{
-		Name:     sessionCookie,
-		Value:    tok,
-		Path:     "/",
-		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
-		Expires:  time.Now().Add(12 * time.Hour),
-	})
-	next := r.PostForm.Get("next")
-	if next == "" || !strings.HasPrefix(next, "/ui/") {
-		next = "/ui/devices"
-	}
-	http.Redirect(w, r, next, http.StatusSeeOther)
-}
-
-// --- template rendering ---
-
-// renderPage executes templates/layout.html plus templates/<name> (which must
-// {{define "content"}}...{{end}}) and writes the result. name is the
-// page-local template file, e.g. "status.html".
-func (s *Server) renderPage(w http.ResponseWriter, r *http.Request, name string, data any) {
-	s.tmplOnce.Do(func() {
-		s.tmplBase = template.Must(template.New("layout").Funcs(templateFuncs).ParseFS(templatesFS, "templates/layout.html"))
-	})
-	t, err := s.tmplBase.Clone()
-	if err != nil {
-		s.Log.Error("ui: clone template", "err", err.Error())
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-	t, err = t.ParseFS(templatesFS, "templates/"+name)
-	if err != nil {
-		s.Log.Error("ui: parse template", "name", name, "err", err.Error())
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := t.ExecuteTemplate(w, "layout", data); err != nil {
-		s.Log.Error("ui: render", "name", name, "err", err.Error())
-	}
-}
-
+// renderPage executes the named content template (a file under
+// internal/ui/templates/, e.g. "devices_list.html") inside the shared
+// layout.html chrome and writes the result. name's file must define a
+// `{{define "content"}}...{{end}}` template -- see embed.go's doc comment
+// for the full convention. Units 6-8 call this exact helper (signature and
+// behavior) from their own page handlers.
+// templateFuncs are available to every page template rendered via
+// renderPage. truncate is used by status.html to shorten job ids in
+// button/heading text.
 var templateFuncs = template.FuncMap{
 	"truncate": func(n int, s string) string {
 		if len(s) <= n {
@@ -225,4 +188,21 @@ var templateFuncs = template.FuncMap{
 		}
 		return s[:n]
 	},
+}
+
+func (s *Server) renderPage(w http.ResponseWriter, r *http.Request, name string, data any) {
+	tmpl, err := template.New("layout.html").Funcs(templateFuncs).ParseFS(templatesFS, "templates/layout.html", "templates/"+name)
+	if err != nil {
+		s.log.Error("ui: render page: parse", "template", name, "err", err.Error())
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	var buf bytes.Buffer
+	if err := tmpl.ExecuteTemplate(&buf, "layout.html", data); err != nil {
+		s.log.Error("ui: render page: execute", "template", name, "err", err.Error())
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = buf.WriteTo(w)
 }

@@ -4,13 +4,16 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/mattcburns/shoal/internal/common/directory"
 	"github.com/mattcburns/shoal/internal/common/models"
 )
 
@@ -111,9 +114,10 @@ func (c *Client) findByName(ctx context.Context, name string) (string, error) {
 	return fmt.Sprintf("%d", out.Results[0].ID), nil
 }
 
-// ResolveDeviceID implements DeviceResolver.
-// Order: serial match, name match, then return key unchanged (numeric id or
-// free-form lab key when NetBox has no row yet).
+// ResolveDeviceID implements DeviceResolver and directory.Store.
+// Order: serial match, name match, then (only if key already looks like a
+// NetBox numeric id) return it unchanged. Anything else that matches
+// nothing returns directory.ErrNotFound.
 func (c *Client) ResolveDeviceID(ctx context.Context, key string) (string, error) {
 	if c.BaseURL == "" || c.Token == "" {
 		return "", fmt.Errorf("netbox: missing url or token")
@@ -132,7 +136,17 @@ func (c *Client) ResolveDeviceID(ctx context.Context, key string) (string, error
 	} else if id != "" {
 		return id, nil
 	}
-	return key, nil
+	// A key that already looks like a NetBox numeric id is passed through
+	// unchanged (it may be a valid pk this method was never asked to verify
+	// against serial/name) -- this is the long-standing behavior orchestrator
+	// callers rely on. Anything else (a typo'd or unknown serial/name/key)
+	// genuinely doesn't resolve to a device, so report that rather than
+	// silently handing back a value that will only fail later, differently,
+	// at whatever endpoint the caller passes it to next.
+	if looksLikeNetBoxID(key) {
+		return key, nil
+	}
+	return "", directory.ErrNotFound
 }
 
 func looksLikeNetBoxID(key string) bool {
@@ -147,7 +161,44 @@ func looksLikeNetBoxID(key string) bool {
 	return true
 }
 
-// GetDevice loads identity by serial, name, or NetBox id. Password is never included.
+// rawDeviceResponse is NetBox's DCIM device JSON shape, as returned by both
+// GET /api/dcim/devices/{id}/ and each entry of GET /api/dcim/devices/'s
+// paginated results list. toIdentity() is the single place that maps it to
+// models.DeviceIdentity, shared by GetDevice and ListDevices.
+type rawDeviceResponse struct {
+	ID     int    `json:"id"`
+	Name   string `json:"name"`
+	Serial string `json:"serial"`
+	CF     struct {
+		LifecycleState string `json:"lifecycle_state"`
+		CredentialRef  string `json:"credential_ref"`
+		BMCIP          string `json:"bmc_ip"`
+	} `json:"custom_fields"`
+	DeviceType struct {
+		Model        string `json:"model"`
+		Manufacturer struct {
+			Name string `json:"name"`
+		} `json:"manufacturer"`
+	} `json:"device_type"`
+}
+
+func (r rawDeviceResponse) toIdentity() models.DeviceIdentity {
+	return models.DeviceIdentity{
+		ID:             fmt.Sprintf("%d", r.ID),
+		Name:           r.Name,
+		Serial:         r.Serial,
+		Vendor:         r.DeviceType.Manufacturer.Name,
+		Model:          r.DeviceType.Model,
+		LifecycleState: models.LifecycleState(r.CF.LifecycleState),
+		CredentialRef:  r.CF.CredentialRef,
+		BMCIP:          r.CF.BMCIP,
+	}
+}
+
+// GetDevice loads identity by serial, name, or NetBox id. Password is never
+// included. Implements directory.Store; returns directory.ErrNotFound when
+// NetBox responds 404 (also covers "no such serial/name and the fallback
+// numeric lookup misses").
 func (c *Client) GetDevice(ctx context.Context, key string) (models.DeviceIdentity, error) {
 	if c.BaseURL == "" || c.Token == "" {
 		return models.DeviceIdentity{}, fmt.Errorf("netbox: missing url or token")
@@ -161,39 +212,79 @@ func (c *Client) GetDevice(ctx context.Context, key string) (models.DeviceIdenti
 		}
 		id = resolved
 	}
-	var raw struct {
-		ID     int    `json:"id"`
-		Name   string `json:"name"`
-		Serial string `json:"serial"`
-		CF     struct {
-			LifecycleState string `json:"lifecycle_state"`
-			CredentialRef  string `json:"credential_ref"`
-			BMCIP          string `json:"bmc_ip"`
-		} `json:"custom_fields"`
-		DeviceType struct {
-			Model        string `json:"model"`
-			Manufacturer struct {
-				Name string `json:"name"`
-			} `json:"manufacturer"`
-		} `json:"device_type"`
-	}
+	var raw rawDeviceResponse
 	if err := c.doJSON(ctx, http.MethodGet, "/api/dcim/devices/"+id+"/", nil, &raw); err != nil {
+		if isNotFound(err) {
+			return models.DeviceIdentity{}, directory.ErrNotFound
+		}
 		return models.DeviceIdentity{}, err
 	}
-	out := models.DeviceIdentity{
-		ID:             fmt.Sprintf("%d", raw.ID),
-		Name:           raw.Name,
-		Serial:         raw.Serial,
-		Vendor:         raw.DeviceType.Manufacturer.Name,
-		Model:          raw.DeviceType.Model,
-		LifecycleState: models.LifecycleState(raw.CF.LifecycleState),
-		CredentialRef:  raw.CF.CredentialRef,
-		BMCIP:          raw.CF.BMCIP,
-	}
+	out := raw.toIdentity()
 	if out.ID == "0" && id != "" {
 		out.ID = id
 	}
 	return out, nil
+}
+
+// ListDevices implements directory.Store. It follows NetBox's standard
+// {"count","next","results"} pagination envelope until "next" is null.
+func (c *Client) ListDevices(ctx context.Context) ([]models.DeviceIdentity, error) {
+	if c.BaseURL == "" || c.Token == "" {
+		return nil, fmt.Errorf("netbox: missing url or token")
+	}
+	var out []models.DeviceIdentity
+	path := "/api/dcim/devices/"
+	for path != "" {
+		var page struct {
+			Next    *string             `json:"next"`
+			Results []rawDeviceResponse `json:"results"`
+		}
+		if err := c.doJSON(ctx, http.MethodGet, path, nil, &page); err != nil {
+			return nil, err
+		}
+		for _, r := range page.Results {
+			out = append(out, r.toIdentity())
+		}
+		if page.Next == nil || strings.TrimSpace(*page.Next) == "" {
+			break
+		}
+		next, err := url.Parse(*page.Next)
+		if err != nil {
+			return nil, fmt.Errorf("netbox: bad next page url: %w", err)
+		}
+		path = next.RequestURI()
+	}
+	return out, nil
+}
+
+// DeleteDevice implements directory.Store. Like GetDevice and SetLifecycle,
+// the key may be a NetBox numeric id, a serial, or a name (resolved via
+// ResolveDeviceID) so callers don't need to know which form they hold; a
+// bare numeric id skips resolution and deletes directly. Treats a 404 from
+// NetBox as directory.ErrNotFound; any 2xx (200 or 204) is success.
+func (c *Client) DeleteDevice(ctx context.Context, key string) error {
+	if c.BaseURL == "" || c.Token == "" {
+		return fmt.Errorf("netbox: missing url or token")
+	}
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return fmt.Errorf("netbox: device id required")
+	}
+	id := key
+	if !looksLikeNetBoxID(key) {
+		resolved, err := c.ResolveDeviceID(ctx, key)
+		if err != nil {
+			return err
+		}
+		id = resolved
+	}
+	if err := c.doJSON(ctx, http.MethodDelete, "/api/dcim/devices/"+id+"/", nil, nil); err != nil {
+		if isNotFound(err) {
+			return directory.ErrNotFound
+		}
+		return err
+	}
+	return nil
 }
 
 func (c *Client) createDevice(ctx context.Context, id models.DeviceIdentity) (string, error) {
@@ -442,7 +533,16 @@ func (c *Client) ensureDeviceType(ctx context.Context, mfgID int, model string) 
 	if strings.TrimSpace(model) == "" {
 		model = "shoal-node"
 	}
-	q := url.Values{"model": {model}}
+	// NetBox's actual uniqueness constraint on device types is the
+	// (manufacturer, model) pair, not model alone -- filtering by model only
+	// would let this lookup return a different manufacturer's device type
+	// that happens to share the same model string, silently reusing it
+	// (and its manufacturer) instead of creating/finding the right one for
+	// mfgID. This matters on every UpsertDevice update: a device's vendor
+	// changing while its derived model string stays the same (e.g. an empty
+	// Model field, so model defaults to "shoal-"+name) must not pin the
+	// device to its previous manufacturer.
+	q := url.Values{"model": {model}, "manufacturer_id": {strconv.Itoa(mfgID)}}
 	var out struct {
 		Results []struct {
 			ID int `json:"id"`
@@ -526,7 +626,10 @@ func (c *Client) doJSON(ctx context.Context, method, path string, body any, out 
 		return err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("netbox: %s %s: status %d: %s", method, path, resp.StatusCode, truncate(string(raw), 300))
+		return &httpStatusError{
+			status: resp.StatusCode,
+			err:    fmt.Errorf("netbox: %s %s: status %d: %s", method, path, resp.StatusCode, truncate(string(raw), 300)),
+		}
 	}
 	if out == nil || len(raw) == 0 || string(raw) == "null" {
 		return nil
@@ -535,6 +638,24 @@ func (c *Client) doJSON(ctx context.Context, method, path string, body any, out 
 		return fmt.Errorf("netbox: decode: %w", err)
 	}
 	return nil
+}
+
+// httpStatusError preserves the HTTP status code of a non-2xx NetBox
+// response so callers (GetDevice, DeleteDevice) can distinguish 404 from
+// other failures and map it to directory.ErrNotFound. Error()/Unwrap()
+// delegate to the formatted error so existing string-matching callers
+// (e.g. createDevice's custom_fields retry) are unaffected.
+type httpStatusError struct {
+	status int
+	err    error
+}
+
+func (e *httpStatusError) Error() string { return e.err.Error() }
+func (e *httpStatusError) Unwrap() error { return e.err }
+
+func isNotFound(err error) bool {
+	var hse *httpStatusError
+	return errors.As(err, &hse) && hse.status == http.StatusNotFound
 }
 
 func truncate(s string, n int) string {
@@ -676,3 +797,8 @@ var _ LifecycleWriter = (*Client)(nil)
 var _ LifecycleWriter = (*Memory)(nil)
 var _ DeviceResolver = (*Client)(nil)
 var _ DeviceResolver = (*Memory)(nil)
+
+// Client satisfies the device-directory Store abstraction (see
+// internal/common/directory) via ListDevices/GetDevice/UpsertDevice/
+// SetLifecycle/ResolveDeviceID/DeleteDevice added above.
+var _ directory.Store = (*Client)(nil)

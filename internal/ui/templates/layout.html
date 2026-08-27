@@ -1,57 +1,23 @@
-{{define "layout"}}
 <!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Shoal</title>
-<style>
-  :root { color-scheme: light dark; }
-  body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; margin: 0; padding: 0; }
-  header { padding: 0.75rem 1.25rem; border-bottom: 1px solid #8884; display: flex; align-items: center; gap: 1rem; }
-  header a { text-decoration: none; font-weight: 600; }
-  main { padding: 1.25rem; max-width: 1100px; margin: 0 auto; }
-  .card { border: 1px solid #8884; border-radius: 0.4rem; margin-bottom: 1rem; }
-  .card > h2 { margin: 0; padding: 0.6rem 1rem; border-bottom: 1px solid #8884; font-size: 1rem; }
-  .card > .body { padding: 1rem; }
-  .row { display: flex; flex-wrap: wrap; gap: 1rem; }
-  .row > .col { flex: 1 1 320px; }
-  label { display: block; font-size: 0.8rem; margin-bottom: 0.15rem; }
-  input[type=text], input[type=password], input[type=url], select {
-    width: 100%; box-sizing: border-box; padding: 0.35rem 0.5rem; margin-bottom: 0.6rem;
-  }
-  .field { margin-bottom: 0.4rem; }
-  fieldset { border: 1px solid #8884; border-radius: 0.4rem; margin-bottom: 1rem; }
-  button { padding: 0.4rem 0.9rem; cursor: pointer; }
-  .btn-danger { background: #c0392b; color: #fff; border: none; border-radius: 0.3rem; }
-  .btn-primary { background: #2563eb; color: #fff; border: none; border-radius: 0.3rem; }
-  .badge { display: inline-block; padding: 0.1rem 0.5rem; border-radius: 0.7rem; font-size: 0.78rem; }
-  .badge-provisioning { background: #2563eb; color: #fff; }
-  .badge-provisioned { background: #15803d; color: #fff; }
-  .badge-failed { background: #c0392b; color: #fff; }
-  .badge-other { background: #8884; }
-  table.attrs { width: 100%; border-collapse: collapse; }
-  table.attrs th { text-align: left; width: 9rem; color: #888; font-weight: 500; padding: 0.25rem 0; }
-  table.attrs td { padding: 0.25rem 0; }
-  ul.stages { list-style: none; margin: 0; padding: 0; }
-  ul.stages li { padding: 0.3rem 0; border-bottom: 1px solid #8882; }
-  ul.stages li:last-child { border-bottom: none; }
-  .log { font-family: ui-monospace, monospace; font-size: 0.78rem; max-height: 18rem; overflow: auto;
-         background: #8881; padding: 0.75rem; border-radius: 0.3rem; white-space: pre-wrap; word-break: break-all; }
-  .flash { padding: 0.6rem 1rem; border-radius: 0.3rem; margin-bottom: 1rem; }
-  .flash-success { background: #15803d33; }
-  .flash-error { background: #c0392b33; }
-  .muted { color: #888; }
-  code { font-family: ui-monospace, monospace; }
-</style>
+<link rel="stylesheet" href="/ui/static/style.css">
 </head>
 <body>
-<header>
-  <a href="/ui/devices">Shoal</a>
+<header class="shoal-nav">
+  <a class="shoal-brand" href="/ui/devices">Shoal</a>
+  <nav>
+    <a href="/ui/devices">Devices</a>
+  </nav>
+  <form class="shoal-logout" method="post" action="/ui/logout">
+    <button type="submit">Log out</button>
+  </form>
 </header>
-<main>
+<main class="shoal-main">
 {{template "content" .}}
 </main>
 </body>
 </html>
-{{end}}

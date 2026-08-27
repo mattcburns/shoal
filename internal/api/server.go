@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/mattcburns/shoal/internal/common/config"
+	"github.com/mattcburns/shoal/internal/common/directory"
 	"github.com/mattcburns/shoal/internal/common/telemetry"
 	"github.com/mattcburns/shoal/internal/core/profile"
 	"github.com/mattcburns/shoal/internal/deploy/jobstore"
@@ -26,16 +27,17 @@ type Server struct {
 	log *slog.Logger
 	mux *http.ServeMux
 	// PingDB may be overridden in tests; defaults to telemetry.PingDB.
-	PingDB   func(ctx context.Context, dsn string) error
-	jobs     jobstore.Store
-	cancel   JobCanceler
-	start    JobStarter
-	discover *discover.Service
-	observe  *observe.Service
-	power    DevicePower
-	creds    DeviceCredentials
-	poll     DevicePoll
-	profiles profile.Store
+	PingDB    func(ctx context.Context, dsn string) error
+	jobs      jobstore.Store
+	cancel    JobCanceler
+	start     JobStarter
+	discover  *discover.Service
+	observe   *observe.Service
+	power     DevicePower
+	creds     DeviceCredentials
+	poll      DevicePoll
+	profiles  profile.Store
+	directory directory.Store
 }
 
 // New constructs a Server with routes registered.
@@ -68,6 +70,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /v1/jobs/{id}/cancel", s.handleCancelJob)
 	s.mux.HandleFunc("POST /v1/discover/ingest", s.handleDiscoverIngest)
 	s.mux.HandleFunc("POST /v1/discover/confirm", s.handleDiscoverConfirm)
+	s.mux.HandleFunc("GET /v1/devices", s.handleListDevices)
+	s.mux.HandleFunc("POST /v1/devices", s.handleCreateDevice)
 	s.mux.HandleFunc("GET /v1/devices/{id}/status", s.handleDeviceStatus)
 	s.mux.HandleFunc("GET /v1/devices/{id}/events", s.handleDeviceEvents)
 	s.mux.HandleFunc("GET /v1/devices/{id}/jobs", s.handleDeviceJobs)

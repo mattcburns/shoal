@@ -17,10 +17,10 @@ import (
 	"github.com/mattcburns/shoal/internal/deploy/jobstore"
 )
 
-// registerStatusRoutes wires the Status tab (this unit's whole deliverable)
-// onto the shared /ui mux. The real "UI shell" PR should call this from its
-// own routes() instead of relying on this package's placeholder Server/routes
-// in server.go — see that file's package doc.
+// registerStatusRoutes wires the Status/Provision/Power/Credentials tab
+// (this unit's whole deliverable) onto the shared /ui mux, called from
+// Server.routes() in server.go. This is the device detail page's primary
+// route -- GET/POST /ui/devices/{id}.
 func (s *Server) registerStatusRoutes() {
 	s.mux.HandleFunc("GET /ui/devices/{id}", s.handleDeviceStatusPage)
 	s.mux.HandleFunc("POST /ui/devices/{id}", s.handleDeviceStatusPost)
@@ -202,8 +202,8 @@ func (s *Server) redirectFlash(w http.ResponseWriter, r *http.Request, id, level
 // carry raw response bodies. extra, when non-empty, is safe local context
 // (e.g. a job id this handler itself generated) appended to the message.
 func (s *Server) redirectUpstreamError(w http.ResponseWriter, r *http.Request, id, action string, err error, extra string) {
-	if s.Log != nil {
-		s.Log.Error("ui upstream error", "action", action, "device_id", id, "err", err.Error())
+	if s.log != nil {
+		s.log.Error("ui upstream error", "action", action, "device_id", id, "err", err.Error())
 	}
 	msg := action + " failed: upstream request failed"
 	if extra != "" {

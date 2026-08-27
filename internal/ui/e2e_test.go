@@ -29,10 +29,32 @@ import (
 	"github.com/mattcburns/shoal/internal/ui"
 )
 
+// fakeDirectory implements the full directory.Store interface -- only
+// GetDevice is exercised by this test, the rest are unreachable stubs.
 type fakeDirectory struct{ dev models.DeviceIdentity }
 
 func (f fakeDirectory) GetDevice(_ context.Context, _ string) (models.DeviceIdentity, error) {
 	return f.dev, nil
+}
+
+func (f fakeDirectory) ListDevices(_ context.Context) ([]models.DeviceIdentity, error) {
+	return []models.DeviceIdentity{f.dev}, nil
+}
+
+func (f fakeDirectory) UpsertDevice(_ context.Context, d models.DeviceIdentity) (string, error) {
+	return d.ID, nil
+}
+
+func (f fakeDirectory) SetLifecycle(_ context.Context, _ string, _ models.LifecycleState) error {
+	return nil
+}
+
+func (f fakeDirectory) ResolveDeviceID(_ context.Context, key string) (string, error) {
+	return key, nil
+}
+
+func (f fakeDirectory) DeleteDevice(_ context.Context, _ string) error {
+	return nil
 }
 
 type fakeStarter struct {
@@ -94,16 +116,18 @@ func TestStatusTabE2E(t *testing.T) {
 	starter := &fakeStarter{}
 	canceler := &fakeCanceler{}
 
-	s := ui.New(slog.New(slog.NewTextHandler(io.Discard, nil)))
-	s.AuthToken = "test-token"
-	s.Directory = fakeDirectory{dev: models.DeviceIdentity{
-		ID: "dev1", Name: "shoal-node-1", BMCIP: "192.168.1.50", CredentialRef: "bmc-dev1",
-	}}
-	s.Profiles = profStore
-	s.JobStarter = starter
-	s.JobCanceler = canceler
-	s.Credentials = fakeCreds{}
-	s.Power = fakePower{}
+	s := ui.New(ui.Config{
+		Log:      slog.New(slog.NewTextHandler(io.Discard, nil)),
+		APIToken: "test-token",
+		Directory: fakeDirectory{dev: models.DeviceIdentity{
+			ID: "dev1", Name: "shoal-node-1", BMCIP: "192.168.1.50", CredentialRef: "bmc-dev1",
+		}},
+		Profiles:    profStore,
+		JobStarter:  starter,
+		JobCanceler: canceler,
+		Credentials: fakeCreds{},
+		Power:       fakePower{},
+	})
 
 	ts := httptest.NewServer(s.Handler())
 	defer ts.Close()

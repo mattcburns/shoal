@@ -3,7 +3,9 @@
 
 <h1>Device {{.DeviceID}}{{if .Device}} — {{.Device.Name}}{{end}}</h1>
 <p>
-  <a href="/ui/devices/{{.DeviceID}}">Status</a>
+  <a href="/ui/devices">&larr; All devices</a>
+  &middot;
+  <a href="/ui/devices/{{.DeviceID}}/edit">Edit device</a>
   {{if .Provisioning}}<span class="badge badge-provisioning">auto-refresh 5s</span>{{end}}
 </p>
 
